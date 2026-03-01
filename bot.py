@@ -90,7 +90,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Checking Polar…")
     tid, runs = get_runs()
-        if not runs:
+    if not runs:
         await update.message.reply_text("No new runs found.")
         return
     for run in runs:
