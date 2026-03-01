@@ -1,7 +1,7 @@
-“””
+"""
 Polar Running Coach Telegram Bot
 Powered by Claude AI | Syncs with Polar AccessLink API
-“””
+"""
 
 import os
 import json
