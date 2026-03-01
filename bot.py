@@ -58,7 +58,7 @@ Keep responses conversational — this is a Telegram chat, not a report.
 """
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(**name**)
+logger = logging.getLogger(__name__)
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -385,5 +385,5 @@ logger.info("🏃 Polar Coach Bot starting...")
 app.run_polling(allowed_updates=Update.ALL_TYPES)
 ```
 
-if **name** == "**main**":
+if __name__ == "__main__":
 main()
