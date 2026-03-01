@@ -52,8 +52,8 @@ def get_runs():
         if eid:
             detail = polar_get("/users/transaction/" + str(tid) + "/exercises/" + str(eid))
             if "running" in detail.get("sport", "").lower() or "trail" in detail.get("sport", "").lower():
-runs.append(detail)
-    return tid, runs
+                runs.append(detail)
+            return tid, runs
 
 def summarise(ex):
     sport = ex.get("sport", "Run")
