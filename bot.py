@@ -1,7 +1,7 @@
-“””
+"""
 Polar Running Coach Telegram Bot
 Powered by Claude AI | Syncs with Polar AccessLink API
-“””
+"""
 
 import os
 import json
@@ -18,25 +18,25 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
-TELEGRAM_TOKEN = os.environ[“TELEGRAM_TOKEN”]
-ANTHROPIC_API_KEY = os.environ[“ANTHROPIC_API_KEY”]
-POLAR_CLIENT_ID = os.environ[“POLAR_CLIENT_ID”]
-POLAR_CLIENT_SECRET = os.environ[“POLAR_CLIENT_SECRET”]
-POLAR_ACCESS_TOKEN = os.environ.get(“POLAR_ACCESS_TOKEN”, “”)  # Set after OAuth
-YOUR_TELEGRAM_ID = int(os.environ[“YOUR_TELEGRAM_ID”])
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+POLAR_CLIENT_ID = os.environ["POLAR_CLIENT_ID"]
+POLAR_CLIENT_SECRET = os.environ["POLAR_CLIENT_SECRET"]
+POLAR_ACCESS_TOKEN = os.environ.get("POLAR_ACCESS_TOKEN", "")  # Set after OAuth
+YOUR_TELEGRAM_ID = int(os.environ["YOUR_TELEGRAM_ID"])
 
 # Race goals — edit these!
 
-ATHLETE_PROFILE = “””
+ATHLETE_PROFILE = """
 Athlete Profile:
 
 - Events: London Marathon (target sub-3:30), Ultra marathons (50k+)
 - Experience: 9 months structured training
 - Uses Polar watch for all training data
 - Key metrics: pace, HR zones, training load, recovery status
-  “””
+  """
 
-SYSTEM_PROMPT = f””“You are an expert ultra and road marathon running coach with deep knowledge of:
+SYSTEM_PROMPT = f"""You are an expert ultra and road marathon running coach with deep knowledge of:
 
 - Polarised training methodology
 - Heart rate zone training (Polar’s 5-zone system)
@@ -55,7 +55,7 @@ When given training data, provide:
 
 Be direct, encouraging, and evidence-based. Use running coaching terminology naturally.
 Keep responses conversational — this is a Telegram chat, not a report.
-“””
+"""
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(**name**)
@@ -64,70 +64,70 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # ── Polar API ────────────────────────────────────────────────────────────────
 
-POLAR_API_BASE = “https://www.polaraccesslink.com/v3”
+POLAR_API_BASE = "https://www.polaraccesslink.com/v3"
 
 def polar_headers():
 return {
-“Authorization”: f”Bearer {POLAR_ACCESS_TOKEN}”,
-“Accept”: “application/json”,
-“Content-Type”: “application/json”,
+"Authorization": f"Bearer {POLAR_ACCESS_TOKEN}",
+"Accept": "application/json",
+"Content-Type": "application/json",
 }
 
 def create_transaction() -> Optional[str]:
-“”“Start a new exercise transaction to pull new workouts.”””
-r = requests.post(f”{POLAR_API_BASE}/users/transaction”, headers=polar_headers())
+"""Start a new exercise transaction to pull new workouts."""
+r = requests.post(f"{POLAR_API_BASE}/users/transaction", headers=polar_headers())
 if r.status_code == 201:
-return r.json().get(“transaction-id”)
+return r.json().get("transaction-id")
 elif r.status_code == 204:
-logger.info(“No new exercises available”)
+logger.info("No new exercises available")
 return None
 else:
-logger.error(f”Transaction error: {r.status_code} {r.text}”)
+logger.error(f"Transaction error: {r.status_code} {r.text}")
 return None
 
 def get_exercises(transaction_id: str) -> list:
-“”“Fetch all exercises in a transaction.”””
+"""Fetch all exercises in a transaction."""
 r = requests.get(
-f”{POLAR_API_BASE}/users/transaction/{transaction_id}/exercises”,
+f"{POLAR_API_BASE}/users/transaction/{transaction_id}/exercises",
 headers=polar_headers()
 )
 if r.status_code == 200:
-return r.json().get(“exercises”, [])
+return r.json().get("exercises", [])
 return []
 
 def get_exercise_detail(transaction_id: str, exercise_id: str) -> dict:
-“”“Fetch full detail for one exercise including HR zones.”””
+"""Fetch full detail for one exercise including HR zones."""
 r = requests.get(
-f”{POLAR_API_BASE}/users/transaction/{transaction_id}/exercises/{exercise_id}”,
+f"{POLAR_API_BASE}/users/transaction/{transaction_id}/exercises/{exercise_id}",
 headers=polar_headers()
 )
 return r.json() if r.status_code == 200 else {}
 
 def commit_transaction(transaction_id: str):
-“”“Commit the transaction so data isn’t re-fetched.”””
+"""Commit the transaction so data isn’t re-fetched."""
 requests.put(
-f”{POLAR_API_BASE}/users/transaction/{transaction_id}”,
+f"{POLAR_API_BASE}/users/transaction/{transaction_id}",
 headers=polar_headers()
 )
 
 def get_daily_activity() -> dict:
-“”“Fetch today’s activity summary (steps, active time, recovery).”””
-today = datetime.now().strftime(”%Y-%m-%d”)
+"""Fetch today’s activity summary (steps, active time, recovery)."""
+today = datetime.now().strftime("%Y-%m-%d")
 r = requests.get(
-f”{POLAR_API_BASE}/users/activity/date/{today}”,
+f"{POLAR_API_BASE}/users/activity/date/{today}",
 headers=polar_headers()
 )
 return r.json() if r.status_code == 200 else {}
 
 def format_exercise_for_coach(exercise: dict) -> str:
-“”“Convert Polar exercise JSON into a readable coaching summary.”””
-sport = exercise.get(“sport”, “Unknown”)
-date = exercise.get(“start-time”, “”)[:10]
-duration_secs = exercise.get(“duration”, 0)
+"""Convert Polar exercise JSON into a readable coaching summary."""
+sport = exercise.get("sport", "Unknown")
+date = exercise.get("start-time", "")[:10]
+duration_secs = exercise.get("duration", 0)
 duration_min = duration_secs // 60
-distance_m = exercise.get(“distance”, 0)
+distance_m = exercise.get("distance", 0)
 distance_km = distance_m / 1000 if distance_m else 0
-calories = exercise.get(“calories”, 0)
+calories = exercise.get("calories", 0)
 
 ```
 # Pace
@@ -173,7 +173,7 @@ Elevation Gain: {ascent} m
 Training Load: {load_score}
 
 Heart Rate Zone Breakdown:{zone_summary if zone_summary else ’ Not available’}
-“””.strip()
+""".strip()
 
 # ── Claude AI ────────────────────────────────────────────────────────────────
 
@@ -182,7 +182,7 @@ Heart Rate Zone Breakdown:{zone_summary if zone_summary else ’ Not available�
 conversation_history = {}
 
 def get_coaching_analysis(exercise_summary: str, user_id: int) -> str:
-“”“Get Claude’s coaching analysis of a completed run.”””
+"""Get Claude’s coaching analysis of a completed run."""
 history = conversation_history.get(user_id, [])
 
 ```
@@ -206,9 +206,9 @@ return reply
 ```
 
 def get_chat_response(user_message: str, user_id: int) -> str:
-“”“Handle free-form coaching chat.”””
+"""Handle free-form coaching chat."""
 history = conversation_history.get(user_id, [])
-history.append({“role”: “user”, “content”: user_message})
+history.append({"role": "user", "content": user_message})
 
 ```
 response = client.messages.create(
@@ -229,31 +229,31 @@ return reply
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 await update.message.reply_text(
-“👋 Hey! I’m your AI running coach, powered by Claude.\n\n”
-“I’ll automatically analyse your Polar runs and message you after each session.\n\n”
-“You can also ask me anything:\n”
-“• ‘Should I run easy today?’\n”
-“• ‘How’s my training load looking?’\n”
-“• ‘What pace should I target for London?’\n\n”
-“Commands:\n”
-“/sync — manually pull latest run\n”
-“/status — today’s activity & recovery\n”
-“/plan — weekly training overview\n”
-“/reset — clear conversation history”
+"👋 Hey! I’m your AI running coach, powered by Claude.\n\n"
+"I’ll automatically analyse your Polar runs and message you after each session.\n\n"
+"You can also ask me anything:\n"
+"• ‘Should I run easy today?’\n"
+"• ‘How’s my training load looking?’\n"
+"• ‘What pace should I target for London?’\n\n"
+"Commands:\n"
+"/sync — manually pull latest run\n"
+"/status — today’s activity & recovery\n"
+"/plan — weekly training overview\n"
+"/reset — clear conversation history"
 )
 
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“Manually trigger a Polar sync.”””
-await update.message.reply_text(“🔄 Checking Polar for new runs…”)
+"""Manually trigger a Polar sync."""
+await update.message.reply_text("🔄 Checking Polar for new runs…")
 new_runs = await check_and_analyse_new_runs(context.bot)
 if not new_runs:
-await update.message.reply_text(“No new runs found since last sync. Go get some miles in! 🏃”)
+await update.message.reply_text("No new runs found since last sync. Go get some miles in! 🏃")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“Show today’s activity summary.”””
+"""Show today’s activity summary."""
 activity = get_daily_activity()
 if not activity:
-await update.message.reply_text(“Couldn’t fetch today’s activity. Check your Polar connection.”)
+await update.message.reply_text("Couldn’t fetch today’s activity. Check your Polar connection.")
 return
 
 ```
@@ -272,23 +272,23 @@ await update.message.reply_text(f"{summary}\n\n🧠 Coach: {coaching}")
 ```
 
 async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“Ask Claude for a weekly training overview.”””
+"""Ask Claude for a weekly training overview."""
 response = get_chat_response(
-“Based on our training history and my goals (London Marathon + ultras), “
-“give me a brief overview of what this week’s training focus should be. “
-“Keep it to 3-4 key points.”,
+"Based on our training history and my goals (London Marathon + ultras), "
+"give me a brief overview of what this week’s training focus should be. "
+"Keep it to 3-4 key points.",
 YOUR_TELEGRAM_ID
 )
-await update.message.reply_text(f”📅 This Week’s Focus\n\n{response}”)
+await update.message.reply_text(f"📅 This Week’s Focus\n\n{response}")
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“Clear conversation history.”””
+"""Clear conversation history."""
 user_id = update.effective_user.id
 conversation_history[user_id] = []
-await update.message.reply_text(“🔄 Conversation history cleared. Fresh start!”)
+await update.message.reply_text("🔄 Conversation history cleared. Fresh start!")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-“”“Handle free-form coaching questions.”””
+"""Handle free-form coaching questions."""
 user_id = update.effective_user.id
 
 ```
@@ -307,9 +307,9 @@ await update.message.reply_text(response)
 # ── Polar Sync Logic ─────────────────────────────────────────────────────────
 
 async def check_and_analyse_new_runs(bot: Bot) -> bool:
-“”“Pull new exercises from Polar, analyse with Claude, send to Telegram.”””
+"""Pull new exercises from Polar, analyse with Claude, send to Telegram."""
 if not POLAR_ACCESS_TOKEN:
-logger.warning(“No Polar access token set”)
+logger.warning("No Polar access token set")
 return False
 
 ```
@@ -351,12 +351,12 @@ return found_runs
 ```
 
 async def scheduled_sync(bot: Bot):
-“”“Called by scheduler every 30 minutes.”””
-logger.info(“Running scheduled Polar sync…”)
+"""Called by scheduler every 30 minutes."""
+logger.info("Running scheduled Polar sync…")
 try:
 await check_and_analyse_new_runs(bot)
 except Exception as e:
-logger.error(f”Scheduled sync error: {e}”)
+logger.error(f"Scheduled sync error: {e}")
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -385,5 +385,5 @@ logger.info("🏃 Polar Coach Bot starting...")
 app.run_polling(allowed_updates=Update.ALL_TYPES)
 ```
 
-if **name** == “**main**”:
+if **name** == "**main**":
 main()
