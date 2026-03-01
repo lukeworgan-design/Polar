@@ -1,4 +1,4 @@
-import os
+imp'ort os
 import json
 import logging
 import requests
@@ -7,23 +7,23 @@ from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-TELEGRAM_TOKEN = os.environ.get(‘TELEGRAM_TOKEN’, ‘’)
-ANTHROPIC_API_KEY = os.environ.get(‘ANTHROPIC_API_KEY’, ‘’)
-POLAR_CLIENT_ID = os.environ.get(‘POLAR_CLIENT_ID’, ‘’)
-POLAR_CLIENT_SECRET = os.environ.get(‘POLAR_CLIENT_SECRET’, ‘’)
-POLAR_ACCESS_TOKEN = os.environ.get(‘POLAR_ACCESS_TOKEN’, ‘’)
-YOUR_TELEGRAM_ID = int(os.environ.get(‘YOUR_TELEGRAM_ID’, ‘0’))
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
+ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+POLAR_CLIENT_ID = os.environ.get('POLAR_CLIENT_ID', '')
+POLAR_CLIENT_SECRET = os.environ.get('POLAR_CLIENT_SECRET', '')
+POLAR_ACCESS_TOKEN = os.environ.get('POLAR_ACCESS_TOKEN', '')
+YOUR_TELEGRAM_ID = int(os.environ.get('YOUR_TELEGRAM_ID', '0'))
 
-POLAR_API_BASE = ‘https://www.polaraccesslink.com/v3’
+POLAR_API_BASE = 'https://www.polaraccesslink.com/v3'
 
-SYSTEM_PROMPT = ‘’‘You are an expert ultra and road marathon running coach.
+SYSTEM_PROMPT = '''You are an expert ultra and road marathon running coach.
 The athlete is training for London Marathon and ultra marathons.
 When given training data, analyse: pace, HR zones, training load, recovery needs.
 Be direct, encouraging, and practical. This is a Telegram chat so keep responses conversational.
-Always end with one specific tip for the next session.’’’
+Always end with one specific tip for the next session.'''
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(‘polar_coach’)
+logger = logging.getLogger('polar_coach')
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -31,29 +31,29 @@ chat_history = {}
 
 def polar_headers():
 return {
-‘Authorization’: ’Bearer ’ + POLAR_ACCESS_TOKEN,
-‘Accept’: ‘application/json’,
-‘Content-Type’: ‘application/json’,
+'Authorization': 'Bearer ' + POLAR_ACCESS_TOKEN,
+'Accept': 'application/json',
+'Content-Type': 'application/json',
 }
 
 def create_transaction():
-r = requests.post(POLAR_API_BASE + ‘/users/transaction’, headers=polar_headers())
+r = requests.post(POLAR_API_BASE + '/users/transaction', headers=polar_headers())
 if r.status_code == 201:
-return r.json().get(‘transaction-id’)
+return r.json().get('transaction-id')
 return None
 
 def get_exercises(transaction_id):
 r = requests.get(
-POLAR_API_BASE + ‘/users/transaction/’ + str(transaction_id) + ‘/exercises’,
+POLAR_API_BASE + '/users/transaction/' + str(transaction_id) + '/exercises',
 headers=polar_headers()
 )
 if r.status_code == 200:
-return r.json().get(‘exercises’, [])
+return r.json().get('exercises', [])
 return []
 
 def get_exercise_detail(transaction_id, exercise_id):
 r = requests.get(
-POLAR_API_BASE + ‘/users/transaction/’ + str(transaction_id) + ‘/exercises/’ + str(exercise_id),
+POLAR_API_BASE + '/users/transaction/' + str(transaction_id) + '/exercises/' + str(exercise_id),
 headers=polar_headers()
 )
 if r.status_code == 200:
@@ -62,18 +62,18 @@ return {}
 
 def commit_transaction(transaction_id):
 requests.put(
-POLAR_API_BASE + ‘/users/transaction/’ + str(transaction_id),
+POLAR_API_BASE + '/users/transaction/' + str(transaction_id),
 headers=polar_headers()
 )
 
 def format_exercise(exercise):
-sport = exercise.get(‘sport’, ‘Unknown’)
-date = exercise.get(‘start-time’, ‘’)[:10]
-duration_secs = exercise.get(‘duration’, 0)
+sport = exercise.get('sport', 'Unknown')
+date = exercise.get('start-time', '')[:10]
+duration_secs = exercise.get('duration', 0)
 duration_min = duration_secs // 60
-distance_m = exercise.get(‘distance’, 0)
+distance_m = exercise.get('distance', 0)
 distance_km = round(distance_m / 1000, 2) if distance_m else 0
-calories = exercise.get(‘calories’, 0)
+calories = exercise.get('calories', 0)
 
 ```
 pace_str = 'N/A'
@@ -115,7 +115,7 @@ return summary
 
 def get_ai_response(user_message, user_id):
 history = chat_history.get(user_id, [])
-history.append({‘role’: ‘user’, ‘content’: user_message})
+history.append({'role': 'user', 'content': user_message})
 
 ```
 response = claude.messages.create(
@@ -133,45 +133,45 @@ return reply
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 await update.message.reply_text(
-‘Hey! I am your AI running coach powered by Claude.\n\n’
-‘I will automatically analyse your Polar runs every 30 minutes.\n\n’
-‘Commands:\n’
-‘/sync - check for new runs now\n’
-‘/plan - this weeks training focus\n’
-‘/reset - clear chat history\n\n’
-‘Or just ask me anything about your training!’
+'Hey! I am your AI running coach powered by Claude.\n\n'
+'I will automatically analyse your Polar runs every 30 minutes.\n\n'
+'Commands:\n'
+'/sync - check for new runs now\n'
+'/plan - this weeks training focus\n'
+'/reset - clear chat history\n\n'
+'Or just ask me anything about your training!'
 )
 
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-await update.message.reply_text(‘Checking Polar for new runs…’)
+await update.message.reply_text('Checking Polar for new runs…')
 found = await pull_and_analyse(context.bot)
 if not found:
-await update.message.reply_text(‘No new runs found. Go get some miles in!’)
+await update.message.reply_text('No new runs found. Go get some miles in!')
 
 async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 response = get_ai_response(
-‘Based on my goals of London Marathon and ultras, what should my training focus be this week? Keep it to 3-4 key points.’,
+'Based on my goals of London Marathon and ultras, what should my training focus be this week? Keep it to 3-4 key points.',
 YOUR_TELEGRAM_ID
 )
-await update.message.reply_text(‘This Weeks Focus\n\n’ + response)
+await update.message.reply_text('This Weeks Focus\n\n' + response)
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 user_id = update.effective_user.id
 chat_history[user_id] = []
-await update.message.reply_text(‘Chat history cleared. Fresh start!’)
+await update.message.reply_text('Chat history cleared. Fresh start!')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 user_id = update.effective_user.id
 if user_id != YOUR_TELEGRAM_ID:
-await update.message.reply_text(‘Sorry, this is a private coaching bot!’)
+await update.message.reply_text('Sorry, this is a private coaching bot!')
 return
-await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=‘typing’)
+await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
 response = get_ai_response(update.message.text, user_id)
 await update.message.reply_text(response)
 
 async def pull_and_analyse(bot: Bot):
 if not POLAR_ACCESS_TOKEN:
-logger.warning(‘No Polar access token’)
+logger.warning('No Polar access token')
 return False
 
 ```
@@ -216,11 +216,11 @@ return found_runs
 ```
 
 async def scheduled_sync(bot: Bot):
-logger.info(‘Running scheduled Polar sync…’)
+logger.info('Running scheduled Polar sync…')
 try:
 await pull_and_analyse(bot)
 except Exception as e:
-logger.error(’Scheduled sync error: ’ + str(e))
+logger.error('Scheduled sync error: ' + str(e))
 
 def main():
 app = Application.builder().token(TELEGRAM_TOKEN).build()
