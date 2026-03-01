@@ -89,7 +89,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Checking Polar…")
-tid, runs = get_runs()
+    tid, runs = get_runs()
         if not runs:
         await update.message.reply_text("No new runs found.")
         return
@@ -102,8 +102,8 @@ tid, runs = get_runs()
         polar_put("/users/transaction/" + str(tid))
 
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-r = ask_claude("What should my training focus be this week for London Marathon and ultras? 3-4 key points.", CHAT_ID)
-await update.message.reply_text(r)
+    r = ask_claude("What should my training focus be this week for London Marathon and ultras? 3-4 key points.", CHAT_ID)
+    await update.message.reply_text(r)
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history[update.effective_user.id] = []
