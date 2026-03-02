@@ -16,6 +16,7 @@ CHAT_ID = int(os.environ.get("YOUR_TELEGRAM_ID", "0"))
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 COACHING_BACKGROUND = os.environ.get("COACHING_BACKGROUND", "")
+POLAR_USER_ID = os.environ.get("POLAR_USER_ID", "39895876")  # FIX: was missing entirely
 POLAR_BASE = "https://www.polaraccesslink.com/v3"
 
 logging.basicConfig(level=logging.INFO)
@@ -67,19 +68,29 @@ def polar_headers():
 
 
 def polar_get(path):
-    r = requests.get(POLAR_BASE + path, headers=polar_headers())
+    url = POLAR_BASE + path
+    log.info("Polar GET: " + url)
+    r = requests.get(url, headers=polar_headers())
+    log.info("Polar GET response: " + str(r.status_code))
     if r.ok:
         return r.json()
+    log.error("Polar GET error: " + r.text)
     return {}
 
 
 def polar_post(path):
-    r = requests.post(POLAR_BASE + path, headers=polar_headers())
+    url = POLAR_BASE + path
+    log.info("Polar POST: " + url)
+    r = requests.post(url, headers=polar_headers())
+    log.info("Polar POST response: " + str(r.status_code) + " " + r.text[:200])
     return r
 
 
 def polar_put(path):
-    requests.put(POLAR_BASE + path, headers=polar_headers())
+    url = POLAR_BASE + path
+    log.info("Polar PUT (commit): " + url)
+    r = requests.put(url, headers=polar_headers())
+    log.info("Polar PUT response: " + str(r.status_code))
 
 
 def get_physical_info():
@@ -99,7 +110,9 @@ def get_sleep(from_date, to_date):
         headers=polar_headers(),
         params={"from": from_date, "to": to_date}
     )
+    log.info("Sleep API status: " + str(r.status_code))
     if not r.ok:
+        log.error("Sleep API error: " + r.text)
         return []
     result = []
     for n in r.json().get("nights", []):
@@ -118,7 +131,9 @@ def get_recharge(from_date, to_date):
         headers=polar_headers(),
         params={"from": from_date, "to": to_date}
     )
+    log.info("Recharge API status: " + str(r.status_code))
     if not r.ok:
+        log.error("Recharge API error: " + r.text)
         return []
     result = []
     for n in r.json().get("recharges", []):
@@ -131,18 +146,49 @@ def get_recharge(from_date, to_date):
 
 
 def get_exercises():
-    r = polar_post("/users/transaction")
-    if r.status_code != 201:
+    """
+    Polar Accesslink exercise transaction flow:
+    1. POST to create transaction -> get transaction-id
+    2. GET transaction to list exercise URLs
+    3. GET each exercise URL for details
+    4. PUT to commit transaction (marks data as read)
+    """
+    # FIX: correct endpoint with user ID
+    r = polar_post("/users/" + POLAR_USER_ID + "/exercise-transactions")
+
+    if r.status_code == 204:
+        log.info("No new exercises available (204)")
         return None, []
+
+    if r.status_code != 201:
+        log.error("Exercise transaction failed: " + str(r.status_code) + " " + r.text)
+        return None, []
+
     tid = r.json().get("transaction-id")
-    data = polar_get("/users/transaction/" + str(tid) + "/exercises")
+    log.info("Transaction ID: " + str(tid))
+
+    # FIX: correct endpoint to list exercises in transaction
+    data = polar_get("/users/" + POLAR_USER_ID + "/exercise-transactions/" + str(tid))
+    exercise_urls = data.get("exercises", [])
+    log.info("Exercise URLs found: " + str(len(exercise_urls)))
+
     exercises = []
-    for ex in data.get("exercises", []):
-        eid = ex.get("id")
-        if eid:
-            detail = polar_get("/users/transaction/" + str(tid) + "/exercises/" + str(eid))
-            exercises.append(detail)
+    for url in exercise_urls:
+        # Exercise URLs are full URLs returned by Polar, fetch them directly
+        log.info("Fetching exercise: " + url)
+        ex_r = requests.get(url, headers=polar_headers())
+        if ex_r.ok:
+            exercises.append(ex_r.json())
+        else:
+            log.error("Exercise fetch error: " + str(ex_r.status_code) + " " + ex_r.text)
+
     return tid, exercises
+
+
+def commit_transaction(tid):
+    """Commit (mark as read) a Polar exercise transaction"""
+    if tid:
+        polar_put("/users/" + POLAR_USER_ID + "/exercise-transactions/" + str(tid))
 
 
 def summarise(ex):
@@ -175,10 +221,11 @@ def summarise(ex):
 def build_context():
     today = datetime.now().strftime("%Y-%m-%d")
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
     ctx = "=== ATHLETE PROFILE ===\n"
+    ctx += "Name: Luke Worgan\n"
     ctx += "Goals: London Marathon + Ultra marathons\n"
+    ctx += "Watch: Polar Grit X2\n"
     ctx += "Today: " + today + "\n"
 
     if COACHING_BACKGROUND:
@@ -187,18 +234,24 @@ def build_context():
     phys = get_physical_info()
     if phys:
         ctx += "\n=== PHYSICAL ===\n" + phys + "\n"
+    else:
+        ctx += "\n=== PHYSICAL ===\nNo physical data available yet\n"
 
     sleep = get_sleep(week_ago, today)
     if sleep:
         ctx += "\n=== SLEEP LAST 7 DAYS ===\n" + "\n".join(sleep) + "\n"
+    else:
+        ctx += "\n=== SLEEP ===\nSleep data pending Polar API access (requested)\n"
 
     recharge = get_recharge(week_ago, today)
     if recharge:
         ctx += "\n=== RECOVERY LAST 7 DAYS ===\n" + "\n".join(recharge) + "\n"
+    else:
+        ctx += "\n=== RECOVERY ===\nNightly recharge data pending Polar API access (requested)\n"
 
     memories = get_memories()
     if memories:
-        ctx += "\n=== ATHLETE NOTES ===\n"
+        ctx += "\n=== ATHLETE NOTES & HISTORY ===\n"
         for m in memories:
             ctx += m.get("category", "") + ": " + m.get("content", "") + "\n"
 
@@ -207,10 +260,11 @@ def build_context():
 
 def build_system(include_context=True):
     base = ("You are an expert personal running coach specialising in ultra marathons and road marathons. " +
-            "You have full access to this athletes Polar training data. " +
-            "Give highly personalised, specific coaching advice based on their actual data. " +
-            "Reference their real numbers when relevant. Be direct, practical and encouraging. " +
-            "When you learn important facts about the athlete, note them to remember.")
+            "Your athlete is Luke Worgan, training for the London Marathon and ultra marathons. " +
+            "You have access to his Polar Grit X2 training data. " +
+            "Give highly personalised, specific coaching advice based on his actual data. " +
+            "Reference real numbers when available. Be direct, practical and encouraging. " +
+            "If sleep/recovery data shows as pending, acknowledge it honestly and coach based on what you do have.")
     if include_context:
         return base + "\n\n" + build_context()
     return base
@@ -233,34 +287,84 @@ def ask_claude(user_msg, include_context=True):
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "V2 Running Coach active!\n\n" +
+        "V2 Running Coach active! 🏃\n\n" +
         "/load - pull full Polar history\n" +
         "/sync - check for new runs\n" +
         "/week - weekly training summary\n" +
-        "/recovery - todays recovery status\n" +
+        "/recovery - today's recovery status\n" +
         "/plan - personalised weekly plan\n" +
-        "/remember - save something to memory\n" +
+        "/remember [text] - save something to memory\n" +
+        "/debug - check Polar API connection\n" +
         "/reset - clear chat history\n\n" +
-        "Just chat with me - I know your full history!"
+        "Just chat - I know your full history!"
     )
 
 
+async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug command to check what Polar data is accessible"""
+    await update.message.reply_text("🔍 Checking Polar API connection...")
+
+    results = []
+
+    # Check physical info
+    phys = get_physical_info()
+    results.append("Physical info: " + ("✅ " + phys if phys else "❌ Empty"))
+
+    # Check sleep
+    today = datetime.now().strftime("%Y-%m-%d")
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    sleep = get_sleep(week_ago, today)
+    results.append("Sleep (7 days): " + ("✅ " + str(len(sleep)) + " nights" if sleep else "❌ Empty (pending Polar B2B access)"))
+
+    # Check recharge
+    recharge = get_recharge(week_ago, today)
+    results.append("Nightly recharge: " + ("✅ " + str(len(recharge)) + " nights" if recharge else "❌ Empty (pending Polar B2B access)"))
+
+    # Check exercise transaction
+    results.append("\nChecking exercise transaction...")
+    r = requests.post(
+        POLAR_BASE + "/users/" + POLAR_USER_ID + "/exercise-transactions",
+        headers=polar_headers()
+    )
+    if r.status_code == 201:
+        tid = r.json().get("transaction-id")
+        results.append("Exercise transaction: ✅ Created (ID: " + str(tid) + ")")
+        # Commit it immediately since this is just a debug check
+        polar_put("/users/" + POLAR_USER_ID + "/exercise-transactions/" + str(tid))
+        results.append("(Transaction committed - no exercises consumed)")
+    elif r.status_code == 204:
+        results.append("Exercise transaction: ✅ Connected (no new exercises)")
+    else:
+        results.append("Exercise transaction: ❌ Error " + str(r.status_code) + ": " + r.text[:100])
+
+    await update.message.reply_text("Polar Data Check:\n\n" + "\n".join(results))
+
+
 async def cmd_load(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Loading your full Polar history... give me a minute.")
+    await update.message.reply_text("Loading your Polar exercise history...")
     tid, exercises = get_exercises()
     if not exercises:
-        await update.message.reply_text("No exercises found. Check Polar connection.")
+        if tid is None:
+            await update.message.reply_text(
+                "No new exercises found in Polar.\n\n" +
+                "This means either:\n" +
+                "• All existing exercises were already synced\n" +
+                "• No exercises exist in your Polar account yet\n\n" +
+                "Try /debug to check the connection."
+            )
+        else:
+            await update.message.reply_text("No exercises in this transaction.")
         return
+
     runs = [e for e in exercises if "running" in e.get("sport", "").lower() or "trail" in e.get("sport", "").lower()]
     total_dist = sum(e.get("distance", 0) for e in runs) / 1000
     summaries = [summarise(e) for e in runs]
     combined = "\n".join(summaries)
     save_memory("training_history", "Full run history loaded: " + str(len(runs)) + " runs, " + str(round(total_dist, 1)) + "km total\n" + combined[:3000])
-    if tid:
-        polar_put("/users/transaction/" + str(tid))
+    commit_transaction(tid)
     await update.message.reply_text(
-        "Loaded " + str(len(runs)) + " runs, " + str(round(total_dist, 1)) + "km total.\n\n" +
-        "I now know your full training history permanently. Ask me anything!"
+        "✅ Loaded " + str(len(runs)) + " runs, " + str(round(total_dist, 1)) + "km total.\n\n" +
+        "I now know your full training history. Ask me anything!"
     )
 
 
@@ -268,22 +372,20 @@ async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Checking Polar for new runs...")
     tid, exercises = get_exercises()
     if not exercises:
-        await update.message.reply_text("No new runs found.")
+        await update.message.reply_text("No new runs to sync.")
         return
     runs = [e for e in exercises if "running" in e.get("sport", "").lower() or "trail" in e.get("sport", "").lower()]
     if not runs:
-        await update.message.reply_text("No new runs found.")
-        if tid:
-            polar_put("/users/transaction/" + str(tid))
+        await update.message.reply_text("No new runs found (other activities may have been committed).")
+        commit_transaction(tid)
         return
     for run in runs:
         s = summarise(run)
         save_memory("recent_run", s)
-        await update.message.reply_text("New run synced:\n\n" + s)
+        await update.message.reply_text("✅ New run synced:\n\n" + s)
         coaching = ask_claude("I just completed this run. Analyse it and give me specific coaching feedback:\n\n" + s)
-        await update.message.reply_text("Coach:\n\n" + coaching)
-    if tid:
-        polar_put("/users/transaction/" + str(tid))
+        await update.message.reply_text("🏃 Coach:\n\n" + coaching)
+    commit_transaction(tid)
 
 
 async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -304,7 +406,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = " ".join(context.args) if context.args else ""
     if not text:
-        await update.message.reply_text("Tell me what to remember. Example: /remember left knee niggle when running over 25km")
+        await update.message.reply_text("Tell me what to remember.\nExample: /remember left knee niggle when running over 25km")
         return
     save_memory("athlete_note", text)
     await update.message.reply_text("Got it, remembered: " + text)
@@ -330,12 +432,12 @@ async def morning_briefing(bot):
     try:
         briefing = ask_claude(
             "Give me my morning coaching briefing. In 3-4 short paragraphs cover: " +
-            "1) My recovery status based on last nights sleep and HRV " +
+            "1) My recovery status based on last night's sleep and HRV (if data available, note if pending) " +
             "2) Whether to train hard, easy or rest today and why " +
             "3) If training, the specific session I should do with target pace and HR zone " +
             "4) One motivational note about my London Marathon or ultra progress"
         )
-        await bot.send_message(chat_id=CHAT_ID, text="Good morning! Your daily briefing:\n\n" + briefing)
+        await bot.send_message(chat_id=CHAT_ID, text="Good morning Luke! 🌅\n\n" + briefing)
     except Exception as e:
         log.error("Morning briefing error: " + str(e))
 
@@ -350,13 +452,14 @@ def main():
     app.add_handler(CommandHandler("plan", cmd_plan))
     app.add_handler(CommandHandler("remember", cmd_remember))
     app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("debug", cmd_debug))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(morning_briefing, "cron", hour=7, minute=0, args=[app.bot])
     scheduler.start()
 
-    log.info("V2 Bot started")
+    log.info("V2 Bot started - Polar User ID: " + POLAR_USER_ID)
     app.run_polling()
 
 
