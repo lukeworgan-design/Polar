@@ -68,14 +68,17 @@ def save_exercise(ex_id, ex_data, splits=None):
     try:
         hr = ex_data.get("heart-rate", {})
         dist = ex_data.get("distance", 0)
-        secs = ex_data.get("duration", 0)
+        secs = parse_duration_to_secs(ex_data.get("duration", 0))
+
+        raw_dur = ex_data.get("duration")
+        secs_dur = parse_duration_to_secs(raw_dur)
 
         row = {
             "id": str(ex_id),
             "start_time": ex_data.get("start-time"),
             "sport": ex_data.get("sport", "Unknown"),
             "distance": dist,
-            "duration": str(timedelta(seconds=secs)) if secs else None,
+            "duration": str(timedelta(seconds=secs_dur)) if secs_dur else None,
             "calories": ex_data.get("calories"),
             "heart_rate_avg": hr.get("average"),
             "heart_rate_max": hr.get("maximum"),
@@ -454,10 +457,27 @@ def backfill_exercises(days=90):
     return results
 
 
+def parse_duration_to_secs(dur):
+    """Convert Polar duration (ISO 8601 PT1H30M0S or seconds int) to seconds"""
+    if not dur:
+        return 0
+    if isinstance(dur, (int, float)):
+        return int(dur)
+    # ISO 8601: PT1H30M45S
+    import re
+    m = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", str(dur))
+    if m:
+        h = int(m.group(1) or 0)
+        mins = int(m.group(2) or 0)
+        s = int(m.group(3) or 0)
+        return h * 3600 + mins * 60 + s
+    return 0
+
+
 def summarise(ex):
     sport = ex.get("sport", "Unknown")
     date = ex.get("start-time", "")[:10]
-    secs = ex.get("duration", 0)
+    secs = parse_duration_to_secs(ex.get("duration", 0))
     mins = secs // 60
     dist = round(ex.get("distance", 0) / 1000, 2)
     cal = ex.get("calories", 0)
