@@ -382,6 +382,55 @@ def commit_transaction(tid):
         polar_put("/users/" + POLAR_USER_ID + "/exercise-transactions/" + str(tid))
 
 
+def backfill_exercises(days=90):
+    """
+    Fetch historical exercises using Polar's exercise-log endpoint.
+    This bypasses the transaction system so already-committed exercises
+    can still be fetched and saved to Supabase.
+    Returns list of (exercise_id, exercise_data, splits) tuples.
+    """
+    from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    to_date = datetime.now().strftime("%Y-%m-%d")
+
+    log.info("Backfilling exercises from " + from_date + " to " + to_date)
+
+    # Fetch exercise log (list of exercise IDs and URLs)
+    r = requests.get(
+        POLAR_BASE + "/users/" + POLAR_USER_ID + "/exercise-log",
+        headers=polar_headers(),
+        params={"from": from_date, "to": to_date}
+    )
+    log.info("Exercise log status: " + str(r.status_code))
+
+    if not r.ok:
+        log.error("Exercise log error: " + r.text)
+        return []
+
+    data = r.json()
+    exercise_list = data.get("exercises", [])
+    log.info("Found " + str(len(exercise_list)) + " exercises in log")
+
+    results = []
+    for item in exercise_list:
+        # Each item has an id and a URL to fetch full details
+        ex_id = str(item.get("id", ""))
+        ex_url = item.get("url", "")
+
+        if not ex_url:
+            continue
+
+        ex_r = requests.get(ex_url, headers=polar_headers())
+        if not ex_r.ok:
+            log.error("Failed to fetch exercise " + ex_id + ": " + str(ex_r.status_code))
+            continue
+
+        ex_data = ex_r.json()
+        splits = fetch_splits(ex_url)
+        results.append((ex_id, ex_data, splits))
+
+    return results
+
+
 def summarise(ex):
     sport = ex.get("sport", "Unknown")
     date = ex.get("start-time", "")[:10]
@@ -497,6 +546,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "V2 Running Coach active! 🏃\n\n" +
         "/load - pull full Polar history\n" +
         "/sync - check for new runs\n" +
+        "/backfill - recover all past exercises (use if DB is empty)\n" +
         "/week - weekly training summary\n" +
         "/recovery - today's recovery status\n" +
         "/plan - personalised weekly plan\n" +
@@ -506,6 +556,49 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/showtraining - see what training data bot has\n" +
         "/reset - clear chat history\n\n" +
         "Just chat - I know your full history!"
+    )
+
+
+async def cmd_backfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pull full exercise history from Polar regardless of transaction state"""
+    days = 90
+    if context.args:
+        try:
+            days = int(context.args[0])
+        except ValueError:
+            pass
+
+    await update.message.reply_text(
+        "🔄 Backfilling last " + str(days) + " days from Polar history...\n"
+        "This may take a minute."
+    )
+
+    results = backfill_exercises(days=days)
+
+    if not results:
+        await update.message.reply_text(
+            "❌ No exercises found.\n\n"
+            "Possible reasons:\n"
+            "• Polar exercise-log endpoint not enabled for your API access\n"
+            "• No exercises in the date range\n\n"
+            "Check Railway logs for details."
+        )
+        return
+
+    saved = 0
+    runs = 0
+    for ex_id, ex_data, splits in results:
+        save_exercise(ex_id, ex_data, splits)
+        saved += 1
+        sport = ex_data.get("sport", "").lower()
+        if "running" in sport or "trail" in sport:
+            runs += 1
+
+    await update.message.reply_text(
+        "✅ Backfill complete!\n\n"
+        str(saved) + " total activities saved\n"
+        str(runs) + " runs\n\n"
+        "Run /showtraining to see what's now in the database."
     )
 
 
@@ -709,6 +802,7 @@ async def morning_briefing(bot):
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("backfill", cmd_backfill))
     app.add_handler(CommandHandler("load", cmd_load))
     app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("week", cmd_week))
