@@ -126,11 +126,16 @@ def get_sleep(from_date, to_date):
     result = []
     for n in r.json().get("nights", []):
         date = n.get("date", "")
-        hrs = n.get("sleep-time-seconds", 0) // 3600
-        score = n.get("sleep-score", "N/A")
-        rem = round(n.get("rem-sleep-seconds", 0) / 3600, 1)
-        deep = round(n.get("deep-sleep-seconds", 0) / 3600, 1)
-        result.append(date + " " + str(hrs) + "h score=" + str(score) + " REM=" + str(rem) + "h deep=" + str(deep) + "h")
+        total_secs = n.get("light_sleep", 0) + n.get("deep_sleep", 0) + n.get("rem_sleep", 0)
+        hrs = round(total_secs / 3600, 1)
+        score = n.get("sleep_score", "N/A")
+        rem = round(n.get("rem_sleep", 0) / 3600, 1)
+        deep = round(n.get("deep_sleep", 0) / 3600, 1)
+        light = round(n.get("light_sleep", 0) / 3600, 1)
+        interruptions = n.get("total_interruption_duration", 0) // 60
+        result.append(date + " " + str(hrs) + "h score=" + str(score) +
+                      " REM=" + str(rem) + "h deep=" + str(deep) + "h light=" + str(light) + "h" +
+                      " interruptions=" + str(interruptions) + "min")
     return result
 
 
@@ -147,10 +152,15 @@ def get_recharge(from_date, to_date):
     result = []
     for n in r.json().get("recharges", []):
         date = n.get("date", "")
-        status = n.get("nightly-recharge-status", "N/A")
-        hrv = n.get("heart-rate-variability-ms", "N/A")
-        ans = n.get("ans-charge", "N/A")
-        result.append(date + " recharge=" + str(status) + " HRV=" + str(hrv) + "ms ANS=" + str(ans))
+        status = n.get("nightly_recharge_status", "N/A")
+        hrv = n.get("heart_rate_variability_avg", "N/A")
+        ans = n.get("ans_charge", "N/A")
+        ans_status = n.get("ans_charge_status", "N/A")
+        hr_avg = n.get("heart_rate_avg", "N/A")
+        breathing = n.get("breathing_rate_avg", "N/A")
+        result.append(date + " recharge=" + str(status) + " HRV=" + str(hrv) + "ms" +
+                      " ANS=" + str(ans) + " ANSstatus=" + str(ans_status) +
+                      " HRavg=" + str(hr_avg) + " breathing=" + str(breathing) + "rpm")
     return result
 
 
