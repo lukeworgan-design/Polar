@@ -94,9 +94,18 @@ def polar_put(path):
 
 
 def get_physical_info():
+    # Try the standard physical information endpoint
     data = polar_get("/users/physical-information")
+
+    # If empty, try fetching from the user info endpoint instead
     if not data:
-        return ""
+        data = polar_get("/users/" + POLAR_USER_ID)
+
+    if not data:
+        # Fall back to known values from Polar Flow profile
+        # Update these manually if they change
+        return "weight=N/A height=N/A maxHR=N/A restHR=N/A VO2max=N/A (physical info not accessible via API - set via /setphysical)"
+
     return ("weight=" + str(data.get("weight", "N/A")) + "kg" +
             " height=" + str(data.get("height", "N/A")) + "cm" +
             " maxHR=" + str(data.get("maximum-heart-rate", "N/A")) +
@@ -293,10 +302,44 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/week - weekly training summary\n" +
         "/recovery - today's recovery status\n" +
         "/plan - personalised weekly plan\n" +
+        "/setphysical - set weight, HR, VO2max\n" +
         "/remember [text] - save something to memory\n" +
         "/debug - check Polar API connection\n" +
         "/reset - clear chat history\n\n" +
         "Just chat - I know your full history!"
+    )
+
+
+async def cmd_showsleep(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dump raw sleep and recharge data directly - bypasses Claude entirely"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    await update.message.reply_text("Fetching raw sleep data " + week_ago + " to " + today + "...")
+
+    # Raw sleep
+    r = requests.get(
+        POLAR_BASE + "/users/sleep",
+        headers=polar_headers(),
+        params={"from": week_ago, "to": today}
+    )
+    await update.message.reply_text("Sleep API status: " + str(r.status_code) + "\nRaw response:\n" + r.text[:2000])
+
+    # Raw recharge
+    r2 = requests.get(
+        POLAR_BASE + "/users/nightly-recharge",
+        headers=polar_headers(),
+        params={"from": week_ago, "to": today}
+    )
+    await update.message.reply_text("Recharge API status: " + str(r2.status_code) + "\nRaw response:\n" + r2.text[:2000])
+
+    # Show what actually goes into Claude's system prompt
+    sleep = get_sleep(week_ago, today)
+    recharge = get_recharge(week_ago, today)
+    await update.message.reply_text(
+        "What Claude sees in system prompt:\n\n" +
+        "SLEEP: " + (("\n".join(sleep)) if sleep else "EMPTY - nothing passed to Claude") + "\n\n" +
+        "RECHARGE: " + (("\n".join(recharge)) if recharge else "EMPTY - nothing passed to Claude")
     )
 
 
@@ -403,6 +446,21 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(r)
 
 
+async def cmd_setphysical(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually set physical stats since Polar API physical-information endpoint requires special setup"""
+    text = " ".join(context.args) if context.args else ""
+    if not text:
+        await update.message.reply_text(
+            "Set your physical stats so I can coach you properly.\n\n"
+            "Usage: /setphysical weight=XX height=XXX maxHR=XXX restHR=XX VO2max=XX\n\n"
+            "Example: /setphysical weight=75 height=180 maxHR=185 restHR=48 VO2max=52\n\n"
+            "Find these in Polar Flow > Profile"
+        )
+        return
+    save_memory("physical_stats", text)
+    await update.message.reply_text("✅ Physical stats saved: " + text + "\n\nI'll use these for all coaching from now on.")
+
+
 async def cmd_remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = " ".join(context.args) if context.args else ""
     if not text:
@@ -450,8 +508,10 @@ def main():
     app.add_handler(CommandHandler("week", cmd_week))
     app.add_handler(CommandHandler("recovery", cmd_recovery))
     app.add_handler(CommandHandler("plan", cmd_plan))
+    app.add_handler(CommandHandler("setphysical", cmd_setphysical))
     app.add_handler(CommandHandler("remember", cmd_remember))
     app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("showsleep", cmd_showsleep))
     app.add_handler(CommandHandler("debug", cmd_debug))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
 
