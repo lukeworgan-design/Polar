@@ -407,25 +407,49 @@ def backfill_exercises(days=90):
         return []
 
     data = r.json()
-    exercise_list = data.get("exercises", [])
+    log.info("Raw exercise list response: " + str(data)[:500])
+
+    # /v3/exercises returns list directly or wrapped - handle both
+    if isinstance(data, list):
+        exercise_list = data
+    else:
+        exercise_list = data.get("exercises", [])
+
     log.info("Found " + str(len(exercise_list)) + " exercises")
 
     results = []
     for item in exercise_list:
-        ex_id = str(item.get("id", ""))
-        ex_url = item.get("url", "")
+        # Item may be a full exercise object or just a reference with url
+        if isinstance(item, dict):
+            ex_id = str(item.get("id", "") or item.get("polar-exercise-id", ""))
+            ex_url = item.get("url", "")
+        else:
+            ex_id = str(item)
+            ex_url = ""
 
-        if not ex_url:
-            continue
+        log.info("Exercise item: id=" + ex_id + " url=" + ex_url)
 
-        ex_r = requests.get(ex_url, headers=polar_headers())
-        if not ex_r.ok:
-            log.error("Failed to fetch exercise " + ex_id + ": " + str(ex_r.status_code))
-            continue
+        if ex_url:
+            # Fetch full details from URL
+            ex_r = requests.get(ex_url, headers=polar_headers())
+            if not ex_r.ok:
+                log.error("Failed to fetch exercise " + ex_id + ": " + str(ex_r.status_code))
+                continue
+            ex_data = ex_r.json()
+        elif ex_id:
+            # Try fetching by ID directly
+            ex_r = requests.get(POLAR_BASE + "/exercises/" + ex_id, headers=polar_headers())
+            if not ex_r.ok:
+                log.error("Failed to fetch exercise by id " + ex_id + ": " + str(ex_r.status_code))
+                # Use item itself as the data
+                ex_data = item
+            else:
+                ex_data = ex_r.json()
+        else:
+            ex_data = item
 
-        ex_data = ex_r.json()
-        splits = fetch_splits(ex_url)
-        results.append((ex_id, ex_data, splits))
+        splits = fetch_splits(ex_url) if ex_url else []
+        results.append((ex_id or "unknown", ex_data, splits))
 
     return results
 
