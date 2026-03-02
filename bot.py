@@ -395,24 +395,23 @@ def backfill_exercises(days=90):
     log.info("Backfilling exercises from " + from_date + " to " + to_date)
 
     # Fetch exercise log (list of exercise IDs and URLs)
+    # GET /v3/exercises - non-transactional, returns last 30 days
     r = requests.get(
-        POLAR_BASE + "/users/" + POLAR_USER_ID + "/exercise-log",
-        headers=polar_headers(),
-        params={"from": from_date, "to": to_date}
+        POLAR_BASE + "/exercises",
+        headers=polar_headers()
     )
-    log.info("Exercise log status: " + str(r.status_code))
+    log.info("Exercise list status: " + str(r.status_code))
 
     if not r.ok:
-        log.error("Exercise log error: " + r.text)
+        log.error("Exercise list error: " + r.text)
         return []
 
     data = r.json()
     exercise_list = data.get("exercises", [])
-    log.info("Found " + str(len(exercise_list)) + " exercises in log")
+    log.info("Found " + str(len(exercise_list)) + " exercises")
 
     results = []
     for item in exercise_list:
-        # Each item has an id and a URL to fetch full details
         ex_id = str(item.get("id", ""))
         ex_url = item.get("url", "")
 
