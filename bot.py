@@ -595,10 +595,10 @@ async def cmd_backfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
             runs += 1
 
     await update.message.reply_text(
-        "✅ Backfill complete!\n\n"
-        str(saved) + " total activities saved\n"
-        str(runs) + " runs\n\n"
-        "Run /showtraining to see what's now in the database."
+        "Backfill complete!\n\n" +
+        str(saved) + " total activities saved\n" +
+        str(runs) + " runs\n\n" +
+        "Run /showtraining to see what is now in the database."
     )
 
 
