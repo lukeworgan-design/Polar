@@ -18,10 +18,7 @@ import anthropic
 import telebot
 
 # ── Logging ────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
 # ── Environment variables ──────────────────────────────────────────────────
@@ -82,6 +79,23 @@ def parse_zones(zone_list: list) -> list:
         "upper":   z.get("higherLimit"),
         "seconds": parse_pt_seconds(z.get("inZone", "PT0S")),
     } for z in zone_list]
+
+def get_latest_run_with_splits():
+    """Find the most recent run that actually has km splits saved."""
+    try:
+        runs = supabase.table("polar_exercises")\
+            .select("polar_exercise_id,date,distance_meters,sport")\
+            .order("date", desc=True).limit(30).execute()
+        for run in runs.data:
+            check = supabase.table("polar_km_splits")\
+                .select("id")\
+                .eq("exercise_id", run["polar_exercise_id"])\
+                .limit(1).execute()
+            if check.data:
+                return run
+    except Exception as e:
+        log.error(f"get_latest_run_with_splits error: {e}")
+    return None
 
 # ── Save exercise to Supabase ──────────────────────────────────────────────
 def save_exercise_to_supabase(session_json: dict, exercise_id: str) -> int:
@@ -230,39 +244,39 @@ def build_training_context() -> str:
         if runs.data:
             parts.append("=== RECENT RUNS (last 10) ===")
             for r in runs.data:
-                dist_km  = (r.get("distance_meters") or 0) / 1000
-                dur_s    = r.get("duration_seconds") or 0
-                pace_s   = dur_s / dist_km if dist_km else 0
+                dist_km = (r.get("distance_meters") or 0) / 1000
+                dur_s   = r.get("duration_seconds") or 0
+                pace_s  = dur_s / dist_km if dist_km else 0
                 parts.append(
                     f"  {r['date'][:10]} | {r.get('sport','?')} | {dist_km:.1f}km | "
                     f"{int(dur_s//60)}min | Pace: {seconds_to_pace(pace_s)} | "
                     f"HR: {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')} | "
                     f"Power: {r.get('avg_power','?')}W | Cadence: {r.get('avg_cadence','?')} | "
-                    f"Load: {r.get('training_load','?')} | ↑{r.get('ascent','?')}m"
+                    f"Load: {r.get('training_load','?')} | Ascent: {r.get('ascent','?')}m"
                 )
 
-            # Splits for most recent run
-            latest_id   = runs.data[0]["polar_exercise_id"]
-            latest_date = runs.data[0]["date"][:10]
-            latest_dist = (runs.data[0].get("distance_meters") or 0) / 1000
+            # Splits for most recent run that HAS splits
+            latest = get_latest_run_with_splits()
+            if latest:
+                splits = supabase.table("polar_km_splits")\
+                    .select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m")\
+                    .eq("exercise_id", latest["polar_exercise_id"])\
+                    .order("lap_number").execute()
 
-            splits = supabase.table("polar_km_splits")\
-                .select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m")\
-                .eq("exercise_id", latest_id).order("lap_number").execute()
-
-            if splits.data:
-                parts.append(f"\n=== KM SPLITS: {latest_date} ({latest_dist:.1f}km) ===")
-                for s in splits.data:
-                    parts.append(
-                        f"  KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | "
-                        f"HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | "
-                        f"Power {s.get('power_avg','?')}W | Cadence {s.get('cadence_avg','?')} | "
-                        f"↑{s.get('ascent_m',0):.0f}m ↓{s.get('descent_m',0):.0f}m"
-                    )
+                if splits.data:
+                    dist_km = (latest.get("distance_meters") or 0) / 1000
+                    parts.append(f"\n=== KM SPLITS: {latest['date'][:10]} ({dist_km:.1f}km {latest.get('sport','')}) ===")
+                    for s in splits.data:
+                        parts.append(
+                            f"  KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | "
+                            f"HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | "
+                            f"Power {s.get('power_avg','?')}W | Cadence {s.get('cadence_avg','?')} | "
+                            f"↑{s.get('ascent_m',0):.0f}m ↓{s.get('descent_m',0):.0f}m"
+                        )
 
         # Weekly load
-        now            = datetime.now(timezone.utc)
-        week_start     = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+        now             = datetime.now(timezone.utc)
+        week_start      = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
         last_week_start = (now - timedelta(days=now.weekday()+7)).strftime("%Y-%m-%d")
 
         this_week = supabase.table("polar_exercises").select("training_load,distance_meters")\
@@ -378,7 +392,10 @@ def format_run_notification(session_json: dict, exercise_id: str, splits_count: 
             if split_data.data:
                 lines.append("\n*First splits:*")
                 for s in split_data.data:
-                    lines.append(f"  KM {s['km_number']} | {s.get('pace_display','?')} | HR {s.get('hr_avg','?')} | {s.get('power_avg','?')}W")
+                    lines.append(
+                        f"  KM {s['km_number']} | {s.get('pace_display','?')} | "
+                        f"HR {s.get('hr_avg','?')} | {s.get('power_avg','?')}W"
+                    )
 
         return "\n".join(lines)
     except Exception as e:
@@ -399,7 +416,11 @@ def send_morning_briefing():
                 "Be concise — this is a morning message."
             )}]
         )
-        bot.send_message(YOUR_TELEGRAM_ID, f"☀️ *Morning Briefing*\n\n{response.content[0].text}", parse_mode="Markdown")
+        bot.send_message(
+            YOUR_TELEGRAM_ID,
+            f"☀️ *Morning Briefing*\n\n{response.content[0].text}",
+            parse_mode="Markdown"
+        )
         log.info("Morning briefing sent")
     except Exception as e:
         log.error(f"Briefing error: {e}")
@@ -455,7 +476,11 @@ def handle_message(message):
         new = sync_new_polar_exercises()
         if new:
             for ex in new:
-                bot.send_message(chat_id, format_run_notification(ex["data"], ex["id"], ex["splits"]), parse_mode="Markdown")
+                bot.send_message(
+                    chat_id,
+                    format_run_notification(ex["data"], ex["id"], ex["splits"]),
+                    parse_mode="Markdown"
+                )
         else:
             bot.send_message(chat_id, "No new exercises found.")
         return
@@ -467,26 +492,24 @@ def handle_message(message):
 
     if user_text.lower() == "/splits":
         try:
-            latest = supabase.table("polar_exercises")\
-                .select("polar_exercise_id,date,distance_meters,sport")\
-                .order("date", desc=True).limit(1).execute()
-            if not latest.data:
-                bot.reply_to(message, "No runs found.")
+            ex = get_latest_run_with_splits()
+            if not ex:
+                bot.reply_to(message, "No runs with splits found.")
                 return
-            ex     = latest.data[0]
+
             splits = supabase.table("polar_km_splits")\
                 .select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m")\
-                .eq("exercise_id", ex["polar_exercise_id"]).order("lap_number").execute()
-            if not splits.data:
-                bot.reply_to(message, "No splits for last run.")
-                return
+                .eq("exercise_id", ex["polar_exercise_id"])\
+                .order("lap_number").execute()
+
             dist_km = (ex.get("distance_meters") or 0) / 1000
             lines   = [f"📊 *{ex['date'][:10]} — {dist_km:.1f}km {ex.get('sport','')}*\n"]
             for s in splits.data:
                 lines.append(
                     f"KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | "
                     f"HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | "
-                    f"{s.get('power_avg','?')}W | ↑{s.get('ascent_m',0):.0f}m"
+                    f"{s.get('power_avg','?')}W | "
+                    f"↑{s.get('ascent_m',0):.0f}m"
                 )
             bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
