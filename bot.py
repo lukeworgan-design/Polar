@@ -62,7 +62,7 @@ def parse_pt_seconds(pt: str) -> float:
 def seconds_to_pace(seconds: float) -> str:
     if not seconds or seconds <= 0:
         return "N/A"
-    return f"{int(seconds // 60)}:{int(seconds % 60):02d} /km"
+    return f"{int(seconds // 60)}:{int(seconds % 60):02d}/km"
 
 def sf(v):
     try: return float(v) if v not in (None, "", "N/A") else None
@@ -80,6 +80,63 @@ def parse_zones(zone_list: list) -> list:
         "seconds": parse_pt_seconds(z.get("inZone", "PT0S")),
     } for z in zone_list]
 
+def recharge_emoji(status: str) -> str:
+    if not status:
+        return "⚪"
+    s = status.upper()
+    if "GOOD" in s or "HIGH" in s:    return "🟢"
+    if "MODERATE" in s or "OK" in s:  return "🟡"
+    if "LOW" in s or "POOR" in s:     return "🔴"
+    return "⚪"
+
+def sport_emoji(sport: str) -> str:
+    if "TRAIL" in sport: return "🏔️"
+    if "TREADMILL" in sport: return "⚙️"
+    return "🏃"
+
+def fmt_date(date_str: str) -> str:
+    """2026-02-27T10:40:06 → Feb 27"""
+    try:
+        return datetime.fromisoformat(date_str[:10]).strftime("%-d %b")
+    except:
+        return date_str[:10]
+
+def detect_history_request(text: str) -> int | None:
+    """
+    Detect if the user is asking for more history than the default 10.
+    Returns number of runs/days requested, or None if not a history request.
+    e.g. 'show last 30 runs' → 30, 'last month' → 30, 'last 3 months' → 90
+    """
+    text = text.lower()
+    # Explicit number: "last 20 runs", "show me 50 runs"
+    m = re.search(r"last\s+(\d+)\s+runs?", text)
+    if m:
+        return min(int(m.group(1)), 200)
+    # Month references
+    m = re.search(r"last\s+(\d+)\s+months?", text)
+    if m:
+        return min(int(m.group(1)) * 30, 365)
+    if "last month" in text:
+        return 30
+    if "last 3 months" in text or "last three months" in text:
+        return 90
+    if "last 6 months" in text or "last six months" in text:
+        return 180
+    if "all" in text and ("run" in text or "history" in text):
+        return 200
+    return None
+
+def detect_recovery_window(text: str) -> int:
+    """Returns number of days of sleep/recovery to fetch. Default 7."""
+    text = text.lower()
+    m = re.search(r"last\s+(\d+)\s+(?:days?|nights?)", text)
+    if m:
+        return min(int(m.group(1)), 90)
+    if "last month" in text:  return 30
+    if "last week" in text:   return 7
+    if "last 2 weeks" in text or "last two weeks" in text: return 14
+    return 7
+
 def get_latest_run_with_splits():
     """Find the most recent run that actually has km splits saved."""
     try:
@@ -96,6 +153,128 @@ def get_latest_run_with_splits():
     except Exception as e:
         log.error(f"get_latest_run_with_splits error: {e}")
     return None
+
+# ── Formatting ─────────────────────────────────────────────────────────────
+def format_run_list(runs: list) -> str:
+    """Format a list of runs into clean Telegram output."""
+    if not runs:
+        return "No runs found."
+    lines = [f"🏃 *Last {len(runs)} Runs*\n"]
+    for r in runs:
+        dist_km = (r.get("distance_meters") or 0) / 1000
+        dur_s   = r.get("duration_seconds") or 0
+        pace_s  = dur_s / dist_km if dist_km else 0
+        emoji   = sport_emoji(r.get("sport", ""))
+        load    = r.get("training_load")
+        load_str = f"  🔥 Load {load:.0f}" if load else ""
+
+        lines.append(
+            f"{emoji} *{fmt_date(r['date'])}*  •  {dist_km:.1f}km  •  {int(dur_s//60)}min\n"
+            f"   💨 {seconds_to_pace(pace_s)}  ❤️ {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')}  "
+            f"⚡ {r.get('avg_power','?')}W  👟 {r.get('avg_cadence','?')}spm{load_str}"
+        )
+    return "\n".join(lines)
+
+def format_splits_table(splits: list, header: str) -> str:
+    """Format km splits as a clean aligned table."""
+    if not splits:
+        return "No splits found."
+
+    lines = [f"📊 *{header}*\n"]
+    lines.append("`KM  │ Pace     │ HR      │  Power │ ↑`")
+    lines.append("`────┼──────────┼─────────┼────────┼────`")
+
+    for s in splits:
+        km     = str(s.get("km_number", "?")).rjust(2)
+        pace   = (s.get("pace_display") or "N/A").ljust(8)
+        hr_avg = str(s.get("hr_avg") or "?")
+        hr_max = str(s.get("hr_max") or "?")
+        hr     = f"{hr_avg}/{hr_max}".ljust(7)
+        power  = str(s.get("power_avg") or "?").rjust(4) + "W"
+        asc    = f"{s.get('ascent_m', 0):.0f}m"
+        lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {asc}`")
+
+    return "\n".join(lines)
+
+def format_recovery_dashboard(sleep_data: list, hrv_data: list) -> str:
+    """Format sleep and HRV as a visual recovery dashboard."""
+    lines = ["💤 *Recovery Dashboard*\n"]
+
+    if hrv_data:
+        h = hrv_data[0]
+        emoji = recharge_emoji(h.get("recharge_status", ""))
+        lines.append(
+            f"{emoji} *Nightly Recharge — {h['date']}*\n"
+            f"   ANS: {h.get('ans_charge','?')}  •  Sleep charge: {h.get('sleep_charge','?')}\n"
+            f"   HRV avg: {h.get('hrv_avg','?')}  •  RMSSD: {h.get('hrv_rmssd','?')}\n"
+        )
+
+    if sleep_data:
+        lines.append("😴 *Sleep History*\n")
+        for s in sleep_data:
+            total_s  = s.get("total_sleep_seconds") or 0
+            score    = s.get("sleep_score") or 0
+            hrv      = s.get("avg_hrv") or "?"
+            hrs      = total_s // 3600
+            mins     = (total_s % 3600) // 60
+            rem_m    = (s.get("rem_seconds") or 0) // 60
+            deep_m   = (s.get("deep_sleep_seconds") or 0) // 60
+            # Score bar
+            bar_fill = int(score / 10) if score else 0
+            bar      = "█" * bar_fill + "░" * (10 - bar_fill)
+            lines.append(
+                f"*{s['date']}*  {hrs}h{mins:02d}m  Score: {score:.0f}\n"
+                f"   `{bar}`\n"
+                f"   REM {rem_m}min  •  Deep {deep_m}min  •  HRV {hrv}"
+            )
+
+    return "\n".join(lines)
+
+def format_new_run_notification(session_json: dict, exercise_id: str, splits_count: int) -> str:
+    try:
+        ex      = session_json.get("exercises", [{}])[0]
+        sport   = ex.get("sport", "RUN")
+        if isinstance(sport, dict):
+            sport = sport.get("name", "RUN")
+        dist_km = (ex.get("distance") or 0) / 1000
+        dur_s   = parse_pt_seconds(ex.get("duration", ""))
+        hr      = ex.get("heartRate", {})
+        power   = ex.get("power", {})
+        cadence = ex.get("cadence", {})
+        load    = ex.get("loadInformation", {})
+        pace_s  = dur_s / dist_km if dist_km else 0
+        emoji   = sport_emoji(sport)
+
+        lines = [
+            f"{emoji} *New {sport.replace('_',' ').title()} Synced!*",
+            f"",
+            f"📅 {fmt_date(ex.get('startTime',''))}  •  {dist_km:.2f}km  •  {int(dur_s//60)}min",
+            f"💨 {seconds_to_pace(pace_s)}  ❤️ {hr.get('avg','?')}/{hr.get('max','?')}bpm",
+            f"⚡ {power.get('avg','?')}W avg  •  👟 {cadence.get('avg','?')}spm",
+            f"⬆️ {ex.get('ascent',0):.0f}m ascent  •  🔥 Load {load.get('cardioLoad','?')}",
+            f"",
+            f"📊 {splits_count} km splits saved",
+        ]
+
+        if splits_count > 0:
+            split_data = supabase.table("polar_km_splits")\
+                .select("km_number,pace_display,hr_avg,power_avg")\
+                .eq("exercise_id", exercise_id).order("lap_number").limit(5).execute()
+            if split_data.data:
+                lines.append("")
+                lines.append("*First splits:*")
+                lines.append("`KM  │ Pace     │  HR │ Power`")
+                for s in split_data.data:
+                    km    = str(s['km_number']).rjust(2)
+                    pace  = (s.get('pace_display') or 'N/A').ljust(8)
+                    hr    = str(s.get('hr_avg') or '?').rjust(3)
+                    pwr   = str(s.get('power_avg') or '?').rjust(4) + "W"
+                    lines.append(f"`{km}  │ {pace} │ {hr} │ {pwr}`")
+
+        return "\n".join(lines)
+    except Exception as e:
+        log.error(f"Format notification error: {e}")
+        return "✅ New run synced"
 
 # ── Save exercise to Supabase ──────────────────────────────────────────────
 def save_exercise_to_supabase(session_json: dict, exercise_id: str) -> int:
@@ -150,7 +329,6 @@ def save_exercise_to_supabase(session_json: dict, exercise_id: str) -> int:
             "raw_json":          json.dumps(session_json),
         }, on_conflict="polar_exercise_id").execute()
 
-        # KM Splits
         split_rows = []
         for lap in ex.get("autoLaps", []):
             lap_dur = parse_pt_seconds(lap.get("duration", ""))
@@ -231,18 +409,19 @@ def sync_new_polar_exercises() -> list:
         log.error(f"Polar sync error: {e}")
         return []
 
-# ── Supabase context ───────────────────────────────────────────────────────
-def build_training_context() -> str:
+# ── Supabase context for Claude ────────────────────────────────────────────
+def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
+    """Build structured training context to inject into Claude's system prompt."""
     try:
         parts = []
 
         # Recent runs
         runs = supabase.table("polar_exercises")\
             .select("polar_exercise_id,date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load,ascent,descent")\
-            .order("date", desc=True).limit(10).execute()
+            .order("date", desc=True).limit(run_limit).execute()
 
         if runs.data:
-            parts.append("=== RECENT RUNS (last 10) ===")
+            parts.append(f"=== RECENT RUNS (last {len(runs.data)}) ===")
             for r in runs.data:
                 dist_km = (r.get("distance_meters") or 0) / 1000
                 dur_s   = r.get("duration_seconds") or 0
@@ -255,7 +434,7 @@ def build_training_context() -> str:
                     f"Load: {r.get('training_load','?')} | Ascent: {r.get('ascent','?')}m"
                 )
 
-            # Splits for most recent run that HAS splits
+            # Splits for most recent run with splits
             latest = get_latest_run_with_splits()
             if latest:
                 splits = supabase.table("polar_km_splits")\
@@ -294,10 +473,10 @@ def build_training_context() -> str:
         # Sleep
         sleep = supabase.table("polar_sleep")\
             .select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds,avg_hrv")\
-            .order("date", desc=True).limit(7).execute()
+            .order("date", desc=True).limit(sleep_days).execute()
 
         if sleep.data:
-            parts.append("\n=== SLEEP (last 7 nights) ===")
+            parts.append(f"\n=== SLEEP (last {len(sleep.data)} nights) ===")
             for s in sleep.data:
                 total_s = s.get("total_sleep_seconds") or 0
                 parts.append(
@@ -341,11 +520,11 @@ Coaching style:
 - Data-driven but conversational — reference Luke's actual numbers
 - Honest about fatigue and recovery — flag risks, don't just encourage
 - Focus on London Marathon time goal and ultra readiness
-- Show km splits as a clear table when relevant
+- When referencing splits, describe them conversationally — the formatted table is shown separately
 - Use min/km for pace, bpm for HR, watts for power"""
 
-def build_system_prompt() -> str:
-    return f"{BASE_SYSTEM}\n\n{build_training_context()}"
+def build_system_prompt(run_limit: int = 10, sleep_days: int = 7) -> str:
+    return f"{BASE_SYSTEM}\n\n{build_training_context(run_limit, sleep_days)}"
 
 # ── Conversation history ───────────────────────────────────────────────────
 conversation_history = {}
@@ -359,61 +538,31 @@ def add_to_history(chat_id, role, content):
     conversation_history[chat_id].append({"role": role, "content": content})
     conversation_history[chat_id] = conversation_history[chat_id][-20:]
 
-# ── Run notification formatter ─────────────────────────────────────────────
-def format_run_notification(session_json: dict, exercise_id: str, splits_count: int) -> str:
-    try:
-        ex      = session_json.get("exercises", [{}])[0]
-        sport   = ex.get("sport", "RUN")
-        if isinstance(sport, dict):
-            sport = sport.get("name", "RUN")
-        dist_km = (ex.get("distance") or 0) / 1000
-        dur_s   = parse_pt_seconds(ex.get("duration", ""))
-        hr      = ex.get("heartRate", {})
-        power   = ex.get("power", {})
-        cadence = ex.get("cadence", {})
-        load    = ex.get("loadInformation", {})
-        pace_s  = dur_s / dist_km if dist_km else 0
-        emoji   = "🏔️" if "TRAIL" in sport else "🏃"
-
-        lines = [
-            f"{emoji} *New {sport.replace('_',' ').title()} Synced*",
-            f"📅 {ex.get('startTime','')[:10]}",
-            f"📏 {dist_km:.2f}km | ⏱ {int(dur_s//60)}min | 💨 {seconds_to_pace(pace_s)}",
-            f"❤️ HR: {hr.get('avg','?')}/{hr.get('max','?')}bpm",
-            f"⚡ Power: {power.get('avg','?')}W | 👟 Cadence: {cadence.get('avg','?')}spm",
-            f"⬆️ Ascent: {ex.get('ascent',0):.0f}m | 🔥 Load: {load.get('cardioLoad','?')}",
-            f"📊 {splits_count} km splits saved",
-        ]
-
-        if splits_count > 0:
-            split_data = supabase.table("polar_km_splits")\
-                .select("km_number,pace_display,hr_avg,power_avg")\
-                .eq("exercise_id", exercise_id).order("lap_number").limit(5).execute()
-            if split_data.data:
-                lines.append("\n*First splits:*")
-                for s in split_data.data:
-                    lines.append(
-                        f"  KM {s['km_number']} | {s.get('pace_display','?')} | "
-                        f"HR {s.get('hr_avg','?')} | {s.get('power_avg','?')}W"
-                    )
-
-        return "\n".join(lines)
-    except Exception as e:
-        log.error(f"Format notification error: {e}")
-        return "✅ New run synced"
-
 # ── Morning briefing ───────────────────────────────────────────────────────
 def send_morning_briefing():
     try:
+        # Pull fresh recovery data
+        sleep = supabase.table("polar_sleep")\
+            .select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds,avg_hrv")\
+            .order("date", desc=True).limit(7).execute()
+        hrv = supabase.table("polar_hrv")\
+            .select("date,recharge_status,ans_charge,sleep_charge,hrv_avg,hrv_rmssd")\
+            .order("date", desc=True).limit(1).execute()
+
+        # Recovery dashboard first
+        recovery_msg = format_recovery_dashboard(sleep.data, hrv.data)
+        bot.send_message(YOUR_TELEGRAM_ID, recovery_msg, parse_mode="Markdown")
+
+        # Then Claude's coaching briefing
         response = claude.messages.create(
             model="claude-opus-4-5",
-            max_tokens=600,
+            max_tokens=500,
             system=build_system_prompt(),
             messages=[{"role": "user", "content": (
-                "Give Luke his morning training briefing. Include: "
-                "last night's sleep and recovery, today's recommended session, "
-                "weekly load vs last week, any flags from recent training. "
-                "Be concise — this is a morning message."
+                "Give Luke a concise morning coaching briefing: "
+                "today's recommended session with effort level, "
+                "one key flag from recent training or recovery, "
+                "weekly load check. Max 4 short paragraphs."
             )}]
         )
         bot.send_message(
@@ -425,19 +574,18 @@ def send_morning_briefing():
     except Exception as e:
         log.error(f"Briefing error: {e}")
 
-# ── Background: Polar sync every 5 min ────────────────────────────────────
+# ── Background loops ───────────────────────────────────────────────────────
 def polar_sync_loop():
     while True:
         try:
             new = sync_new_polar_exercises()
             for ex in new:
-                msg = format_run_notification(ex["data"], ex["id"], ex["splits"])
+                msg = format_new_run_notification(ex["data"], ex["id"], ex["splits"])
                 bot.send_message(YOUR_TELEGRAM_ID, msg, parse_mode="Markdown")
         except Exception as e:
             log.error(f"Sync loop error: {e}")
         time.sleep(300)
 
-# ── Background: 7am daily briefing ────────────────────────────────────────
 def scheduler_loop():
     while True:
         now    = datetime.now(timezone.utc)
@@ -459,18 +607,26 @@ def handle_message(message):
 
     user_text = message.text.strip()
 
+    # ── /start /help ──
     if user_text.lower() in ["/start", "/help"]:
         bot.reply_to(message, (
-            "👋 Hey Luke! I'm your Polar running coach.\n\n"
+            "👋 *Hey Luke!* I'm your Polar running coach.\n\n"
             "I have your full training history, sleep, HRV and km splits.\n\n"
+            "*Commands:*\n"
             "/sync — check for new runs\n"
             "/briefing — morning briefing now\n"
             "/splits — km splits for last run\n"
+            "/runs — last 10 runs\n"
+            "/recovery — sleep & HRV dashboard\n"
             "/load — weekly training load\n"
-            "/clear — clear conversation"
-        ))
+            "/clear — clear conversation\n\n"
+            "Or just ask me anything — "
+            "_\"show last 30 runs\"_, _\"how was my sleep last month\"_, "
+            "_\"am I ready to race?\"_"
+        ), parse_mode="Markdown")
         return
 
+    # ── /sync ──
     if user_text.lower() == "/sync":
         bot.reply_to(message, "🔄 Checking Polar...")
         new = sync_new_polar_exercises()
@@ -478,59 +634,141 @@ def handle_message(message):
             for ex in new:
                 bot.send_message(
                     chat_id,
-                    format_run_notification(ex["data"], ex["id"], ex["splits"]),
+                    format_new_run_notification(ex["data"], ex["id"], ex["splits"]),
                     parse_mode="Markdown"
                 )
         else:
             bot.send_message(chat_id, "No new exercises found.")
         return
 
+    # ── /briefing ──
     if user_text.lower() == "/briefing":
         bot.reply_to(message, "⏳ Generating briefing...")
         send_morning_briefing()
         return
 
+    # ── /splits ──
     if user_text.lower() == "/splits":
         try:
             ex = get_latest_run_with_splits()
             if not ex:
                 bot.reply_to(message, "No runs with splits found.")
                 return
-
             splits = supabase.table("polar_km_splits")\
                 .select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m")\
                 .eq("exercise_id", ex["polar_exercise_id"])\
                 .order("lap_number").execute()
-
             dist_km = (ex.get("distance_meters") or 0) / 1000
-            lines   = [f"📊 *{ex['date'][:10]} — {dist_km:.1f}km {ex.get('sport','')}*\n"]
-            for s in splits.data:
-                lines.append(
-                    f"KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | "
-                    f"HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | "
-                    f"{s.get('power_avg','?')}W | "
-                    f"↑{s.get('ascent_m',0):.0f}m"
-                )
+            header  = f"{fmt_date(ex['date'])} — {dist_km:.1f}km {ex.get('sport','')}"
+            bot.reply_to(message, format_splits_table(splits.data, header), parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+        return
+
+    # ── /runs ──
+    if user_text.lower().startswith("/runs"):
+        try:
+            parts = user_text.split()
+            limit = int(parts[1]) if len(parts) > 1 else 10
+            limit = min(limit, 100)
+            runs  = supabase.table("polar_exercises")\
+                .select("date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load")\
+                .order("date", desc=True).limit(limit).execute()
+            bot.reply_to(message, format_run_list(runs.data), parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+        return
+
+    # ── /recovery ──
+    if user_text.lower() == "/recovery":
+        try:
+            sleep = supabase.table("polar_sleep")\
+                .select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds,avg_hrv")\
+                .order("date", desc=True).limit(7).execute()
+            hrv = supabase.table("polar_hrv")\
+                .select("date,recharge_status,ans_charge,sleep_charge,hrv_avg,hrv_rmssd")\
+                .order("date", desc=True).limit(1).execute()
+            bot.reply_to(message, format_recovery_dashboard(sleep.data, hrv.data), parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+        return
+
+    # ── /load ──
+    if user_text.lower() == "/load":
+        try:
+            now             = datetime.now(timezone.utc)
+            week_start      = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+            last_week_start = (now - timedelta(days=now.weekday()+7)).strftime("%Y-%m-%d")
+            this_week = supabase.table("polar_exercises").select("training_load,distance_meters,date,sport")\
+                .gte("date", week_start).order("date", desc=True).execute()
+            last_week = supabase.table("polar_exercises").select("training_load,distance_meters,date,sport")\
+                .gte("date", last_week_start).lt("date", week_start).order("date", desc=True).execute()
+
+            def sum_load(rows): return sum(r.get("training_load") or 0 for r in rows)
+            def sum_km(rows):   return sum((r.get("distance_meters") or 0)/1000 for r in rows)
+
+            lines = ["📈 *Weekly Training Load*\n"]
+            lines.append(
+                f"*This week:*  {sum_km(this_week.data):.1f}km  •  "
+                f"Load {sum_load(this_week.data):.0f}  •  {len(this_week.data)} sessions"
+            )
+            for r in this_week.data:
+                dist = (r.get("distance_meters") or 0)/1000
+                lines.append(f"  {sport_emoji(r.get('sport',''))} {fmt_date(r['date'])}  {dist:.1f}km  Load {r.get('training_load','?'):.0f}" if r.get('training_load') else f"  {sport_emoji(r.get('sport',''))} {fmt_date(r['date'])}  {dist:.1f}km")
+
+            lines.append(f"\n*Last week:*  {sum_km(last_week.data):.1f}km  •  Load {sum_load(last_week.data):.0f}  •  {len(last_week.data)} sessions")
+
             bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             bot.reply_to(message, f"Error: {e}")
         return
 
-    if user_text.lower() == "/load":
-        try:
-            ctx   = build_training_context()
-            lines = [l for l in ctx.split("\n") if "WEEKLY" in l or "week" in l.lower()]
-            bot.reply_to(message, "\n".join(lines) or "Load data unavailable.")
-        except Exception as e:
-            bot.reply_to(message, f"Error: {e}")
-        return
-
+    # ── /clear ──
     if user_text.lower() == "/clear":
         conversation_history[chat_id] = []
         bot.reply_to(message, "Conversation cleared.")
         return
 
-    # Main Claude chat
+    # ── Natural language history detection ──
+    run_limit   = detect_history_request(user_text) or 10
+    sleep_days  = detect_recovery_window(user_text)
+
+    # If asking explicitly for runs list (not just asking Claude to analyse)
+    run_list_keywords = ["show", "list", "display", "give me", "last", "all my"]
+    is_run_list_req   = any(kw in user_text.lower() for kw in run_list_keywords) and \
+                        ("run" in user_text.lower() or "session" in user_text.lower())
+
+    if is_run_list_req and run_limit > 10:
+        try:
+            runs = supabase.table("polar_exercises")\
+                .select("date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load")\
+                .order("date", desc=True).limit(run_limit).execute()
+            bot.reply_to(message, format_run_list(runs.data), parse_mode="Markdown")
+            return
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+            return
+
+    # Recovery dashboard request
+    recovery_keywords = ["sleep", "recovery", "recharge", "hrv", "rest"]
+    is_recovery_req   = any(kw in user_text.lower() for kw in recovery_keywords) and \
+                        sleep_days > 7
+
+    if is_recovery_req:
+        try:
+            sleep = supabase.table("polar_sleep")\
+                .select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds,avg_hrv")\
+                .order("date", desc=True).limit(sleep_days).execute()
+            hrv = supabase.table("polar_hrv")\
+                .select("date,recharge_status,ans_charge,sleep_charge,hrv_avg,hrv_rmssd")\
+                .order("date", desc=True).limit(1).execute()
+            bot.reply_to(message, format_recovery_dashboard(sleep.data, hrv.data), parse_mode="Markdown")
+            return
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+            return
+
+    # ── Main Claude conversation ──
     try:
         bot.send_chat_action(chat_id, "typing")
         add_to_history(chat_id, "user", user_text)
@@ -538,7 +776,7 @@ def handle_message(message):
         response = claude.messages.create(
             model="claude-opus-4-5",
             max_tokens=1000,
-            system=build_system_prompt(),
+            system=build_system_prompt(run_limit=run_limit, sleep_days=sleep_days),
             messages=get_history(chat_id)
         )
 
