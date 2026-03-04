@@ -701,13 +701,21 @@ def sync_sleep() -> int:
                 continue
             supabase.table("polar_sleep").upsert({
                 "date":                date,
-                "total_sleep_seconds": si(s.get("total_sleep_time")),
+                # Polar API returns sleep stages separately — sum for total
+                "total_sleep_seconds": si(
+                    (s.get("light_sleep") or 0) +
+                    (s.get("deep_sleep") or 0) +
+                    (s.get("rem_sleep") or 0)
+                ),
                 "sleep_score":         sf(s.get("sleep_score")),
                 "rem_seconds":         si(s.get("rem_sleep")),
                 "light_sleep_seconds": si(s.get("light_sleep")),
                 "deep_sleep_seconds":  si(s.get("deep_sleep")),
-                "interruptions":       si(s.get("interruptions")),
-                "avg_hr":              si(s.get("heart_rate_avg")),
+                "interruptions":       si(s.get("sleep_cycles")),
+                "avg_hr":              si(
+                    round(sum(s.get("heart_rate_samples", {}).values()) /
+                    len(s.get("heart_rate_samples", {}))) if s.get("heart_rate_samples") else None
+                ),
                 "avg_hrv":             sf(s.get("hrv_avg")),
                 "raw_json":            json.dumps(s),
             }, on_conflict="date").execute()
@@ -723,6 +731,13 @@ def sync_sleep() -> int:
         return 0
 
 # ── Nightly recharge / HRV sync ────────────────────────────────────────────
+def _recharge_status_label(status_int) -> str:
+    """Convert Polar nightly_recharge_status int to readable label."""
+    mapping = {1: "POOR", 2: "LOW", 3: "MODERATE", 4: "GOOD", 5: "EXCELLENT"}
+    if status_int is None:
+        return None
+    return mapping.get(int(status_int), str(status_int))
+
 def sync_nightly_recharge() -> int:
     try:
         r = requests.post(
@@ -748,11 +763,20 @@ def sync_nightly_recharge() -> int:
                 continue
             supabase.table("polar_hrv").upsert({
                 "date":            date,
-                "hrv_avg":         sf(h.get("hrv_avg")),
-                "hrv_rmssd":       sf(h.get("hrv2_avg") or h.get("rmssd")),
+                # Polar API field mapping (from actual API response):
+                # heart_rate_variability_avg = HRV avg
+                # beat_to_beat_avg = RMSSD equivalent  
+                # nightly_recharge_status = int 1-5 (1=poor, 5=excellent)
+                # ans_charge_status = int, sleep_charge not returned directly
+                "hrv_avg":         sf(
+                    round(sum(h.get("hrv_samples", {}).values()) /
+                    len(h.get("hrv_samples", {}))) if h.get("hrv_samples") else
+                    h.get("heart_rate_variability_avg")
+                ),
+                "hrv_rmssd":       sf(h.get("beat_to_beat_avg")),
                 "ans_charge":      sf(h.get("ans_charge")),
-                "sleep_charge":    sf(h.get("sleep_charge")),
-                "recharge_status": h.get("night_recharge_status"),
+                "sleep_charge":    sf(h.get("ans_charge_status")),
+                "recharge_status": _recharge_status_label(h.get("nightly_recharge_status")),
                 "raw_json":        json.dumps(h),
             }, on_conflict="date").execute()
             count += 1
