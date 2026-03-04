@@ -590,6 +590,141 @@ def sync_new_polar_exercises() -> list:
         log.error(f"Polar sync error: {e}")
         return []
 
+
+# ── Sleep sync ─────────────────────────────────────────────────────────────
+def sync_sleep() -> int:
+    try:
+        r = requests.post(
+            f"{POLAR_BASE}/users/{POLAR_USER_ID}/sleep-transactions",
+            headers=polar_headers()
+        )
+        if r.status_code == 204:
+            return 0
+        if not r.ok:
+            log.error(f"Sleep transaction error: {r.status_code} {r.text}")
+            return 0
+        transaction    = r.json()
+        transaction_id = transaction.get("transaction-id")
+        urls           = transaction.get("resource-uri", [])
+        count          = 0
+        for url in urls:
+            resp = requests.get(url, headers=polar_headers())
+            if not resp.ok:
+                continue
+            s    = resp.json()
+            date = (s.get("date") or s.get("night_start_time", ""))[:10]
+            if not date:
+                continue
+            supabase.table("polar_sleep").upsert({
+                "date":                date,
+                "total_sleep_seconds": si(s.get("total_sleep_time")),
+                "sleep_score":         sf(s.get("sleep_score")),
+                "rem_seconds":         si(s.get("rem_sleep")),
+                "light_sleep_seconds": si(s.get("light_sleep")),
+                "deep_sleep_seconds":  si(s.get("deep_sleep")),
+                "interruptions":       si(s.get("interruptions")),
+                "avg_hr":              si(s.get("heart_rate_avg")),
+                "avg_hrv":             sf(s.get("hrv_avg")),
+                "raw_json":            json.dumps(s),
+            }, on_conflict="date").execute()
+            count += 1
+        requests.put(
+            f"{POLAR_BASE}/users/{POLAR_USER_ID}/sleep-transactions/{transaction_id}",
+            headers=polar_headers()
+        )
+        log.info(f"Sleep sync: {count} nights saved")
+        return count
+    except Exception as e:
+        log.error(f"Sleep sync error: {e}")
+        return 0
+
+# ── Nightly recharge / HRV sync ────────────────────────────────────────────
+def sync_nightly_recharge() -> int:
+    try:
+        r = requests.post(
+            f"{POLAR_BASE}/users/{POLAR_USER_ID}/nightly-recharge-transactions",
+            headers=polar_headers()
+        )
+        if r.status_code == 204:
+            return 0
+        if not r.ok:
+            log.error(f"Recharge transaction error: {r.status_code} {r.text}")
+            return 0
+        transaction    = r.json()
+        transaction_id = transaction.get("transaction-id")
+        urls           = transaction.get("resource-uri", [])
+        count          = 0
+        for url in urls:
+            resp = requests.get(url, headers=polar_headers())
+            if not resp.ok:
+                continue
+            h    = resp.json()
+            date = h.get("date", "")[:10]
+            if not date:
+                continue
+            supabase.table("polar_hrv").upsert({
+                "date":            date,
+                "hrv_avg":         sf(h.get("hrv_avg")),
+                "hrv_rmssd":       sf(h.get("hrv2_avg") or h.get("rmssd")),
+                "ans_charge":      sf(h.get("ans_charge")),
+                "sleep_charge":    sf(h.get("sleep_charge")),
+                "recharge_status": h.get("night_recharge_status"),
+                "raw_json":        json.dumps(h),
+            }, on_conflict="date").execute()
+            count += 1
+        requests.put(
+            f"{POLAR_BASE}/users/{POLAR_USER_ID}/nightly-recharge-transactions/{transaction_id}",
+            headers=polar_headers()
+        )
+        log.info(f"Recharge sync: {count} nights saved")
+        return count
+    except Exception as e:
+        log.error(f"Recharge sync error: {e}")
+        return 0
+
+# ── Daily activity sync ────────────────────────────────────────────────────
+def sync_daily_activity() -> int:
+    try:
+        r = requests.post(
+            f"{POLAR_BASE}/users/{POLAR_USER_ID}/activity-transactions",
+            headers=polar_headers()
+        )
+        if r.status_code == 204:
+            return 0
+        if not r.ok:
+            log.error(f"Activity transaction error: {r.status_code} {r.text}")
+            return 0
+        transaction    = r.json()
+        transaction_id = transaction.get("transaction-id")
+        urls           = transaction.get("resource-uri", [])
+        count          = 0
+        for url in urls:
+            resp = requests.get(url, headers=polar_headers())
+            if not resp.ok:
+                continue
+            a    = resp.json()
+            date = a.get("date", "")[:10]
+            if not date:
+                continue
+            supabase.table("polar_daily_activity").upsert({
+                "date":                date,
+                "steps":               si(a.get("steps")),
+                "calories_total":      sf(a.get("calories")),
+                "active_calories":     sf(a.get("active_calories")),
+                "active_time_seconds": si(a.get("active_time")),
+                "raw_json":            json.dumps(a),
+            }, on_conflict="date").execute()
+            count += 1
+        requests.put(
+            f"{POLAR_BASE}/users/{POLAR_USER_ID}/activity-transactions/{transaction_id}",
+            headers=polar_headers()
+        )
+        log.info(f"Activity sync: {count} days saved")
+        return count
+    except Exception as e:
+        log.error(f"Activity sync error: {e}")
+        return 0
+
 # ══════════════════════════════════════════════════════════════════════════
 # SUPABASE CONTEXT FOR CLAUDE
 # ══════════════════════════════════════════════════════════════════════════
@@ -819,10 +954,17 @@ def send_morning_briefing():
 def polar_sync_loop():
     while True:
         try:
+            # Exercises
             new = sync_new_polar_exercises()
             for ex in new:
                 msg = format_new_run_notification(ex["data"], ex["id"], ex["splits"])
                 bot.send_message(YOUR_TELEGRAM_ID, msg, parse_mode="Markdown")
+            # Sleep, recharge, activity
+            sleep_n    = sync_sleep()
+            recharge_n = sync_nightly_recharge()
+            activity_n = sync_daily_activity()
+            if sleep_n or recharge_n or activity_n:
+                log.info(f"Passive sync: sleep={sleep_n} recharge={recharge_n} activity={activity_n}")
         except Exception as e:
             log.error(f"Sync loop error: {e}")
         time.sleep(300)
