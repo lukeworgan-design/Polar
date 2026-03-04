@@ -676,6 +676,20 @@ def sync_new_polar_exercises() -> list:
 
 
 # ── Sleep sync ─────────────────────────────────────────────────────────────
+def _parse_pt_to_seconds(pt: str) -> int:
+    """Parse ISO 8601 duration string PT1H13M30S to seconds."""
+    if not pt:
+        return 0
+    import re as _re
+    h = _re.search(r"(\d+)H", pt)
+    m = _re.search(r"(\d+)M", pt)
+    s = _re.search(r"(\d+)S", pt)
+    total = 0
+    if h: total += int(h.group(1)) * 3600
+    if m: total += int(m.group(1)) * 60
+    if s: total += int(s.group(1))
+    return total
+
 def sync_sleep() -> int:
     try:
         r = requests.post(
@@ -696,26 +710,44 @@ def sync_sleep() -> int:
             if not resp.ok:
                 continue
             s    = resp.json()
-            date = (s.get("date") or s.get("night_start_time", ""))[:10]
+
+            # Handle both Sleep Plus Stages format (nested) and basic format
+            date = s.get("night", s.get("date", ""))[:10]
             if not date:
                 continue
+
+            # Sleep Plus Stages: data nested under evaluation.phaseDurations
+            evaluation  = s.get("evaluation", {})
+            phases      = evaluation.get("phaseDurations", {})
+            sleep_result = s.get("sleepResult", {})
+            hypnogram   = sleep_result.get("hypnogram", {})
+
+            # Parse phase durations (PT strings) or fall back to flat fields
+            rem_s   = _parse_pt_to_seconds(phases.get("rem"))   or si(s.get("rem_sleep"))   or 0
+            deep_s  = _parse_pt_to_seconds(phases.get("deep"))  or si(s.get("deep_sleep"))  or 0
+            light_s = _parse_pt_to_seconds(phases.get("light")) or si(s.get("light_sleep")) or 0
+            total_s = rem_s + deep_s + light_s or si(s.get("total_sleep_time")) or 0
+
+            # Sleep score — nested under evaluation or flat
+            score = sf(evaluation.get("analysis", {}).get("feedback")) or sf(s.get("sleep_score"))
+
+            # Interruptions
+            interruptions = s.get("interruptions", {})
+            interruption_count = interruptions.get("totalCount") if isinstance(interruptions, dict) else si(s.get("interruptions"))
+
+            # Avg HR from heart_rate_samples dict
+            hr_samples = sleep_result.get("heart_rate_samples", s.get("heart_rate_samples", {}))
+            avg_hr = si(round(sum(hr_samples.values()) / len(hr_samples))) if hr_samples else None
+
             supabase.table("polar_sleep").upsert({
                 "date":                date,
-                # Polar API returns sleep stages separately — sum for total
-                "total_sleep_seconds": si(
-                    (s.get("light_sleep") or 0) +
-                    (s.get("deep_sleep") or 0) +
-                    (s.get("rem_sleep") or 0)
-                ),
-                "sleep_score":         sf(s.get("sleep_score")),
-                "rem_seconds":         si(s.get("rem_sleep")),
-                "light_sleep_seconds": si(s.get("light_sleep")),
-                "deep_sleep_seconds":  si(s.get("deep_sleep")),
-                "interruptions":       si(s.get("sleep_cycles")),
-                "avg_hr":              si(
-                    round(sum(s.get("heart_rate_samples", {}).values()) /
-                    len(s.get("heart_rate_samples", {}))) if s.get("heart_rate_samples") else None
-                ),
+                "total_sleep_seconds": total_s,
+                "sleep_score":         score,
+                "rem_seconds":         rem_s,
+                "light_sleep_seconds": light_s,
+                "deep_sleep_seconds":  deep_s,
+                "interruptions":       interruption_count,
+                "avg_hr":              avg_hr,
                 "avg_hrv":             sf(s.get("hrv_avg")),
                 "raw_json":            json.dumps(s),
             }, on_conflict="date").execute()
