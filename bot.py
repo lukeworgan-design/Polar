@@ -346,64 +346,148 @@ def save_goal(text: str) -> str:
 
 def save_manual_run(text: str) -> str:
     """
-    Parse and save a manual run entry.
-    Format: log run: <distance>km, <duration>min, HR <avg>, <sport>
-    e.g. log run: 10km, 55min, HR 148, trail
+    Use Claude to parse any Polar Flow paste or typed run stats and save
+    full row + km splits to Supabase.
+    Triggers: save run: / log run: / manual run:
     """
     try:
-        text = re.sub(r"^(log\s+run|manual\s+run|run\s+log)\s*[:：]\s*", "", text.strip(), flags=re.IGNORECASE)
-
-        dist_km     = None
-        dur_min     = None
-        avg_hr      = None
-        sport       = "RUNNING"
-        notes       = None
-
-        # Distance
-        m = re.search(r"([\d.]+)\s*km", text, re.IGNORECASE)
-        if m: dist_km = float(m.group(1))
-
-        # Duration
-        m = re.search(r"([\d.]+)\s*min", text, re.IGNORECASE)
-        if m: dur_min = float(m.group(1))
-        else:
-            m = re.search(r"(\d+):(\d+)", text)
-            if m: dur_min = int(m.group(1)) + int(m.group(2)) / 60
-
-        # HR
-        m = re.search(r"hr\s*([\d]+)", text, re.IGNORECASE)
-        if m: avg_hr = int(m.group(1))
-
-        # Sport
-        if re.search(r"trail", text, re.IGNORECASE):   sport = "TRAIL_RUNNING"
-        if re.search(r"treadmill", text, re.IGNORECASE): sport = "TREADMILL_RUNNING"
-
-        # Pace
-        dur_s   = (dur_min or 0) * 60
-        pace_s  = dur_s / dist_km if dist_km else 0
-
-        # Build exercise ID
-        ex_id = f"manual-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-
-        supabase.table("polar_exercises").insert({
-            "polar_exercise_id": ex_id,
-            "date":              datetime.now(timezone.utc).isoformat(),
-            "sport":             sport,
-            "duration_seconds":  si(dur_s) if dur_s else None,
-            "distance_meters":   sf(dist_km * 1000) if dist_km else None,
-            "avg_heart_rate":    avg_hr,
-            "source":            "manual",
-        }).execute()
-
-        return (
-            f"✏️ *Manual run logged!*\n\n"
-            f"{sport_emoji(sport)} {sport.replace('_',' ').title()}\n"
-            f"📏 {dist_km or '?'}km  •  ⏱ {int(dur_min or 0)}min\n"
-            f"💨 {seconds_to_pace(pace_s)}  ❤️ {avg_hr or '?'}bpm"
+        # Strip trigger prefix
+        raw = re.sub(
+            r"^(save\s+run|log\s+run|manual\s+run|run\s+log)\s*[:：]\s*",
+            "", text.strip(), flags=re.IGNORECASE
         )
+
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Ask Claude to extract all fields as JSON
+        parse_resp = claude.messages.create(
+            model="claude-opus-4-5",
+            max_tokens=800,
+            system=(
+                "You are a precise data parser for Polar running data. "
+                "Extract all available fields from the text and return ONLY a valid JSON object — "
+                "no markdown, no explanation, no code fences.\n\n"
+                "Top-level fields (null if not present):\n"
+                "  date (YYYY-MM-DD — infer from context like \'Tuesday\' or \'birthday\', default to today),\n"
+                "  sport (RUNNING, TRAIL_RUNNING, or TREADMILL_RUNNING),\n"
+                "  distance_meters (float),\n"
+                "  duration_seconds (int — convert HH:MM:SS or MM:SS),\n"
+                "  avg_heart_rate (int),\n"
+                "  max_heart_rate (int),\n"
+                "  avg_power (int, watts),\n"
+                "  max_power (int, watts),\n"
+                "  avg_cadence (int, steps/min),\n"
+                "  max_cadence (int),\n"
+                "  ascent (float, metres),\n"
+                "  descent (float, metres),\n"
+                "  calories (int),\n"
+                "  training_load (float — cardio load),\n"
+                "  muscle_load (float),\n"
+                "  notes (string — e.g. \'birthday run\', \'easy effort\'),\n"
+                "  splits (array of objects, one per km lap — extract if a splits table is present):\n"
+                "    Each split object: {\n"
+                "      km_number (int),\n"
+                "      duration_seconds (float — lap duration, from HH:MM:SS.s),\n"
+                "      split_time_seconds (float — cumulative time),\n"
+                "      distance_m (float, usually 1000),\n"
+                "      hr_avg (int), hr_max (int),\n"
+                "      power_avg (int), power_max (int),\n"
+                "      cadence_avg (int), cadence_max (int),\n"
+                "      pace_display (string e.g. \'7:31/km\')\n"
+                "    }\n"
+                "In the splits table, values appear as \'lap / cumulative\' — use the LAP value (before /).\n"
+                "For pace: format is MM:SS per km."
+            ),
+            messages=[{"role": "user", "content": f"Today is {today}.\n\n{raw}"}]
+        )
+
+        raw_json = parse_resp.content[0].text.strip()
+        raw_json = re.sub(r"^```[a-z]*\s*|```$", "", raw_json, flags=re.MULTILINE).strip()
+        fields   = json.loads(raw_json)
+
+        # Build exercise row
+        ex_id      = f"manual-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        run_date   = fields.get("date") or today
+        dur_s      = fields.get("duration_seconds") or 0
+        dist_m     = fields.get("distance_meters") or 0
+        pace_s     = dur_s / (dist_m / 1000) if dist_m else 0
+        sport      = fields.get("sport") or "RUNNING"
+
+        supabase.table("polar_exercises").upsert({
+            "polar_exercise_id": ex_id,
+            "date":              f"{run_date}T00:00:00+00:00",
+            "sport":             sport,
+            "duration_seconds":  si(dur_s),
+            "distance_meters":   sf(dist_m),
+            "avg_heart_rate":    si(fields.get("avg_heart_rate")),
+            "max_heart_rate":    si(fields.get("max_heart_rate")),
+            "avg_power":         si(fields.get("avg_power")),
+            "max_power":         si(fields.get("max_power")),
+            "avg_cadence":       si(fields.get("avg_cadence")),
+            "max_cadence":       si(fields.get("max_cadence")),
+            "ascent":            sf(fields.get("ascent")),
+            "descent":           sf(fields.get("descent")),
+            "calories":          si(fields.get("calories")),
+            "training_load":     sf(fields.get("training_load")),
+            "muscle_load":       sf(fields.get("muscle_load")),
+            "notes":             fields.get("notes"),
+            "source":            "manual",
+        }, on_conflict="polar_exercise_id").execute()
+
+        # Save km splits if present
+        splits     = fields.get("splits") or []
+        split_rows = []
+        for s in splits:
+            lap_dur = s.get("duration_seconds") or 0
+            split_rows.append({
+                "exercise_id":        ex_id,
+                "session_date":       run_date,
+                "lap_number":         (s.get("km_number") or 1) - 1,
+                "km_number":          s.get("km_number") or 1,
+                "duration_seconds":   sf(lap_dur),
+                "split_time_seconds": sf(s.get("split_time_seconds")),
+                "distance_m":         sf(s.get("distance_m") or 1000),
+                "pace_min_per_km":    sf(lap_dur / 60) if lap_dur else None,
+                "pace_display":       s.get("pace_display") or seconds_to_pace(lap_dur),
+                "hr_avg":             si(s.get("hr_avg")),
+                "hr_max":             si(s.get("hr_max")),
+                "power_avg":          si(s.get("power_avg")),
+                "power_max":          si(s.get("power_max")),
+                "cadence_avg":        si(s.get("cadence_avg")),
+                "cadence_max":        si(s.get("cadence_max")),
+                "ascent_m":           sf(s.get("ascent_m", 0)),
+                "descent_m":          sf(s.get("descent_m", 0)),
+            })
+        if split_rows:
+            supabase.table("polar_km_splits").upsert(
+                split_rows, on_conflict="exercise_id,lap_number"
+            ).execute()
+
+        # Build confirmation message
+        dist_km  = dist_m / 1000 if dist_m else 0
+        lines = [
+            f"✏️ *Run saved!*\n",
+            f"{sport_emoji(sport)} {sport.replace('_',' ').title()}  •  {run_date}",
+            f"📏 {dist_km:.2f}km  •  ⏱ {int(dur_s//60)}:{int(dur_s%60):02d}",
+            f"💨 {seconds_to_pace(pace_s)}  ❤️ {fields.get('avg_heart_rate','?')}/{fields.get('max_heart_rate','?')}bpm",
+            f"⚡ {fields.get('avg_power','?')}W  •  👟 {fields.get('avg_cadence','?')}spm",
+            f"⬆️ {fields.get('ascent',0):.0f}m  •  🔥 Load {fields.get('training_load','?')}",
+        ]
+        if split_rows:
+            lines.append(f"\n📊 {len(split_rows)} km splits saved")
+            lines.append("\n`KM  │ Pace     │ HR      │ Power`")
+            for s in split_rows:
+                km   = str(s["km_number"]).rjust(2)
+                pace = (s.get("pace_display") or "N/A").ljust(8)
+                hr   = f"{s.get('hr_avg','?')}/{s.get('hr_max','?')}".ljust(7)
+                pwr  = str(s.get("power_avg") or "?").rjust(4) + "W"
+                lines.append(f"`{km}  │ {pace} │ {hr} │ {pwr}`")
+
+        return "\n".join(lines)
+
     except Exception as e:
         log.error(f"Save manual run error: {e}")
-        return f"Error logging run: {e}"
+        return f"Error saving run: {e}"
 
 def save_wellness_checkin(text: str) -> str:
     """
@@ -1007,7 +1091,7 @@ def handle_message(message):
             "/clear — clear conversation\n\n"
             "*Log data:*\n"
             "`goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`\n"
-            "`log run: 10km, 55min, HR 148, trail`\n"
+            "`save run: <paste Polar Flow stats or type key numbers>`\n"
             "`checkin: weight 77.5kg, fatigue 6/10, sleep 7/10`\n\n"
             "Or just ask me anything 💬"
         ), parse_mode="Markdown")
@@ -1126,7 +1210,7 @@ def handle_message(message):
         bot.reply_to(message, save_goal(user_text), parse_mode="Markdown")
         return
 
-    if re.match(r"^(log\s+run|manual\s+run|run\s+log)\s*[:：]", lower):
+    if re.match(r"^(save\s+run|log\s+run|manual\s+run|run\s+log)\s*[:：]", lower):
         bot.reply_to(message, save_manual_run(user_text), parse_mode="Markdown")
         return
 
