@@ -14,7 +14,8 @@ FIX (5 Mar 2026):
 - FIT file download and parse for full km splits
 - Pace calculated from avg_speed field
 - Cadence doubled from single-leg FIT value
-- Partial laps under 500m filtered out
+- Partial laps under 800m filtered out
+- Ascent debug logging added
 """
 
 import os
@@ -212,8 +213,9 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str) -> lis
             # Distance
             dist_m = sf(data.get("total_distance"))
 
-            # Skip partial final lap under 500m
-            if dist_m and dist_m < 500:
+            # Skip partial final lap under 800m
+            if dist_m and dist_m < 800:
+                log.info(f"Skipping partial lap {lap_num}: {dist_m:.0f}m")
                 continue
 
             # Pace — from avg_speed (m/s) → seconds per km
@@ -232,15 +234,23 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str) -> lis
             power_avg = si(data.get("avg_power"))
             power_max = si(data.get("max_power"))
 
-            # Cadence — FIT stores single-leg (steps per 30s), multiply by 2 for spm
+            # Cadence — FIT stores single-leg, multiply by 2 for spm
             cadence_raw     = sf(data.get("avg_running_cadence") or data.get("avg_cadence"))
             cadence_max_raw = sf(data.get("max_running_cadence") or data.get("max_cadence"))
             cadence_avg     = si(cadence_raw * 2)     if cadence_raw     else None
             cadence_max     = si(cadence_max_raw * 2) if cadence_max_raw else None
 
-            # Elevation
+            # Elevation — log all candidate fields for debugging
             ascent_m  = sf(data.get("total_ascent"))
             descent_m = sf(data.get("total_descent"))
+            log.info(
+                f"Lap {lap_num} elevation: total_ascent={data.get('total_ascent')} "
+                f"total_descent={data.get('total_descent')} "
+                f"altitude_delta={data.get('altitude_delta')} "
+                f"avg_altitude={data.get('avg_altitude')} "
+                f"max_altitude={data.get('max_altitude')} "
+                f"min_altitude={data.get('min_altitude')}"
+            )
 
             split_rows.append({
                 "exercise_id":        exercise_id,
@@ -362,10 +372,7 @@ def format_hr_dashboard(hr_data: list) -> str:
         return "No continuous HR data found."
     lines = ["❤️ *Continuous Heart Rate — Last 7 Days*\n"]
     for h in hr_data:
-        avg = h.get("avg_hr", "?")
-        mn  = h.get("min_hr", "?")
-        mx  = h.get("max_hr", "?")
-        lines.append(f"*{h['date']}*  Avg {avg}bpm  •  Min {mn}  •  Max {mx}")
+        lines.append(f"*{h['date']}*  Avg {h.get('avg_hr','?')}bpm  •  Min {h.get('min_hr','?')}  •  Max {h.get('max_hr','?')}")
     return "\n".join(lines)
 
 def format_cardio_load_dashboard(load_data: list) -> str:
@@ -639,7 +646,6 @@ def save_wellness_checkin(text: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════
 
 def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) -> int:
-    """Save exercise summary + pre-parsed splits to Supabase."""
     try:
         sport   = ex_data.get("sport", "")
         hr      = ex_data.get("heart_rate", {}) or {}
@@ -694,7 +700,6 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
 
 
 def sync_new_polar_exercises() -> list:
-    """Sync exercises via v3 API + FIT file download for splits."""
     try:
         r = requests.get(f"{POLAR_BASE}/exercises", headers=polar_headers())
         log.info(f"Exercises GET: {r.status_code}")
