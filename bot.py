@@ -9,17 +9,15 @@ v6 changes:
 - Added sync_cardio_load() → polar_cardio_load table
 - All 7 data streams in context passed to Claude
 - Super coach system prompt with full physiological analysis
-- /hr command — continuous HR dashboard
-- /cardio command — cardio load trends
 
 FIX (5 Mar 2026):
-- save_exercise_new_api() now saves avg_power, max_power, avg_cadence, max_cadence
-- save_exercise_new_api() now saves km splits from autoLaps (was broken)
-- Debugging laps endpoint
+- Downloads FIT file per exercise and parses lap records for full splits
+- fitparse library extracts pace, HR, power, cadence, ascent per km
 """
 
 import os
 import re
+import io
 import json
 import logging
 import threading
@@ -29,6 +27,11 @@ from datetime import datetime, timedelta, timezone
 from supabase import create_client
 import anthropic
 import telebot
+
+try:
+    import fitparse
+except ImportError:
+    fitparse = None
 
 # ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -185,6 +188,98 @@ def detect_recovery_window(text: str) -> int:
     return 7
 
 # ══════════════════════════════════════════════════════════════════════════
+# FIT FILE PARSING
+# ══════════════════════════════════════════════════════════════════════════
+
+def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str) -> list:
+    """Parse FIT file bytes and extract lap records as split rows."""
+    if not fitparse:
+        log.error("fitparse not installed")
+        return []
+    try:
+        fitfile    = fitparse.FitFile(io.BytesIO(fit_bytes))
+        split_rows = []
+        lap_num    = 0
+
+        for record in fitfile.get_messages("lap"):
+            data = {d.name: d.value for d in record}
+
+            # Duration
+            lap_dur = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
+
+            # Distance
+            dist_m = sf(data.get("total_distance"))
+
+            # Pace — calculated from duration and distance
+            pace_s = None
+            if lap_dur and dist_m and dist_m > 0:
+                pace_s = lap_dur / (dist_m / 1000)
+
+            # Heart rate
+            hr_avg = si(data.get("avg_heart_rate"))
+            hr_max = si(data.get("max_heart_rate"))
+
+            # Power (Polar running power)
+            power_avg = si(data.get("avg_power"))
+            power_max = si(data.get("max_power"))
+
+            # Cadence (FIT stores as steps/min already for running)
+            cadence_avg = si(data.get("avg_running_cadence") or data.get("avg_cadence"))
+            cadence_max = si(data.get("max_running_cadence") or data.get("max_cadence"))
+
+            # Elevation
+            ascent_m  = sf(data.get("total_ascent"))
+            descent_m = sf(data.get("total_descent"))
+
+            split_rows.append({
+                "exercise_id":        exercise_id,
+                "session_date":       session_date,
+                "lap_number":         lap_num,
+                "km_number":          lap_num + 1,
+                "duration_seconds":   lap_dur,
+                "split_time_seconds": sf(data.get("total_elapsed_time")),
+                "distance_m":         dist_m,
+                "pace_min_per_km":    sf(pace_s / 60) if pace_s else None,
+                "pace_display":       seconds_to_pace(pace_s) if pace_s else "N/A",
+                "hr_avg":             hr_avg,
+                "hr_max":             hr_max,
+                "power_avg":          power_avg,
+                "power_max":          power_max,
+                "cadence_avg":        cadence_avg,
+                "cadence_max":        cadence_max,
+                "ascent_m":           ascent_m,
+                "descent_m":          descent_m,
+            })
+            lap_num += 1
+
+        log.info(f"FIT parsed: {len(split_rows)} laps for {exercise_id}")
+        return split_rows
+
+    except Exception as e:
+        log.error(f"FIT parse error {exercise_id}: {e}")
+        return []
+
+
+def fetch_fit_and_parse(exercise_id: str, session_date: str) -> list:
+    """Download FIT file from Polar API and parse laps."""
+    try:
+        r = requests.get(
+            f"{POLAR_BASE}/exercises/{exercise_id}/fit",
+            headers={
+                "Authorization": f"Bearer {POLAR_ACCESS_TOKEN}",
+                "Accept": "application/octet-stream",
+            }
+        )
+        log.info(f"FIT download {exercise_id}: {r.status_code} {len(r.content)} bytes")
+        if not r.ok:
+            log.error(f"FIT download failed: {r.status_code} {r.text[:200]}")
+            return []
+        return parse_fit_laps(r.content, exercise_id, session_date)
+    except Exception as e:
+        log.error(f"FIT fetch error {exercise_id}: {e}")
+        return []
+
+# ══════════════════════════════════════════════════════════════════════════
 # FORMATTING
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -218,7 +313,7 @@ def format_splits_table(splits: list, header: str) -> str:
         pace  = (s.get("pace_display") or "N/A").ljust(8)
         hr    = f"{s.get('hr_avg','?')}/{s.get('hr_max','?')}".ljust(7)
         power = str(s.get("power_avg") or "?").rjust(4) + "W"
-        asc   = f"{s.get('ascent_m', 0):.0f}m"
+        asc   = f"{s.get('ascent_m', 0) or 0:.0f}m"
         lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {asc}`")
     return "\n".join(lines)
 
@@ -526,21 +621,21 @@ def save_wellness_checkin(text: str) -> str:
         return f"Error saving check-in: {e}"
 
 # ══════════════════════════════════════════════════════════════════════════
-# POLAR SYNC — NEW API (v3 non-transaction)
+# POLAR SYNC
 # ══════════════════════════════════════════════════════════════════════════
 
-def save_exercise_new_api(ex: dict, exercise_id: str, laps: list = None) -> int:
-    """Save exercise from new GET /v3/exercises API — including splits from separate laps endpoint."""
+def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) -> int:
+    """Save exercise summary + pre-parsed splits to Supabase."""
     try:
-        sport   = ex.get("sport", "")
-        hr      = ex.get("heart_rate", {}) or {}
-        cadence = ex.get("cadence", {}) or {}
-        power   = ex.get("power", {}) or {}
-        load    = ex.get("training_load_pro", {}) or {}
-        zones   = ex.get("heart_rate_zones", []) or []
-        start   = ex.get("start_time", "")
-        dur_s   = parse_pt_seconds(ex.get("duration", ""))
-        dist_m  = sf(ex.get("distance"))
+        sport   = ex_data.get("sport", "")
+        hr      = ex_data.get("heart_rate", {}) or {}
+        cadence = ex_data.get("cadence", {}) or {}
+        power   = ex_data.get("power", {}) or {}
+        load    = ex_data.get("training_load_pro", {}) or {}
+        zones   = ex_data.get("heart_rate_zones", []) or []
+        start   = ex_data.get("start_time", "")
+        dur_s   = parse_pt_seconds(ex_data.get("duration", ""))
+        dist_m  = sf(ex_data.get("distance"))
 
         hr_zones_parsed = [{
             "zone":    z.get("index"),
@@ -555,60 +650,28 @@ def save_exercise_new_api(ex: dict, exercise_id: str, laps: list = None) -> int:
             "sport":             sport,
             "duration_seconds":  si(dur_s),
             "distance_meters":   dist_m,
-            "calories":          si(ex.get("calories")),
+            "calories":          si(ex_data.get("calories")),
             "avg_heart_rate":    si(hr.get("average")),
             "max_heart_rate":    si(hr.get("maximum")),
             "avg_cadence":       si(cadence.get("avg")),
             "max_cadence":       si(cadence.get("max")),
             "avg_power":         si(power.get("avg")),
             "max_power":         si(power.get("max")),
-            "training_load":     sf(ex.get("training_load") or load.get("cardio-load")),
+            "training_load":     sf(ex_data.get("training_load") or load.get("cardio-load")),
             "muscle_load":       sf(load.get("muscle-load")),
-            "ascent":            sf(ex.get("ascent")),
-            "descent":           sf(ex.get("descent")),
+            "ascent":            sf(ex_data.get("ascent")),
+            "descent":           sf(ex_data.get("descent")),
             "hr_zones":          json.dumps(hr_zones_parsed),
-            "raw_json":          json.dumps(ex),
+            "raw_json":          json.dumps(ex_data),
             "source":            "polar",
         }, on_conflict="polar_exercise_id").execute()
-
-        # Save km splits from laps endpoint
-        split_rows = []
-        for lap in (laps or []):
-            lap_dur = parse_pt_seconds(lap.get("duration", ""))
-            lhr     = lap.get("heartRate", {}) or lap.get("heart_rate", {}) or {}
-            lspd    = lap.get("speed", {}) or {}
-            lcad    = lap.get("cadence", {}) or {}
-            lpwr    = lap.get("power", {}) or {}
-            lap_num = lap.get("lapNumber", 0) or lap.get("lap_number", 0) or lap.get("index", 0)
-            split_rows.append({
-                "exercise_id":        exercise_id,
-                "session_date":       start[:10],
-                "lap_number":         lap_num,
-                "km_number":          lap_num + 1,
-                "duration_seconds":   sf(lap_dur),
-                "split_time_seconds": sf(parse_pt_seconds(lap.get("splitTime", "") or lap.get("split_time", ""))),
-                "distance_m":         sf(lap.get("distance", 1000.0)),
-                "pace_min_per_km":    sf(lap_dur / 60) if lap_dur else None,
-                "pace_display":       seconds_to_pace(lap_dur),
-                "hr_min":             si(lhr.get("min")),
-                "hr_avg":             si(lhr.get("avg") or lhr.get("average")),
-                "hr_max":             si(lhr.get("max") or lhr.get("maximum")),
-                "speed_avg_ms":       sf(lspd.get("avg")),
-                "speed_max_ms":       sf(lspd.get("max")),
-                "cadence_avg":        si(lcad.get("avg")),
-                "cadence_max":        si(lcad.get("max")),
-                "ascent_m":           sf(lap.get("ascent", 0.0)),
-                "descent_m":          sf(lap.get("descent", 0.0)),
-                "power_avg":          si(lpwr.get("avg")),
-                "power_max":          si(lpwr.get("max")),
-            })
 
         if split_rows:
             supabase.table("polar_km_splits").upsert(
                 split_rows, on_conflict="exercise_id,lap_number"
             ).execute()
 
-        log.info(f"Saved exercise {exercise_id}: {sport} {(dist_m or 0)/1000:.1f}km, {len(split_rows)} splits")
+        log.info(f"Saved {exercise_id}: {sport} {(dist_m or 0)/1000:.1f}km, {len(split_rows)} splits")
         return len(split_rows)
 
     except Exception as e:
@@ -617,15 +680,12 @@ def save_exercise_new_api(ex: dict, exercise_id: str, laps: list = None) -> int:
 
 
 def sync_new_polar_exercises() -> list:
-    """New API: GET /v3/exercises — no transaction, last 30 days."""
+    """Sync exercises via v3 API + FIT file download for splits."""
     try:
         r = requests.get(f"{POLAR_BASE}/exercises", headers=polar_headers())
         log.info(f"Exercises GET: {r.status_code}")
-        if r.status_code == 204:
+        if r.status_code == 204 or not r.ok:
             return []
-        if not r.ok:
-            log.error(f"Exercises GET error: {r.status_code} {r.text}")
-            return sync_exercises_transaction()
 
         exercises = r.json()
         if not isinstance(exercises, list):
@@ -645,6 +705,7 @@ def sync_new_polar_exercises() -> list:
                 .eq("polar_exercise_id", ex_id).limit(1).execute()
             if existing.data:
                 continue
+
             # Fetch full exercise detail
             detail_r = requests.get(
                 f"{POLAR_BASE}/exercises/{ex_id}?zones=true",
@@ -654,14 +715,12 @@ def sync_new_polar_exercises() -> list:
                 log.error(f"Exercise detail error {ex_id}: {detail_r.status_code}")
                 continue
             ex_data = detail_r.json()
-            # Fetch laps from separate endpoint
-            laps_r = requests.get(f"{POLAR_BASE}/exercises/{ex_id}/laps", headers=polar_headers())
-            log.info(f"Laps endpoint: {laps_r.status_code} {laps_r.text[:300]}")
-            laps = []
-            if laps_r.ok:
-                laps_data = laps_r.json()
-                laps = laps_data if isinstance(laps_data, list) else laps_data.get("laps", [])
-            splits = save_exercise_new_api(ex_data, ex_id, laps)
+            start   = ex_data.get("start_time", "")
+
+            # Download FIT file and parse laps
+            split_rows = fetch_fit_and_parse(ex_id, start[:10])
+
+            splits = save_exercise_from_api(ex_data, ex_id, split_rows)
             new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits})
 
         return new_exercises
@@ -671,152 +730,14 @@ def sync_new_polar_exercises() -> list:
         return []
 
 
-def sync_exercises_transaction() -> list:
-    """Fallback: deprecated transaction model for exercises."""
-    try:
-        r = requests.post(
-            f"{POLAR_BASE}/users/{POLAR_USER_ID}/exercise-transactions",
-            headers=polar_headers()
-        )
-        log.info(f"Exercise transaction fallback: {r.status_code}")
-        if r.status_code == 204:
-            return []
-        if not r.ok:
-            return []
-        transaction    = r.json()
-        transaction_id = transaction.get("transaction-id")
-        urls           = transaction.get("resource-uri", [])
-        new_exercises  = []
-        for url in urls:
-            resp = requests.get(url, headers=polar_headers())
-            if not resp.ok:
-                continue
-            ex_data = resp.json()
-            ex_id   = str(url).split("/")[-1]
-            exs     = ex_data.get("exercises", [{}])
-            sport   = exs[0].get("sport", "") if exs else ""
-            if isinstance(sport, dict):
-                sport = sport.get("name", "")
-            sport = sport.upper().replace(" ", "_")
-            if sport not in ALLOWED_SPORTS:
-                continue
-            splits = save_exercise_to_supabase(ex_data, ex_id)
-            new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits})
-        requests.put(
-            f"{POLAR_BASE}/users/{POLAR_USER_ID}/exercise-transactions/{transaction_id}",
-            headers=polar_headers()
-        )
-        return new_exercises
-    except Exception as e:
-        log.error(f"Exercise transaction fallback error: {e}")
-        return []
-
-
-def save_exercise_to_supabase(session_json: dict, exercise_id: str) -> int:
-    """Save exercise from old transaction API format (fallback)."""
-    try:
-        exercises = session_json.get("exercises", [])
-        if not exercises:
-            return 0
-        ex    = exercises[0]
-        sport = ex.get("sport", "")
-        if isinstance(sport, dict):
-            sport = sport.get("name", "").upper().replace(" ", "_")
-        sport = sport.upper().replace(" ", "_")
-        if sport not in ALLOWED_SPORTS:
-            return 0
-        start_time = ex.get("startTime", session_json.get("startTime", ""))
-        hr         = ex.get("heartRate", {})
-        speed      = ex.get("speed", {})
-        cadence    = ex.get("cadence", {})
-        power      = ex.get("power", {})
-        altitude   = ex.get("altitude", {})
-        load       = ex.get("loadInformation", {})
-        zones      = ex.get("zones", {})
-        duration_s = parse_pt_seconds(ex.get("duration", ""))
-        supabase.table("polar_exercises").upsert({
-            "polar_exercise_id": exercise_id,
-            "date":              start_time,
-            "sport":             sport,
-            "duration_seconds":  si(duration_s),
-            "distance_meters":   sf(ex.get("distance")),
-            "calories":          si(ex.get("kiloCalories")),
-            "avg_heart_rate":    si(hr.get("avg")),
-            "max_heart_rate":    si(hr.get("max")),
-            "min_heart_rate":    si(hr.get("min")),
-            "avg_speed_ms":      sf(speed.get("avg")),
-            "max_speed_ms":      sf(speed.get("max")),
-            "avg_cadence":       si(cadence.get("avg")),
-            "max_cadence":       si(cadence.get("max")),
-            "avg_power":         si(power.get("avg")),
-            "max_power":         si(power.get("max")),
-            "ascent":            sf(ex.get("ascent")),
-            "descent":           sf(ex.get("descent")),
-            "altitude_min":      sf(altitude.get("min")),
-            "altitude_avg":      sf(altitude.get("avg")),
-            "altitude_max":      sf(altitude.get("max")),
-            "training_load":     sf(load.get("cardioLoad")),
-            "muscle_load":       sf(load.get("muscleLoad")),
-            "hr_zones":          json.dumps(parse_zones(zones.get("heart_rate", []))),
-            "power_zones":       json.dumps(parse_zones(zones.get("power", []))),
-            "auto_laps":         json.dumps(ex.get("autoLaps", [])),
-            "raw_json":          json.dumps(session_json),
-            "source":            "polar",
-        }, on_conflict="polar_exercise_id").execute()
-        split_rows = []
-        for lap in ex.get("autoLaps", []):
-            lap_dur = parse_pt_seconds(lap.get("duration", ""))
-            lhr     = lap.get("heartRate", {})
-            lspd    = lap.get("speed", {})
-            lcad    = lap.get("cadence", {})
-            lpwr    = lap.get("power", {})
-            lap_num = lap.get("lapNumber", 0)
-            split_rows.append({
-                "exercise_id":        exercise_id,
-                "session_date":       start_time[:10],
-                "lap_number":         lap_num,
-                "km_number":          lap_num + 1,
-                "duration_seconds":   sf(lap_dur),
-                "split_time_seconds": sf(parse_pt_seconds(lap.get("splitTime", ""))),
-                "distance_m":         sf(lap.get("distance", 1000.0)),
-                "pace_min_per_km":    sf(lap_dur / 60) if lap_dur else None,
-                "pace_display":       seconds_to_pace(lap_dur),
-                "hr_min":             si(lhr.get("min")),
-                "hr_avg":             si(lhr.get("avg")),
-                "hr_max":             si(lhr.get("max")),
-                "speed_avg_ms":       sf(lspd.get("avg")),
-                "speed_max_ms":       sf(lspd.get("max")),
-                "cadence_avg":        si(lcad.get("avg")),
-                "cadence_max":        si(lcad.get("max")),
-                "ascent_m":           sf(lap.get("ascent", 0.0)),
-                "descent_m":          sf(lap.get("descent", 0.0)),
-                "power_avg":          si(lpwr.get("avg")),
-                "power_max":          si(lpwr.get("max")),
-            })
-        if split_rows:
-            supabase.table("polar_km_splits").upsert(
-                split_rows, on_conflict="exercise_id,lap_number"
-            ).execute()
-        log.info(f"Saved exercise {exercise_id}: {sport} {(ex.get('distance') or 0)/1000:.1f}km, {len(split_rows)} splits")
-        return len(split_rows)
-    except Exception as e:
-        log.error(f"Save exercise (transaction) error {exercise_id}: {e}")
-        return 0
-
-
 def sync_sleep() -> int:
-    """GET /v3/users/{user-id}/sleep"""
     try:
         r = requests.get(f"{POLAR_BASE}/users/{POLAR_USER_ID}/sleep", headers=polar_headers())
         log.info(f"Sleep GET: {r.status_code}")
-        if r.status_code == 204:
-            return 0
-        if not r.ok:
-            log.error(f"Sleep GET error: {r.status_code} {r.text[:200]}")
+        if r.status_code == 204 or not r.ok:
             return 0
         data   = r.json()
         nights = data.get("nights", data if isinstance(data, list) else [data])
-        log.info(f"Sleep: {len(nights)} nights")
         count  = 0
         for s in nights:
             date = (s.get("date") or s.get("night", ""))[:10]
@@ -841,7 +762,7 @@ def sync_sleep() -> int:
                 "raw_json":            json.dumps(s),
             }, on_conflict="date").execute()
             count += 1
-        log.info(f"Sleep sync: {count} nights saved")
+        log.info(f"Sleep sync: {count} nights")
         return count
     except Exception as e:
         log.error(f"Sleep sync error: {e}")
@@ -859,18 +780,13 @@ def _recharge_status_label(status_int) -> str:
 
 
 def sync_nightly_recharge() -> int:
-    """GET /v3/users/{user-id}/nightly-recharge"""
     try:
         r = requests.get(f"{POLAR_BASE}/users/{POLAR_USER_ID}/nightly-recharge", headers=polar_headers())
         log.info(f"Recharge GET: {r.status_code}")
-        if r.status_code == 204:
-            return 0
-        if not r.ok:
-            log.error(f"Recharge GET error: {r.status_code} {r.text[:200]}")
+        if r.status_code == 204 or not r.ok:
             return 0
         data   = r.json()
         nights = data.get("recharges", data if isinstance(data, list) else [data])
-        log.info(f"Recharge: {len(nights)} nights")
         count  = 0
         for h in nights:
             date = (h.get("date") or "")[:10]
@@ -895,7 +811,7 @@ def sync_nightly_recharge() -> int:
                 "raw_json":        json.dumps(h),
             }, on_conflict="date").execute()
             count += 1
-        log.info(f"Recharge sync: {count} nights saved")
+        log.info(f"Recharge sync: {count} nights")
         return count
     except Exception as e:
         log.error(f"Recharge sync error: {e}")
@@ -903,18 +819,13 @@ def sync_nightly_recharge() -> int:
 
 
 def sync_daily_activity() -> int:
-    """GET /v3/users/activities — last 28 days."""
     try:
         r = requests.get(f"{POLAR_BASE}/users/activities", headers=polar_headers())
         log.info(f"Activity GET: {r.status_code}")
-        if r.status_code == 204:
-            return 0
-        if not r.ok:
-            log.error(f"Activity GET error: {r.status_code} {r.text[:200]}")
+        if r.status_code == 204 or not r.ok:
             return 0
         data       = r.json()
         activities = data if isinstance(data, list) else data.get("activities", [data])
-        log.info(f"Activity: {len(activities)} days")
         count      = 0
         for a in activities:
             date = (a.get("start_time") or a.get("date") or "")[:10]
@@ -929,7 +840,7 @@ def sync_daily_activity() -> int:
                 "raw_json":            json.dumps(a),
             }, on_conflict="date").execute()
             count += 1
-        log.info(f"Activity sync: {count} days saved")
+        log.info(f"Activity sync: {count} days")
         return count
     except Exception as e:
         log.error(f"Activity sync error: {e}")
@@ -937,7 +848,6 @@ def sync_daily_activity() -> int:
 
 
 def sync_continuous_hr() -> int:
-    """GET /v3/users/continuous-heart-rate/{date} — last 7 days."""
     try:
         count = 0
         for delta in range(7):
@@ -946,10 +856,7 @@ def sync_continuous_hr() -> int:
                 f"{POLAR_BASE}/users/continuous-heart-rate/{date}",
                 headers=polar_headers()
             )
-            log.info(f"Continuous HR GET {date}: {r.status_code}")
-            if r.status_code == 404:
-                continue
-            if not r.ok:
+            if r.status_code == 404 or not r.ok:
                 continue
             data    = r.json()
             samples = data.get("heart_rate_samples", [])
@@ -965,7 +872,7 @@ def sync_continuous_hr() -> int:
                 "raw_json": json.dumps(data),
             }, on_conflict="date").execute()
             count += 1
-        log.info(f"Continuous HR sync: {count} days saved")
+        log.info(f"Continuous HR sync: {count} days")
         return count
     except Exception as e:
         log.error(f"Continuous HR sync error: {e}")
@@ -973,7 +880,6 @@ def sync_continuous_hr() -> int:
 
 
 def sync_cardio_load() -> int:
-    """GET /v3/users/cardio-load — last 28 days."""
     try:
         today     = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         from_date = (datetime.now(timezone.utc) - timedelta(days=28)).strftime("%Y-%m-%d")
@@ -984,7 +890,6 @@ def sync_cardio_load() -> int:
         )
         log.info(f"Cardio load GET: {r.status_code}")
         if not r.ok:
-            log.error(f"Cardio load error: {r.status_code} {r.text[:200]}")
             return 0
         data  = r.json()
         loads = data if isinstance(data, list) else data.get("cardio-loads", [])
@@ -1006,7 +911,7 @@ def sync_cardio_load() -> int:
                 .update({"training_load": sf(c.get("cardio-load"))})\
                 .like("date", f"{date}%").execute()
             count += 1
-        log.info(f"Cardio load sync: {count} days saved")
+        log.info(f"Cardio load sync: {count} days")
         return count
     except Exception as e:
         log.error(f"Cardio load sync error: {e}")
@@ -1119,7 +1024,6 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
                     f"Score: {s.get('sleep_score','?')} | "
                     f"REM: {(s.get('rem_seconds') or 0)//60}min | "
                     f"Deep: {(s.get('deep_sleep_seconds') or 0)//60}min | "
-                    f"Light: {(s.get('light_sleep_seconds') or 0)//60}min | "
                     f"Interruptions: {s.get('interruptions','?')} | "
                     f"HRV: {s.get('avg_hrv','?')}"
                 )
