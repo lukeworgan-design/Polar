@@ -17,6 +17,7 @@ FIX (5 Mar 2026):
 - Partial laps capped by expected km count from total distance
 - Ascent removed from splits display (not in Polar FIT lap records)
 - Power/cadence flat field fallback for v3 API exercise summary
+- Manual run JSON parser hardened with debug logging
 """
 
 import os
@@ -188,7 +189,6 @@ def detect_recovery_window(text: str) -> int:
 # ══════════════════════════════════════════════════════════════════════════
 
 def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_distance_m: float = None) -> list:
-    """Parse FIT file bytes and extract lap records as split rows."""
     if not fitparse:
         log.error("fitparse not installed")
         return []
@@ -201,18 +201,12 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
         for record in fitfile.get_messages("lap"):
             data = {d.name: d.value for d in record}
 
-            # Cap at expected lap count based on total distance
             if expected_laps is not None and lap_num >= expected_laps:
                 log.info(f"Skipping lap {lap_num}: beyond expected {expected_laps} laps for {total_distance_m:.0f}m")
                 continue
 
-            # Duration
-            lap_dur = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
-
-            # Distance
-            dist_m = sf(data.get("total_distance"))
-
-            # Pace — from avg_speed (m/s) → seconds per km
+            lap_dur   = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
+            dist_m    = sf(data.get("total_distance"))
             pace_s    = None
             avg_speed = sf(data.get("avg_speed") or data.get("enhanced_avg_speed"))
             if avg_speed and avg_speed > 0:
@@ -220,15 +214,10 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
             elif lap_dur and dist_m and dist_m > 0:
                 pace_s = lap_dur / (dist_m / 1000)
 
-            # Heart rate
-            hr_avg = si(data.get("avg_heart_rate"))
-            hr_max = si(data.get("max_heart_rate"))
-
-            # Power
-            power_avg = si(data.get("avg_power"))
-            power_max = si(data.get("max_power"))
-
-            # Cadence — FIT stores single-leg, multiply by 2 for spm
+            hr_avg          = si(data.get("avg_heart_rate"))
+            hr_max          = si(data.get("max_heart_rate"))
+            power_avg       = si(data.get("avg_power"))
+            power_max       = si(data.get("max_power"))
             cadence_raw     = sf(data.get("avg_running_cadence") or data.get("avg_cadence"))
             cadence_max_raw = sf(data.get("max_running_cadence") or data.get("max_cadence"))
             cadence_avg     = si(cadence_raw * 2)     if cadence_raw     else None
@@ -264,7 +253,6 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
 
 
 def fetch_fit_and_parse(exercise_id: str, session_date: str, total_distance_m: float = None) -> list:
-    """Download FIT file from Polar API and parse laps."""
     try:
         r = requests.get(
             f"{POLAR_BASE}/exercises/{exercise_id}/fit",
@@ -498,26 +486,39 @@ def save_goal(text: str) -> str:
         return f"Error saving goal: {e}"
 
 def save_manual_run(text: str) -> str:
+    raw_json = None
     try:
         raw   = re.sub(r"^(save\s+run|log\s+run|manual\s+run|run\s+log)\s*[:：]\s*", "", text.strip(), flags=re.IGNORECASE)
         today = datetime.now().strftime("%Y-%m-%d")
         parse_resp = claude.messages.create(
             model="claude-opus-4-5",
-            max_tokens=800,
+            max_tokens=1000,
             system=(
-                "You are a precise data parser for Polar running data. "
-                "Extract all fields and return ONLY valid JSON — no markdown, no explanation.\n\n"
-                "Fields (null if absent): date (YYYY-MM-DD), sport (RUNNING/TRAIL_RUNNING/TREADMILL_RUNNING), "
-                "distance_meters, duration_seconds, avg_heart_rate, max_heart_rate, avg_power, max_power, "
-                "avg_cadence, max_cadence, ascent, descent, calories, training_load, muscle_load, notes, "
-                "splits (array: {km_number, duration_seconds, split_time_seconds, distance_m, "
-                "hr_avg, hr_max, power_avg, power_max, cadence_avg, cadence_max, pace_display}). "
-                "Pace format MM:SS/km. Use LAP value not cumulative."
+                "You are a precise data parser for running data. "
+                "Extract all fields and return ONLY a valid JSON object. "
+                "No markdown, no backticks, no explanation, no trailing commas, no comments. "
+                "All string values must use double quotes. Use null for missing fields. "
+                "All numeric values must be plain numbers, never strings.\n\n"
+                "Required fields: date (YYYY-MM-DD), sport (RUNNING/TRAIL_RUNNING/TREADMILL_RUNNING), "
+                "distance_meters, duration_seconds, avg_heart_rate, max_heart_rate, "
+                "avg_power, max_power, avg_cadence, max_cadence, "
+                "ascent, descent, calories, training_load, muscle_load, notes, "
+                "splits (array).\n\n"
+                "Each split object: km_number, duration_seconds, split_time_seconds, distance_m, "
+                "hr_avg, hr_max, power_avg, power_max, cadence_avg, cadence_max, pace_display.\n\n"
+                "pace_display format: MM:SS/km e.g. 7:31/km\n"
+                "duration_seconds: convert MM:SS to total seconds e.g. 7:03 = 423\n"
+                "split_time_seconds: cumulative time at end of lap in seconds\n"
+                "distance_m: always 1000 for full km splits"
             ),
-            messages=[{"role": "user", "content": f"Today is {today}.\n\n{raw}"}]
+            messages=[{"role": "user", "content": f"Today is {today}. Parse this run:\n\n{raw}"}]
         )
         raw_json = parse_resp.content[0].text.strip()
-        raw_json = re.sub(r"^```[a-z]*\s*|```$", "", raw_json, flags=re.MULTILINE).strip()
+        # Strip any markdown fences
+        raw_json = re.sub(r"^```[a-zA-Z]*\s*", "", raw_json, flags=re.MULTILINE)
+        raw_json = re.sub(r"```\s*$", "", raw_json, flags=re.MULTILINE)
+        raw_json = raw_json.strip()
+        log.info(f"Manual run JSON (first 500): {raw_json[:500]}")
         fields   = json.loads(raw_json)
         ex_id    = f"manual-{datetime.now().strftime('%Y%m%d%H%M%S')}"
         run_date = fields.get("date") or today
@@ -579,7 +580,7 @@ def save_manual_run(text: str) -> str:
             f"📏 {dist_km:.2f}km  •  ⏱ {int(dur_s//60)}:{int(dur_s%60):02d}",
             f"💨 {seconds_to_pace(pace_s)}  ❤️ {fields.get('avg_heart_rate','?')}/{fields.get('max_heart_rate','?')}bpm",
             f"⚡ {fields.get('avg_power','?')}W  •  👟 {fields.get('avg_cadence','?')}spm",
-            f"⬆️ {fields.get('ascent',0):.0f}m  •  🔥 Load {fields.get('training_load','?')}",
+            f"⬆️ {fields.get('ascent') or 0:.0f}m  •  🔥 Load {fields.get('training_load','?')}",
         ]
         if split_rows:
             lines.append(f"\n📊 {len(split_rows)} km splits saved")
@@ -592,6 +593,9 @@ def save_manual_run(text: str) -> str:
                 cad  = str(s.get("cadence_avg") or "?").rjust(3)
                 lines.append(f"`{km}  │ {pace} │ {hr} │ {pwr} │ {cad}`")
         return "\n".join(lines)
+    except json.JSONDecodeError as e:
+        log.error(f"JSON decode error at {e}: raw_json={raw_json[:1000] if raw_json else 'None'}")
+        return f"Error parsing run data — check Railway logs for details."
     except Exception as e:
         log.error(f"Save manual run error: {e}")
         return f"Error saving run: {e}"
@@ -635,15 +639,13 @@ def save_wellness_checkin(text: str) -> str:
 
 def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) -> int:
     try:
-        sport   = ex_data.get("sport", "")
-        hr      = ex_data.get("heart_rate", {}) or {}
-        load    = ex_data.get("training_load_pro", {}) or {}
-        zones   = ex_data.get("heart_rate_zones", []) or []
-        start   = ex_data.get("start_time", "")
-        dur_s   = parse_pt_seconds(ex_data.get("duration", ""))
-        dist_m  = sf(ex_data.get("distance"))
-
-        # Handle both nested objects and flat fields for power/cadence
+        sport       = ex_data.get("sport", "")
+        hr          = ex_data.get("heart_rate", {}) or {}
+        load        = ex_data.get("training_load_pro", {}) or {}
+        zones       = ex_data.get("heart_rate_zones", []) or []
+        start       = ex_data.get("start_time", "")
+        dur_s       = parse_pt_seconds(ex_data.get("duration", ""))
+        dist_m      = sf(ex_data.get("distance"))
         cadence_obj = ex_data.get("cadence", {}) or {}
         power_obj   = ex_data.get("power", {}) or {}
         avg_cadence = si(cadence_obj.get("avg") or ex_data.get("avg_cadence"))
@@ -651,7 +653,7 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
         avg_power   = si(power_obj.get("avg")   or ex_data.get("avg_power"))
         max_power   = si(power_obj.get("max")   or ex_data.get("max_power"))
 
-        # If still None, derive avg cadence/power from splits
+        # Derive from splits if still None
         if avg_cadence is None and split_rows:
             cad_vals = [s["cadence_avg"] for s in split_rows if s.get("cadence_avg")]
             if cad_vals:
@@ -709,12 +711,10 @@ def sync_new_polar_exercises() -> list:
         log.info(f"Exercises GET: {r.status_code}")
         if r.status_code == 204 or not r.ok:
             return []
-
         exercises = r.json()
         if not isinstance(exercises, list):
             exercises = exercises.get("exercises", [])
         log.info(f"Exercises: {len(exercises)} found")
-
         new_exercises = []
         for ex in exercises:
             ex_id = str(ex.get("id", ""))
@@ -728,7 +728,6 @@ def sync_new_polar_exercises() -> list:
                 .eq("polar_exercise_id", ex_id).limit(1).execute()
             if existing.data:
                 continue
-
             detail_r = requests.get(
                 f"{POLAR_BASE}/exercises/{ex_id}?zones=true",
                 headers=polar_headers()
@@ -736,16 +735,13 @@ def sync_new_polar_exercises() -> list:
             if not detail_r.ok:
                 log.error(f"Exercise detail error {ex_id}: {detail_r.status_code}")
                 continue
-            ex_data   = detail_r.json()
-            start     = ex_data.get("start_time", "")
-            dist_m    = sf(ex_data.get("distance"))
-
+            ex_data    = detail_r.json()
+            start      = ex_data.get("start_time", "")
+            dist_m     = sf(ex_data.get("distance"))
             split_rows = fetch_fit_and_parse(ex_id, start[:10], dist_m)
             splits     = save_exercise_from_api(ex_data, ex_id, split_rows)
             new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits})
-
         return new_exercises
-
     except Exception as e:
         log.error(f"Exercises sync error: {e}")
         return []
