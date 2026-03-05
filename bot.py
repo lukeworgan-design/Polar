@@ -653,7 +653,10 @@ def sync_new_polar_exercises() -> list:
                 log.error(f"Exercise detail error {ex_id}: {detail_r.status_code}")
                 continue
             ex_data = detail_r.json()
+            log.info(f"Exercise detail keys: {list(ex_data.keys())}")
+            log.info(f"autoLaps check: {ex_data.get('autoLaps') or ex_data.get('auto_laps') or ex_data.get('laps') or 'NOT FOUND'}")
             splits  = save_exercise_new_api(ex_data, ex_id)
+
             new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits})
 
         return new_exercises
