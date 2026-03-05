@@ -14,8 +14,9 @@ FIX (5 Mar 2026):
 - FIT file download and parse for full km splits
 - Pace calculated from avg_speed field
 - Cadence doubled from single-leg FIT value
-- Partial laps under 800m filtered out
-- Ascent debug logging added
+- Partial laps capped by expected km count from total distance
+- Ascent removed from splits display (not in Polar FIT lap records)
+- Power/cadence flat field fallback for v3 API exercise summary
 """
 
 import os
@@ -114,14 +115,6 @@ def si(v):
     try: return int(float(v)) if v not in (None, "", "N/A") else None
     except: return None
 
-def parse_zones(zone_list: list) -> list:
-    return [{
-        "zone":    z.get("zoneIndex"),
-        "lower":   z.get("lowerLimit"),
-        "upper":   z.get("higherLimit"),
-        "seconds": parse_pt_seconds(z.get("inZone", "PT0S")),
-    } for z in zone_list]
-
 def recharge_emoji(status: str) -> str:
     if not status: return "⚪"
     s = status.upper()
@@ -194,29 +187,30 @@ def detect_recovery_window(text: str) -> int:
 # FIT FILE PARSING
 # ══════════════════════════════════════════════════════════════════════════
 
-def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str) -> list:
+def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_distance_m: float = None) -> list:
     """Parse FIT file bytes and extract lap records as split rows."""
     if not fitparse:
         log.error("fitparse not installed")
         return []
     try:
-        fitfile    = fitparse.FitFile(io.BytesIO(fit_bytes))
-        split_rows = []
-        lap_num    = 0
+        fitfile       = fitparse.FitFile(io.BytesIO(fit_bytes))
+        split_rows    = []
+        lap_num       = 0
+        expected_laps = int((total_distance_m or 0) / 1000) if total_distance_m else None
 
         for record in fitfile.get_messages("lap"):
             data = {d.name: d.value for d in record}
+
+            # Cap at expected lap count based on total distance
+            if expected_laps is not None and lap_num >= expected_laps:
+                log.info(f"Skipping lap {lap_num}: beyond expected {expected_laps} laps for {total_distance_m:.0f}m")
+                continue
 
             # Duration
             lap_dur = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
 
             # Distance
             dist_m = sf(data.get("total_distance"))
-
-            # Skip partial final lap under 800m
-            if dist_m and dist_m < 800:
-                log.info(f"Skipping partial lap {lap_num}: {dist_m:.0f}m")
-                continue
 
             # Pace — from avg_speed (m/s) → seconds per km
             pace_s    = None
@@ -240,18 +234,6 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str) -> lis
             cadence_avg     = si(cadence_raw * 2)     if cadence_raw     else None
             cadence_max     = si(cadence_max_raw * 2) if cadence_max_raw else None
 
-            # Elevation — log all candidate fields for debugging
-            ascent_m  = sf(data.get("total_ascent"))
-            descent_m = sf(data.get("total_descent"))
-            log.info(
-                f"Lap {lap_num} elevation: total_ascent={data.get('total_ascent')} "
-                f"total_descent={data.get('total_descent')} "
-                f"altitude_delta={data.get('altitude_delta')} "
-                f"avg_altitude={data.get('avg_altitude')} "
-                f"max_altitude={data.get('max_altitude')} "
-                f"min_altitude={data.get('min_altitude')}"
-            )
-
             split_rows.append({
                 "exercise_id":        exercise_id,
                 "session_date":       session_date,
@@ -268,8 +250,8 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str) -> lis
                 "power_max":          power_max,
                 "cadence_avg":        cadence_avg,
                 "cadence_max":        cadence_max,
-                "ascent_m":           ascent_m,
-                "descent_m":          descent_m,
+                "ascent_m":           None,
+                "descent_m":          None,
             })
             lap_num += 1
 
@@ -281,7 +263,7 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str) -> lis
         return []
 
 
-def fetch_fit_and_parse(exercise_id: str, session_date: str) -> list:
+def fetch_fit_and_parse(exercise_id: str, session_date: str, total_distance_m: float = None) -> list:
     """Download FIT file from Polar API and parse laps."""
     try:
         r = requests.get(
@@ -295,7 +277,7 @@ def fetch_fit_and_parse(exercise_id: str, session_date: str) -> list:
         if not r.ok:
             log.error(f"FIT download failed: {r.status_code} {r.text[:200]}")
             return []
-        return parse_fit_laps(r.content, exercise_id, session_date)
+        return parse_fit_laps(r.content, exercise_id, session_date, total_distance_m)
     except Exception as e:
         log.error(f"FIT fetch error {exercise_id}: {e}")
         return []
@@ -315,11 +297,15 @@ def format_run_list(runs: list) -> str:
         load     = r.get("training_load")
         load_str = f"  🔥 {load:.0f}" if load else ""
         source   = " ✏️" if r.get("source") == "manual" else ""
+        avg_pwr  = r.get("avg_power")
+        avg_cad  = r.get("avg_cadence")
+        pwr_str  = f"{avg_pwr}W" if avg_pwr else "?"
+        cad_str  = f"{avg_cad}spm" if avg_cad else "?"
         lines.append(
             f"{sport_emoji(r.get('sport',''))} *{fmt_date(r['date'])}*{source}  •  "
             f"{dist_km:.1f}km  •  {int(dur_s//60)}min\n"
             f"   💨 {seconds_to_pace(pace_s)}  ❤️ {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')}"
-            f"  ⚡ {r.get('avg_power','?')}W  👟 {r.get('avg_cadence','?')}spm{load_str}"
+            f"  ⚡ {pwr_str}  👟 {cad_str}{load_str}"
         )
     return "\n".join(lines)
 
@@ -327,16 +313,15 @@ def format_splits_table(splits: list, header: str) -> str:
     if not splits:
         return "No splits found."
     lines = [f"📊 *{header}*\n"]
-    lines.append("`KM  │ Pace     │ HR      │  Power │ Cad │ ↑`")
-    lines.append("`────┼──────────┼─────────┼────────┼─────┼────`")
+    lines.append("`KM  │ Pace     │ HR      │  Power │ Cad`")
+    lines.append("`────┼──────────┼─────────┼────────┼────`")
     for s in splits:
         km    = str(s.get("km_number", "?")).rjust(2)
         pace  = (s.get("pace_display") or "N/A").ljust(8)
         hr    = f"{s.get('hr_avg','?')}/{s.get('hr_max','?')}".ljust(7)
         power = str(s.get("power_avg") or "?").rjust(4) + "W"
         cad   = str(s.get("cadence_avg") or "?").rjust(3)
-        asc   = f"{s.get('ascent_m', 0) or 0:.0f}m"
-        lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad} │ {asc}`")
+        lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad}`")
     return "\n".join(lines)
 
 def format_recovery_dashboard(sleep_data: list, hrv_data: list) -> str:
@@ -372,7 +357,10 @@ def format_hr_dashboard(hr_data: list) -> str:
         return "No continuous HR data found."
     lines = ["❤️ *Continuous Heart Rate — Last 7 Days*\n"]
     for h in hr_data:
-        lines.append(f"*{h['date']}*  Avg {h.get('avg_hr','?')}bpm  •  Min {h.get('min_hr','?')}  •  Max {h.get('max_hr','?')}")
+        lines.append(
+            f"*{h['date']}*  Avg {h.get('avg_hr','?')}bpm  •  "
+            f"Min {h.get('min_hr','?')}  •  Max {h.get('max_hr','?')}"
+        )
     return "\n".join(lines)
 
 def format_cardio_load_dashboard(load_data: list) -> str:
@@ -649,13 +637,29 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
     try:
         sport   = ex_data.get("sport", "")
         hr      = ex_data.get("heart_rate", {}) or {}
-        cadence = ex_data.get("cadence", {}) or {}
-        power   = ex_data.get("power", {}) or {}
         load    = ex_data.get("training_load_pro", {}) or {}
         zones   = ex_data.get("heart_rate_zones", []) or []
         start   = ex_data.get("start_time", "")
         dur_s   = parse_pt_seconds(ex_data.get("duration", ""))
         dist_m  = sf(ex_data.get("distance"))
+
+        # Handle both nested objects and flat fields for power/cadence
+        cadence_obj = ex_data.get("cadence", {}) or {}
+        power_obj   = ex_data.get("power", {}) or {}
+        avg_cadence = si(cadence_obj.get("avg") or ex_data.get("avg_cadence"))
+        max_cadence = si(cadence_obj.get("max") or ex_data.get("max_cadence"))
+        avg_power   = si(power_obj.get("avg")   or ex_data.get("avg_power"))
+        max_power   = si(power_obj.get("max")   or ex_data.get("max_power"))
+
+        # If still None, derive avg cadence/power from splits
+        if avg_cadence is None and split_rows:
+            cad_vals = [s["cadence_avg"] for s in split_rows if s.get("cadence_avg")]
+            if cad_vals:
+                avg_cadence = si(sum(cad_vals) / len(cad_vals))
+        if avg_power is None and split_rows:
+            pwr_vals = [s["power_avg"] for s in split_rows if s.get("power_avg")]
+            if pwr_vals:
+                avg_power = si(sum(pwr_vals) / len(pwr_vals))
 
         hr_zones_parsed = [{
             "zone":    z.get("index"),
@@ -673,10 +677,10 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
             "calories":          si(ex_data.get("calories")),
             "avg_heart_rate":    si(hr.get("average")),
             "max_heart_rate":    si(hr.get("maximum")),
-            "avg_cadence":       si(cadence.get("avg")),
-            "max_cadence":       si(cadence.get("max")),
-            "avg_power":         si(power.get("avg")),
-            "max_power":         si(power.get("max")),
+            "avg_cadence":       avg_cadence,
+            "max_cadence":       max_cadence,
+            "avg_power":         avg_power,
+            "max_power":         max_power,
             "training_load":     sf(ex_data.get("training_load") or load.get("cardio-load")),
             "muscle_load":       sf(load.get("muscle-load")),
             "ascent":            sf(ex_data.get("ascent")),
@@ -691,7 +695,7 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
                 split_rows, on_conflict="exercise_id,lap_number"
             ).execute()
 
-        log.info(f"Saved {exercise_id}: {sport} {(dist_m or 0)/1000:.1f}km, {len(split_rows)} splits")
+        log.info(f"Saved {exercise_id}: {sport} {(dist_m or 0)/1000:.1f}km, {len(split_rows)} splits, power={avg_power}W cad={avg_cadence}spm")
         return len(split_rows)
 
     except Exception as e:
@@ -732,10 +736,11 @@ def sync_new_polar_exercises() -> list:
             if not detail_r.ok:
                 log.error(f"Exercise detail error {ex_id}: {detail_r.status_code}")
                 continue
-            ex_data = detail_r.json()
-            start   = ex_data.get("start_time", "")
+            ex_data   = detail_r.json()
+            start     = ex_data.get("start_time", "")
+            dist_m    = sf(ex_data.get("distance"))
 
-            split_rows = fetch_fit_and_parse(ex_id, start[:10])
+            split_rows = fetch_fit_and_parse(ex_id, start[:10], dist_m)
             splits     = save_exercise_from_api(ex_data, ex_id, split_rows)
             new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits})
 
@@ -1002,7 +1007,7 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
             latest = get_latest_run_with_splits()
             if latest:
                 splits = supabase.table("polar_km_splits")\
-                    .select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m")\
+                    .select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg")\
                     .eq("exercise_id", latest["polar_exercise_id"])\
                     .order("lap_number").execute()
                 if splits.data:
@@ -1013,8 +1018,7 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
                             f"  KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | "
                             f"HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | "
                             f"Power {s.get('power_avg','?')}W | "
-                            f"Cadence {s.get('cadence_avg','?')}spm | "
-                            f"↑{s.get('ascent_m',0) or 0:.0f}m"
+                            f"Cadence {s.get('cadence_avg','?')}spm"
                         )
 
         now             = datetime.now(timezone.utc)
@@ -1354,7 +1358,7 @@ def handle_message(message):
                 bot.reply_to(message, "No runs with splits found.")
                 return
             splits = supabase.table("polar_km_splits")\
-                .select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m")\
+                .select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg")\
                 .eq("exercise_id", ex["polar_exercise_id"])\
                 .order("lap_number").execute()
             dist_km = (ex.get("distance_meters") or 0) / 1000
