@@ -15,6 +15,7 @@ v6 changes:
 FIX (5 Mar 2026):
 - save_exercise_new_api() now saves avg_power, max_power, avg_cadence, max_cadence
 - save_exercise_new_api() now saves km splits from autoLaps (was broken)
+- Debugging laps endpoint
 """
 
 import os
@@ -528,8 +529,8 @@ def save_wellness_checkin(text: str) -> str:
 # POLAR SYNC — NEW API (v3 non-transaction)
 # ══════════════════════════════════════════════════════════════════════════
 
-def save_exercise_new_api(ex: dict, exercise_id: str) -> int:
-    """Save exercise from new GET /v3/exercises API — FIXED: now saves power, cadence, splits."""
+def save_exercise_new_api(ex: dict, exercise_id: str, laps: list = None) -> int:
+    """Save exercise from new GET /v3/exercises API — including splits from separate laps endpoint."""
     try:
         sport   = ex.get("sport", "")
         hr      = ex.get("heart_rate", {}) or {}
@@ -570,29 +571,28 @@ def save_exercise_new_api(ex: dict, exercise_id: str) -> int:
             "source":            "polar",
         }, on_conflict="polar_exercise_id").execute()
 
-        # Save km splits from autoLaps — was completely missing before this fix
-        auto_laps  = ex.get("autoLaps") or ex.get("auto_laps") or []
+        # Save km splits from laps endpoint
         split_rows = []
-        for lap in auto_laps:
+        for lap in (laps or []):
             lap_dur = parse_pt_seconds(lap.get("duration", ""))
-            lhr     = lap.get("heartRate", {}) or {}
+            lhr     = lap.get("heartRate", {}) or lap.get("heart_rate", {}) or {}
             lspd    = lap.get("speed", {}) or {}
             lcad    = lap.get("cadence", {}) or {}
             lpwr    = lap.get("power", {}) or {}
-            lap_num = lap.get("lapNumber", 0)
+            lap_num = lap.get("lapNumber", 0) or lap.get("lap_number", 0) or lap.get("index", 0)
             split_rows.append({
                 "exercise_id":        exercise_id,
                 "session_date":       start[:10],
                 "lap_number":         lap_num,
                 "km_number":          lap_num + 1,
                 "duration_seconds":   sf(lap_dur),
-                "split_time_seconds": sf(parse_pt_seconds(lap.get("splitTime", ""))),
+                "split_time_seconds": sf(parse_pt_seconds(lap.get("splitTime", "") or lap.get("split_time", ""))),
                 "distance_m":         sf(lap.get("distance", 1000.0)),
                 "pace_min_per_km":    sf(lap_dur / 60) if lap_dur else None,
                 "pace_display":       seconds_to_pace(lap_dur),
                 "hr_min":             si(lhr.get("min")),
-                "hr_avg":             si(lhr.get("avg")),
-                "hr_max":             si(lhr.get("max")),
+                "hr_avg":             si(lhr.get("avg") or lhr.get("average")),
+                "hr_max":             si(lhr.get("max") or lhr.get("maximum")),
                 "speed_avg_ms":       sf(lspd.get("avg")),
                 "speed_max_ms":       sf(lspd.get("max")),
                 "cadence_avg":        si(lcad.get("avg")),
@@ -645,6 +645,7 @@ def sync_new_polar_exercises() -> list:
                 .eq("polar_exercise_id", ex_id).limit(1).execute()
             if existing.data:
                 continue
+            # Fetch full exercise detail
             detail_r = requests.get(
                 f"{POLAR_BASE}/exercises/{ex_id}?zones=true",
                 headers=polar_headers()
@@ -653,10 +654,14 @@ def sync_new_polar_exercises() -> list:
                 log.error(f"Exercise detail error {ex_id}: {detail_r.status_code}")
                 continue
             ex_data = detail_r.json()
-            log.info(f"Exercise detail keys: {list(ex_data.keys())}")
-            log.info(f"autoLaps check: {ex_data.get('autoLaps') or ex_data.get('auto_laps') or ex_data.get('laps') or 'NOT FOUND'}")
-            splits  = save_exercise_new_api(ex_data, ex_id)
-
+            # Fetch laps from separate endpoint
+            laps_r = requests.get(f"{POLAR_BASE}/exercises/{ex_id}/laps", headers=polar_headers())
+            log.info(f"Laps endpoint: {laps_r.status_code} {laps_r.text[:300]}")
+            laps = []
+            if laps_r.ok:
+                laps_data = laps_r.json()
+                laps = laps_data if isinstance(laps_data, list) else laps_data.get("laps", [])
+            splits = save_exercise_new_api(ex_data, ex_id, laps)
             new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits})
 
         return new_exercises
