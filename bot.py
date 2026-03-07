@@ -1,12 +1,15 @@
 """
-bot.py - Polar Running Coach Telegram Bot v7.1
+bot.py - Polar Running Coach Telegram Bot v7.2
 Athlete: Luke Worgan | Goal: London Marathon 27 Apr 2026 + Ultra marathons
 Watch: Polar Grit X2 | Deployed: Railway.app
 
+v7.2 changes:
+- sync_cardio_load() reads from training_load column in polar_exercises
+  (not raw_json which is null for older rows, not a standalone API endpoint)
+- Fixes /cardio showing 0 entries in logs
+
 v7.1 changes:
-- sync_cardio_load() fixed: now pulls from polar_exercises.raw_json
-  (Polar v3 API embeds load in exercise detail, not a standalone endpoint)
-  This fixes /cardio showing stale Feb dates instead of current data
+- sync_cardio_load() fixed to read from raw_json instead of fake API endpoint
 
 v7 changes:
 - Post-run debrief: fires automatically 4 minutes after a new run syncs
@@ -20,31 +23,6 @@ v6 changes:
 - Added sync_cardio_load() → polar_cardio_load table
 - All 7 data streams in context passed to Claude
 - Super coach system prompt with full physiological analysis
-
-FIX (5 Mar 2026):
-- FIT file download and parse for full km splits
-- Pace calculated from avg_speed field
-- Cadence doubled from single-leg FIT value
-- Partial laps capped by expected km count from total distance
-- Ascent removed from splits display (not in Polar FIT lap records)
-- Power/cadence flat field fallback for v3 API exercise summary
-- Manual run JSON parser hardened with debug logging
-
-SUPABASE BACKFILL (run once in SQL editor to populate polar_cardio_load):
-  INSERT INTO polar_cardio_load (date, cardio_load, cardio_load_status, muscle_load, raw_json)
-  SELECT
-    DATE(date) as date,
-    (raw_json->'loadInformation'->>'cardioLoad')::float as cardio_load,
-    raw_json->'loadInformation'->>'cardioLoadInterpretation' as cardio_load_status,
-    (raw_json->'loadInformation'->>'muscleLoad')::float as muscle_load,
-    raw_json
-  FROM polar_exercises
-  WHERE raw_json IS NOT NULL
-    AND raw_json->'loadInformation'->>'cardioLoad' IS NOT NULL
-  ON CONFLICT (date) DO UPDATE SET
-    cardio_load = EXCLUDED.cardio_load,
-    cardio_load_status = EXCLUDED.cardio_load_status,
-    muscle_load = EXCLUDED.muscle_load;
 """
 
 import os
@@ -698,7 +676,6 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
             "seconds": parse_pt_seconds(z.get("in-zone", "PT0S")),
         } for z in zones]
 
-        # Extract cardio load from loadInformation if present
         load_info   = ex_data.get("loadInformation") or {}
         cardio_load = sf(ex_data.get("training_load") or load.get("cardio-load") or load_info.get("cardioLoad"))
         muscle_load = sf(load.get("muscle-load") or load_info.get("muscleLoad"))
@@ -931,61 +908,44 @@ def sync_continuous_hr() -> int:
 
 def sync_cardio_load() -> int:
     """
-    Pulls cardio/muscle load from polar_exercises.raw_json.
-    The Polar v3 API embeds loadInformation inside each exercise detail response —
-    there is no standalone /cardio-load endpoint. This function reads raw_json
-    from the last 28 days of exercises and populates polar_cardio_load correctly.
+    Builds polar_cardio_load from training_load column in polar_exercises.
+    The Polar v3 API has no standalone cardio-load endpoint — load is stored
+    directly in training_load when exercises are synced.
     """
     try:
         from_date = (datetime.now(timezone.utc) - timedelta(days=28)).strftime("%Y-%m-%d")
         runs = supabase.table("polar_exercises")\
-            .select("polar_exercise_id,date,raw_json,training_load")\
+            .select("polar_exercise_id,date,training_load,muscle_load")\
             .gte("date", from_date)\
-            .not_.is_("raw_json", "null")\
+            .not_.is_("training_load", "null")\
             .order("date", desc=True)\
             .execute()
 
         count = 0
         for run in (runs.data or []):
-            raw = run.get("raw_json")
-            if not raw:
-                continue
-            if isinstance(raw, str):
-                try:
-                    raw = json.loads(raw)
-                except:
-                    continue
-
-            load_info = raw.get("loadInformation") or {}
-            cardio    = sf(load_info.get("cardioLoad"))
-            muscle    = sf(load_info.get("muscleLoad"))
-            status    = load_info.get("cardioLoadInterpretation")
-
+            cardio = sf(run.get("training_load"))
             if not cardio:
                 continue
-
             date_str = (run.get("date") or "")[:10]
             if not date_str:
                 continue
-
+            if cardio > 150:
+                status = "OVERREACHING"
+            elif cardio > 100:
+                status = "MAINTAINING"
+            elif cardio > 40:
+                status = "PRODUCTIVE"
+            else:
+                status = "DETRAINING"
             supabase.table("polar_cardio_load").upsert({
                 "date":               date_str,
                 "cardio_load":        cardio,
                 "cardio_load_status": status,
-                "muscle_load":        muscle,
-                "raw_json":           json.dumps(load_info),
+                "muscle_load":        sf(run.get("muscle_load")),
             }, on_conflict="date").execute()
-
-            # Keep training_load column in sync if it was null
-            if not run.get("training_load"):
-                supabase.table("polar_exercises")\
-                    .update({"training_load": cardio})\
-                    .eq("polar_exercise_id", run["polar_exercise_id"])\
-                    .execute()
-
             count += 1
 
-        log.info(f"Cardio load sync: {count} entries from exercise raw_json")
+        log.info(f"Cardio load sync: {count} entries from training_load column")
         return count
     except Exception as e:
         log.error(f"Cardio load sync error: {e}")
@@ -1316,87 +1276,65 @@ def send_post_run_debrief(exercise_id: str):
         log.info(f"Post-run debrief already sent for {exercise_id}, skipping")
         return
     debriefed_today.add(exercise_id)
-
     log.info(f"Post-run debrief: waiting 4 minutes for {exercise_id}")
     time.sleep(240)
-
     try:
         run_resp = supabase.table("polar_exercises")\
-            .select("*")\
-            .eq("polar_exercise_id", exercise_id)\
-            .limit(1).execute()
+            .select("*").eq("polar_exercise_id", exercise_id).limit(1).execute()
         if not run_resp.data:
-            log.error(f"Post-run debrief: exercise {exercise_id} not found")
             return
         run = run_resp.data[0]
-
         splits_resp = supabase.table("polar_km_splits")\
             .select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg")\
-            .eq("exercise_id", exercise_id)\
-            .order("lap_number").execute()
+            .eq("exercise_id", exercise_id).order("lap_number").execute()
         splits = splits_resp.data or []
-
         sleep_resp = supabase.table("polar_sleep")\
             .select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds")\
             .order("date", desc=True).limit(3).execute()
         sleep_rows = sleep_resp.data or []
-
         hrv_resp = supabase.table("polar_hrv")\
             .select("date,hrv_avg,ans_charge,recharge_status")\
             .order("date", desc=True).limit(1).execute()
         hrv = hrv_resp.data[0] if hrv_resp.data else {}
-
         now        = datetime.now(timezone.utc)
         week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
         load_resp  = supabase.table("polar_exercises")\
             .select("date,distance_meters,training_load,duration_seconds")\
             .gte("date", week_start).order("date").execute()
         week_runs  = load_resp.data or []
-
         goals_resp = supabase.table("goals")\
             .select("race_name,race_date,distance_km,target_time")\
             .eq("active", True).execute()
-        goals      = goals_resp.data or []
         goals_text = "\n".join([
             f"- {g['race_name']} on {g['race_date']}: {g['distance_km']}km target {g['target_time']}"
-            for g in goals
+            for g in (goals_resp.data or [])
         ]) or "No active goals."
-
         dist_km = round((run.get("distance_meters") or 0) / 1000, 2)
         dur_s   = run.get("duration_seconds") or 0
         dur_str = f"{dur_s // 3600}h {(dur_s % 3600) // 60}m" if dur_s >= 3600 else f"{dur_s // 60}m {dur_s % 60}s"
         pace_s  = (dur_s / dist_km) if dist_km > 0 else 0
-
         splits_text = ""
         if splits:
             lines = [
                 f"  km {s['km_number']}: {s.get('pace_display','?')} | "
                 f"HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | "
-                f"Power {s.get('power_avg','?')}W | "
-                f"Cad {s.get('cadence_avg','?')}spm"
+                f"Power {s.get('power_avg','?')}W | Cad {s.get('cadence_avg','?')}spm"
                 for s in splits[:20]
             ]
             splits_text = "KM SPLITS:\n" + "\n".join(lines)
-
         weekly_km   = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
         weekly_load = sum((r.get("training_load") or 0) for r in week_runs)
-
-        sleep_text = "\n".join([
-            f"  - {s['date']}: {round((s.get('total_sleep_seconds') or 0)/3600, 1)}h, "
-            f"score {s.get('sleep_score','?')}, "
-            f"deep {(s.get('deep_sleep_seconds') or 0)//60}min"
+        sleep_text  = "\n".join([
+            f"  - {s['date']}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h, "
+            f"score {s.get('sleep_score','?')}, deep {(s.get('deep_sleep_seconds') or 0)//60}min"
             for s in sleep_rows
         ]) or "No recent sleep data."
-
         hrv_text = (
             f"Latest recharge: {hrv.get('recharge_status','?')}, "
-            f"ANS charge {hrv.get('ans_charge','?')}, "
-            f"HRV avg {hrv.get('hrv_avg','?')}"
+            f"ANS charge {hrv.get('ans_charge','?')}, HRV avg {hrv.get('hrv_avg','?')}"
         ) if hrv else "No HRV data."
-
         marathon_date = datetime(2026, 4, 27).date()
         days_left     = (marathon_date - datetime.now().date()).days
-
         prompt = f"""You are an elite running coach. Luke just finished a run. Write a focused post-run debrief in exactly 3 short paragraphs (max 280 tokens total). Reference his actual numbers. No generic advice.
 
 ATHLETE: Luke Worgan, 36yo, 167cm, 78kg, VO2max 55, max HR 198, aerobic threshold 149bpm, anaerobic threshold 178bpm
@@ -1422,22 +1360,15 @@ Paragraph 3: Rest of today — specific nutrition, recovery and movement advice 
 
 End with:
 NOTE: post-run debrief | <10-word summary>"""
-
-        response = claude.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=400,
+        response  = claude.messages.create(
+            model="claude-opus-4-5", max_tokens=400,
             messages=[{"role": "user", "content": prompt}]
         )
-        full_text = response.content[0].text
-        reply     = extract_and_save_note(full_text, "post-run debrief")
-
+        reply  = extract_and_save_note(response.content[0].text, "post-run debrief")
         header = f"🏃 *Post-run debrief* — {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)}\n\n"
         msg    = header + reply
-        if len(msg) > 4000:
-            msg = msg[:4000]
+        if len(msg) > 4000: msg = msg[:4000]
         bot.send_message(YOUR_TELEGRAM_ID, msg, parse_mode="Markdown")
-        log.info(f"Post-run debrief sent for {exercise_id}")
-
     except Exception as e:
         log.error(f"Post-run debrief error {exercise_id}: {e}")
 
@@ -1450,47 +1381,38 @@ def send_evening_debrief():
         today_str  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         now        = datetime.now(timezone.utc)
         week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
-
         activity_resp = supabase.table("polar_daily_activity")\
             .select("date,steps,active_calories,active_time_seconds")\
             .eq("date", today_str).execute()
         activity     = activity_resp.data[0] if activity_resp.data else None
         data_present = activity is not None
-
         runs_resp  = supabase.table("polar_exercises")\
             .select("polar_exercise_id,distance_meters,duration_seconds,avg_heart_rate,training_load,sport")\
             .like("date", f"{today_str}%").execute()
         runs_today = runs_resp.data or []
-
         week_resp   = supabase.table("polar_exercises")\
             .select("date,distance_meters,training_load,duration_seconds")\
             .gte("date", week_start).execute()
         week_runs   = week_resp.data or []
         weekly_km   = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
         weekly_load = sum((r.get("training_load") or 0) for r in week_runs)
-
-        goals_resp = supabase.table("goals")\
+        goals_resp  = supabase.table("goals")\
             .select("race_name,race_date,distance_km,target_time")\
             .eq("active", True).execute()
-        goals      = goals_resp.data or []
-        goals_text = "\n".join([
+        goals_text  = "\n".join([
             f"- {g['race_name']} on {g['race_date']}: target {g['target_time']}"
-            for g in goals
+            for g in (goals_resp.data or [])
         ]) or "No active goals."
-
         checkin_resp  = supabase.table("wellness_checkins")\
             .select("date,fatigue_score,sleep_score,mood_score,notes")\
             .order("date", desc=True).limit(1).execute()
         last_checkin  = checkin_resp.data[0] if checkin_resp.data else None
         checkin_today = last_checkin and last_checkin.get("date") == today_str
-
         marathon_date = datetime(2026, 4, 27).date()
         days_left     = (marathon_date - datetime.now().date()).days
-
         if data_present:
             steps      = activity.get("steps", "?")
             active_min = round((activity.get("active_time_seconds") or 0) / 60)
-
             run_summary = "No runs recorded today."
             if runs_today:
                 run_lines = []
@@ -1503,10 +1425,8 @@ def send_evening_debrief():
                         f"avg HR {r.get('avg_heart_rate','?')} | load {r.get('training_load','?')}"
                     )
                 run_summary = "Runs today:\n" + "\n".join(run_lines)
-
-            checkin_nudge = "" if checkin_today else \
+            checkin_nudge   = "" if checkin_today else \
                 "\nAlso nudge Luke to log a quick wellness check-in (fatigue, sleep quality, mood out of 10)."
-
             checkin_context = ""
             if last_checkin:
                 checkin_context = (
@@ -1514,7 +1434,6 @@ def send_evening_debrief():
                     f"fatigue {last_checkin.get('fatigue_score','?')}/10, "
                     f"mood {last_checkin.get('mood_score','?')}/10"
                 )
-
             prompt = f"""You are an elite running coach. It's Luke's end-of-day debrief. Write 3 short direct paragraphs (max 280 tokens). Reference actual numbers.
 
 ATHLETE: Luke Worgan, VO2max 55, max HR 198, aerobic threshold 149bpm
@@ -1535,39 +1454,31 @@ Paragraph 3: Tonight's sleep and recovery recommendation — specific, not gener
 
 End with:
 NOTE: evening debrief | <10-word summary>"""
-
         else:
-            prompt = f"""You are an elite running coach. It's evening and today's Polar activity data hasn't synced yet so you don't have today's full picture.
+            prompt = f"""You are an elite running coach. It's evening and today's Polar activity data hasn't synced yet.
 
 WEEK SO FAR: {round(weekly_km,1)}km across {len(week_runs)} runs
 LONDON MARATHON: {days_left} days away
 GOALS:\n{goals_text}
 
 Write 2 short paragraphs (max 150 tokens):
-- Acknowledge honestly that today's data is still syncing so you can't give a full picture
+- Acknowledge honestly that today's data is still syncing
 - Give one specific, useful evening tip for marathon/ultra training at this stage of prep
 
 Nudge Luke to log a wellness check-in if he hasn't: fatigue, sleep quality, mood out of 10.
 
 End with:
 NOTE: evening debrief | data pending, general tip sent"""
-
-        response = claude.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=400,
+        response  = claude.messages.create(
+            model="claude-opus-4-5", max_tokens=400,
             messages=[{"role": "user", "content": prompt}]
         )
-        full_text = response.content[0].text
-        reply     = extract_and_save_note(full_text, "evening debrief")
-
+        reply  = extract_and_save_note(response.content[0].text, "evening debrief")
         icon   = "📊" if data_present else "⏳"
         header = f"{icon} *Evening Debrief — {datetime.now(timezone.utc).strftime('%-d %b')}*\n\n"
         msg    = header + reply
-        if len(msg) > 4000:
-            msg = msg[:4000]
+        if len(msg) > 4000: msg = msg[:4000]
         bot.send_message(YOUR_TELEGRAM_ID, msg, parse_mode="Markdown")
-        log.info(f"Evening debrief sent (data_present={data_present})")
-
     except Exception as e:
         log.error(f"Evening debrief error: {e}")
 
@@ -1583,9 +1494,7 @@ def polar_sync_loop():
                 msg = format_new_run_notification(ex["data"], ex["id"], ex["splits"])
                 bot.send_message(YOUR_TELEGRAM_ID, msg, parse_mode="Markdown")
                 threading.Thread(
-                    target=send_post_run_debrief,
-                    args=(ex["id"],),
-                    daemon=True
+                    target=send_post_run_debrief, args=(ex["id"],), daemon=True
                 ).start()
             sleep_n    = sync_sleep()
             recharge_n = sync_nightly_recharge()
@@ -1613,7 +1522,6 @@ def scheduler_loop():
         sleep_secs  = (next_target - now).total_seconds()
         log.info(f"Scheduler: next event at {next_target.strftime('%H:%M UTC')} in {sleep_secs/60:.1f}min")
         time.sleep(sleep_secs)
-
         fire_time = datetime.now(timezone.utc)
         if fire_time.hour == 7 and fire_time.minute < 5:
             send_morning_briefing()
@@ -1673,9 +1581,7 @@ def handle_message(message):
                     format_new_run_notification(ex["data"], ex["id"], ex["splits"]),
                     parse_mode="Markdown")
                 threading.Thread(
-                    target=send_post_run_debrief,
-                    args=(ex["id"],),
-                    daemon=True
+                    target=send_post_run_debrief, args=(ex["id"],), daemon=True
                 ).start()
         else:
             bot.send_message(chat_id, "No new exercises found.")
@@ -1707,8 +1613,7 @@ def handle_message(message):
                 return
             splits = supabase.table("polar_km_splits")\
                 .select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg")\
-                .eq("exercise_id", ex["polar_exercise_id"])\
-                .order("lap_number").execute()
+                .eq("exercise_id", ex["polar_exercise_id"]).order("lap_number").execute()
             dist_km = (ex.get("distance_meters") or 0) / 1000
             header  = f"{fmt_date(ex['date'])} — {dist_km:.1f}km {ex.get('sport','')}"
             bot.reply_to(message, format_splits_table(splits.data, header), parse_mode="Markdown")
@@ -1874,7 +1779,7 @@ def handle_message(message):
 # ══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    log.info("🏃 Polar Super Coach Bot v7.1 starting...")
+    log.info("🏃 Polar Super Coach Bot v7.2 starting...")
     log.info(f"Supabase: {SUPABASE_URL}")
     log.info(f"Polar User: {POLAR_USER_ID}")
     threading.Thread(target=polar_sync_loop, daemon=True).start()
