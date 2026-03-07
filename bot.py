@@ -1,28 +1,27 @@
 """
-bot.py - Polar Running Coach Telegram Bot v7.2
+bot.py - Polar Running Coach Telegram Bot v7.3
 Athlete: Luke Worgan | Goal: London Marathon 27 Apr 2026 + Ultra marathons
 Watch: Polar Grit X2 | Deployed: Railway.app
 
+v7.3 changes:
+- sync_cardio_load() now hits real /v3/users/cardio-load/ endpoint
+  Maps: strain, tolerance, cardio_load_ratio, cardio_load_status, cardio_load_level
+- sync_sleepwise() new — /v3/users/sleepwise/alertness + circadian-bedtime
+  Maps: grade, grade_classification, sleep_inertia, sleep_type, period times
+- Both added to polar_sync_loop() and build_training_context()
+- /cardio command updated to show strain/tolerance/ratio
+- Sleep and nightly recharge remain static from ZIP export (partner-restricted endpoints)
+
 v7.2 changes:
 - sync_cardio_load() reads from training_load column in polar_exercises
-  (not raw_json which is null for older rows, not a standalone API endpoint)
-- Fixes /cardio showing 0 entries in logs
 
 v7.1 changes:
 - sync_cardio_load() fixed to read from raw_json instead of fake API endpoint
 
 v7 changes:
-- Post-run debrief: fires automatically 4 minutes after a new run syncs
-- Evening debrief: scheduled 20:30 UTC daily
-- debriefed_today set prevents duplicate post-run debriefs per exercise
-- Both debriefs save to coaching_notes automatically via NOTE: pattern
-
-v6 changes:
-- All sync functions migrated to new Polar AccessLink v3 non-transaction API
-- Added sync_continuous_hr() → polar_continuous_hr table
-- Added sync_cardio_load() → polar_cardio_load table
-- All 7 data streams in context passed to Claude
-- Super coach system prompt with full physiological analysis
+- Post-run debrief fires automatically 4 minutes after new run syncs
+- Evening debrief scheduled 20:30 UTC daily
+- debriefed_today set prevents duplicate post-run debriefs
 """
 
 import os
@@ -33,7 +32,7 @@ import logging
 import threading
 import time
 import requests
-from datetime import datetime, timedelta, timezone, date
+from datetime import datetime, timedelta, timezone
 from supabase import create_client
 import anthropic
 import telebot
@@ -141,7 +140,15 @@ def load_emoji(status: str) -> str:
     if "MAINTAINING" in s:  return "🟡"
     if "OVERREACHING" in s: return "🔴"
     if "DETRAINING" in s:   return "⬇️"
+    if "RECOVERY" in s:     return "🔵"
     return "⚪"
+
+def grade_emoji(grade: float) -> str:
+    if grade is None: return "⚪"
+    if grade >= 8:  return "🟢"
+    if grade >= 6:  return "🟡"
+    if grade >= 4:  return "🟠"
+    return "🔴"
 
 def sport_emoji(sport: str) -> str:
     if not sport: return "🏃"
@@ -208,9 +215,8 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
 
         for record in fitfile.get_messages("lap"):
             data = {d.name: d.value for d in record}
-
             if expected_laps is not None and lap_num >= expected_laps:
-                log.info(f"Skipping lap {lap_num}: beyond expected {expected_laps} laps for {total_distance_m:.0f}m")
+                log.info(f"Skipping lap {lap_num}: beyond expected {expected_laps} laps")
                 continue
 
             lap_dur   = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
@@ -364,12 +370,35 @@ def format_cardio_load_dashboard(load_data: list) -> str:
         return "No cardio load data found."
     lines = ["🔥 *Cardio Load — Last 14 Days*\n"]
     for c in load_data:
-        emoji  = load_emoji(c.get("cardio_load_status", ""))
-        status = c.get("cardio_load_status") or ""
-        load   = c.get("cardio_load") or 0
+        emoji   = load_emoji(c.get("cardio_load_status", ""))
+        status  = (c.get("cardio_load_status") or "").replace("_", " ").title()
+        strain  = c.get("strain")
+        tol     = c.get("tolerance")
+        ratio   = c.get("cardio_load_ratio")
+        strain_str = f"  Strain: {strain:.0f}" if strain else ""
+        tol_str    = f"  Tol: {tol:.0f}"       if tol    else ""
+        ratio_str  = f"  Ratio: {ratio:.2f}"   if ratio  else ""
         lines.append(
-            f"{emoji} *{c['date']}*  Load: {load:.0f}"
-            + (f"  •  {status.replace('_',' ').title()}" if status else "")
+            f"{emoji} *{c['date']}*  {status}"
+            f"{strain_str}{tol_str}{ratio_str}"
+        )
+    return "\n".join(lines)
+
+def format_sleepwise_dashboard(sw_data: list) -> str:
+    if not sw_data:
+        return "No SleepWise data found."
+    lines = ["🧠 *SleepWise Alertness — Last 7 Days*\n"]
+    for s in sw_data:
+        grade  = s.get("grade")
+        emoji  = grade_emoji(grade)
+        gc     = (s.get("grade_classification") or "").replace("GRADE_CLASSIFICATION_", "").replace("_", " ").title()
+        inertia = (s.get("sleep_inertia") or "").replace("SLEEP_INERTIA_", "").replace("_", " ").title()
+        bedtime_start = s.get("circadian_bedtime_start") or ""
+        bedtime_end   = s.get("circadian_bedtime_end")   or ""
+        bedtime_str   = f"  🛏 {bedtime_start}–{bedtime_end}" if bedtime_start else ""
+        lines.append(
+            f"{emoji} *{s['date']}*  Grade: {grade or '?'}  •  {gc}\n"
+            f"   Sleep inertia: {inertia}{bedtime_str}"
         )
     return "\n".join(lines)
 
@@ -601,8 +630,8 @@ def save_manual_run(text: str) -> str:
                 lines.append(f"`{km}  │ {pace} │ {hr} │ {pwr} │ {cad}`")
         return "\n".join(lines)
     except json.JSONDecodeError as e:
-        log.error(f"JSON decode error at {e}: raw_json={raw_json[:1000] if raw_json else 'None'}")
-        return f"Error parsing run data — check Railway logs for details."
+        log.error(f"JSON decode error: {e} raw_json={raw_json[:1000] if raw_json else 'None'}")
+        return "Error parsing run data — check Railway logs for details."
     except Exception as e:
         log.error(f"Save manual run error: {e}")
         return f"Error saving run: {e}"
@@ -707,7 +736,7 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
                 split_rows, on_conflict="exercise_id,lap_number"
             ).execute()
 
-        log.info(f"Saved {exercise_id}: {sport} {(dist_m or 0)/1000:.1f}km, {len(split_rows)} splits, power={avg_power}W cad={avg_cadence}spm")
+        log.info(f"Saved {exercise_id}: {sport} {(dist_m or 0)/1000:.1f}km, {len(split_rows)} splits")
         return len(split_rows)
 
     except Exception as e:
@@ -908,47 +937,96 @@ def sync_continuous_hr() -> int:
 
 def sync_cardio_load() -> int:
     """
-    Builds polar_cardio_load from training_load column in polar_exercises.
-    The Polar v3 API has no standalone cardio-load endpoint — load is stored
-    directly in training_load when exercises are synced.
+    Hits the real /v3/users/cardio-load/ endpoint.
+    Fields: strain, tolerance, cardio_load_ratio, cardio_load_status,
+            cardio_load, cardio_load_level thresholds.
     """
     try:
-        from_date = (datetime.now(timezone.utc) - timedelta(days=28)).strftime("%Y-%m-%d")
-        runs = supabase.table("polar_exercises")\
-            .select("polar_exercise_id,date,training_load,muscle_load")\
-            .gte("date", from_date)\
-            .not_.is_("training_load", "null")\
-            .order("date", desc=True)\
-            .execute()
-
-        count = 0
-        for run in (runs.data or []):
-            cardio = sf(run.get("training_load"))
-            if not cardio:
-                continue
-            date_str = (run.get("date") or "")[:10]
+        r = requests.get(f"{POLAR_BASE}/users/cardio-load/", headers=polar_headers())
+        log.info(f"Cardio load GET: {r.status_code}")
+        if r.status_code == 204 or not r.ok:
+            return 0
+        data    = r.json()
+        entries = data if isinstance(data, list) else data.get("cardio_load", [data])
+        count   = 0
+        for c in entries:
+            date_str = (c.get("date") or "")[:10]
             if not date_str:
                 continue
-            if cardio > 150:
-                status = "OVERREACHING"
-            elif cardio > 100:
-                status = "MAINTAINING"
-            elif cardio > 40:
-                status = "PRODUCTIVE"
-            else:
-                status = "DETRAINING"
+            levels = c.get("cardio_load_level") or {}
             supabase.table("polar_cardio_load").upsert({
                 "date":               date_str,
-                "cardio_load":        cardio,
-                "cardio_load_status": status,
-                "muscle_load":        sf(run.get("muscle_load")),
+                "cardio_load":        sf(c.get("cardio_load")),
+                "cardio_load_status": c.get("cardio_load_status"),
+                "cardio_load_ratio":  sf(c.get("cardio_load_ratio")),
+                "strain":             sf(c.get("strain")),
+                "tolerance":          sf(c.get("tolerance")),
+                "load_very_low":      sf(levels.get("very_low")),
+                "load_low":           sf(levels.get("low")),
+                "load_medium":        sf(levels.get("medium")),
+                "load_high":          sf(levels.get("high")),
+                "load_very_high":     sf(levels.get("very_high")),
+                "raw_json":           json.dumps(c),
             }, on_conflict="date").execute()
             count += 1
-
-        log.info(f"Cardio load sync: {count} entries from training_load column")
+        log.info(f"Cardio load sync: {count} days from API")
         return count
     except Exception as e:
         log.error(f"Cardio load sync error: {e}")
+        return 0
+
+
+def sync_sleepwise() -> int:
+    """
+    Syncs SleepWise alertness grades and circadian bedtime window.
+    Fields: grade, grade_classification, sleep_inertia, sleep_type, period times.
+    """
+    try:
+        r = requests.get(f"{POLAR_BASE}/users/sleepwise/alertness", headers=polar_headers())
+        log.info(f"SleepWise GET: {r.status_code}")
+        if r.status_code == 204 or not r.ok:
+            return 0
+        data    = r.json()
+        entries = data if isinstance(data, list) else data.get("alertness", [data])
+        count   = 0
+        for s in entries:
+            period_start = s.get("period_start_time") or s.get("sleep_period_start_time") or ""
+            date_str     = period_start[:10] if period_start else ""
+            if not date_str:
+                continue
+            supabase.table("polar_sleepwise").upsert({
+                "date":                   date_str,
+                "grade":                  sf(s.get("grade")),
+                "grade_classification":   s.get("grade_classification"),
+                "sleep_inertia":          s.get("sleep_inertia"),
+                "sleep_type":             s.get("sleep_type"),
+                "period_start_time":      s.get("period_start_time"),
+                "period_end_time":        s.get("period_end_time"),
+                "sleep_period_start_time": s.get("sleep_period_start_time"),
+                "sleep_period_end_time":  s.get("sleep_period_end_time"),
+                "raw_json":               json.dumps(s),
+            }, on_conflict="date").execute()
+            count += 1
+
+        # Circadian bedtime window
+        r2 = requests.get(f"{POLAR_BASE}/users/sleepwise/circadian-bedtime", headers=polar_headers())
+        log.info(f"Circadian bedtime GET: {r2.status_code}")
+        if r2.ok:
+            cb       = r2.json()
+            today    = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            start_t  = cb.get("start") or cb.get("bedtime_start") or cb.get("circadian_start")
+            end_t    = cb.get("end")   or cb.get("bedtime_end")   or cb.get("circadian_end")
+            if start_t or end_t:
+                supabase.table("polar_sleepwise").upsert({
+                    "date":                   today,
+                    "circadian_bedtime_start": str(start_t) if start_t else None,
+                    "circadian_bedtime_end":   str(end_t)   if end_t   else None,
+                }, on_conflict="date").execute()
+
+        log.info(f"SleepWise sync: {count} days")
+        return count
+    except Exception as e:
+        log.error(f"SleepWise sync error: {e}")
         return 0
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1091,15 +1169,33 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
 
         try:
             cl_data = supabase.table("polar_cardio_load")\
-                .select("date,cardio_load,cardio_load_status,muscle_load")\
+                .select("date,cardio_load,cardio_load_status,cardio_load_ratio,strain,tolerance")\
                 .order("date", desc=True).limit(14).execute()
             if cl_data.data:
                 parts.append(f"\n=== CARDIO LOAD (last {len(cl_data.data)} days) ===")
                 for c in cl_data.data:
                     parts.append(
-                        f"  {c['date']} | Cardio: {c.get('cardio_load','?')} | "
-                        f"Status: {c.get('cardio_load_status','?')} | "
-                        f"Muscle: {c.get('muscle_load','?')}"
+                        f"  {c['date']} | Status: {c.get('cardio_load_status','?')} | "
+                        f"Strain: {c.get('strain','?')} | Tolerance: {c.get('tolerance','?')} | "
+                        f"Ratio: {c.get('cardio_load_ratio','?')} | Load: {c.get('cardio_load','?')}"
+                    )
+        except:
+            pass
+
+        try:
+            sw_data = supabase.table("polar_sleepwise")\
+                .select("date,grade,grade_classification,sleep_inertia,circadian_bedtime_start,circadian_bedtime_end")\
+                .order("date", desc=True).limit(7).execute()
+            if sw_data.data:
+                parts.append(f"\n=== SLEEPWISE ALERTNESS (last {len(sw_data.data)} days) ===")
+                for s in sw_data.data:
+                    gc      = (s.get("grade_classification") or "").replace("GRADE_CLASSIFICATION_", "").replace("_", " ").title()
+                    inertia = (s.get("sleep_inertia") or "").replace("SLEEP_INERTIA_", "").replace("_", " ").title()
+                    bedtime = f"Bedtime window: {s.get('circadian_bedtime_start','?')}–{s.get('circadian_bedtime_end','?')}" \
+                              if s.get("circadian_bedtime_start") else ""
+                    parts.append(
+                        f"  {s['date']} | Grade: {s.get('grade','?')} | {gc} | "
+                        f"Inertia: {inertia} | {bedtime}"
                     )
         except:
             pass
@@ -1113,8 +1209,7 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
                 active_min = (a.get("active_time_seconds") or 0) // 60
                 parts.append(
                     f"  {a['date']} | Steps: {a.get('steps','?')} | "
-                    f"Calories: {a.get('calories_total','?')} | "
-                    f"Active: {active_min}min"
+                    f"Calories: {a.get('calories_total','?')} | Active: {active_min}min"
                 )
 
         return "\n".join(parts)
@@ -1138,30 +1233,40 @@ ATHLETE PROFILE:
 PRIMARY GOAL: London Marathon, 27 April 2026 — sub 3:30 (4:58/km)
 SECONDARY GOAL: Ultra marathons (ongoing)
 
-YOUR DATA ACCESS:
-You have FULL live access to 7 data streams from Supabase:
+YOUR DATA ACCESS — 8 live data streams:
 1. polar_exercises — every run with km splits, HR, power, cadence, load
-2. polar_sleep — nightly sleep with stages (REM, deep, light), score, HRV
-3. polar_hrv — nightly recharge, ANS charge, HRV avg and RMSSD
+2. polar_sleep — nightly sleep stages (REM, deep, light), score, HRV (historical)
+3. polar_hrv — nightly recharge, ANS charge, HRV avg and RMSSD (historical)
 4. polar_continuous_hr — 24hr resting HR trends (cardiac drift, overtraining signal)
-5. polar_cardio_load — daily cardio/muscle load with status (productive/maintaining/overreaching)
-6. polar_daily_activity — steps, calories, active time
-7. wellness_checkins — Luke's manual fatigue/sleep/mood scores
+5. polar_cardio_load — daily strain, tolerance, ratio, status (LIVE from Polar API)
+6. polar_sleepwise — SleepWise alertness grade, classification, sleep inertia, circadian bedtime
+7. polar_daily_activity — steps, calories, active time
+8. wellness_checkins — Luke's manual fatigue/sleep/mood scores
 
-HOW TO USE ALL 7 DATA STREAMS AS A SUPER COACH:
+HOW TO USE ALL 8 DATA STREAMS AS A SUPER COACH:
 
-READINESS scoring — combine before recommending any session:
-  • HRV trend (rising = recovered, falling = stressed)
-  • Sleep score + deep sleep minutes (deep < 60min = compromised recovery)
-  • Resting HR vs baseline (>5bpm elevated = flag)
-  • Cardio load status (OVERREACHING = mandatory easy day)
-  • Subjective fatigue from wellness checkins
+READINESS scoring — combine ALL signals before recommending any session:
+  • SleepWise grade (8-10 = green, 6-8 = amber, <6 = red)
+  • Sleep inertia — NO_INERTIA vs HIGH_INERTIA affects morning performance
+  • Cardio load ratio (>1.3 = overreaching risk, <0.8 = detraining)
+  • Strain vs tolerance — if strain > tolerance, recovery needed
+  • Continuous HR trend — resting HR elevated >3 days = systemic fatigue
+  • Subjective wellness checkin scores
 
-TRAINING LOAD analysis:
-  • Use cardio_load status to identify productive vs overreaching weeks
-  • Cross-reference muscle_load with ascent data — trail runs spike muscle load
-  • Flag acute:chronic load ratio risks (sudden weekly load spikes)
-  • London Marathon is {days_to_marathon} days away — periodise accordingly
+CARDIO LOAD INTERPRETATION:
+  • strain = today's acute load
+  • tolerance = chronic fitness base (28-day rolling)
+  • ratio = strain/tolerance — the key number
+  • ratio 0.8-1.1 = MAINTAINING | 1.1-1.3 = PRODUCTIVE | >1.3 = OVERREACHING | <0.8 = DETRAINING
+  • Status RECOVERY_AFTER_OVERREACHING = mandatory easy days, flag this immediately
+
+SLEEPWISE INTERPRETATION:
+  • grade 1-10 scale — reflects predicted alertness from sleep quality
+  • GRADE_CLASSIFICATION_STRONG (8+) = well rested, ready for hard session
+  • GRADE_CLASSIFICATION_MODERATE (5-8) = acceptable, adjust intensity
+  • GRADE_CLASSIFICATION_WEAK (<5) = compromised, easy day only
+  • Sleep inertia HIGH = morning grogginess will affect early session performance
+  • Circadian bedtime window = Luke's optimal sleep timing
 
 PERFORMANCE TRENDS:
   • Track pace/HR drift across equivalent efforts (aerobic efficiency)
@@ -1169,28 +1274,21 @@ PERFORMANCE TRENDS:
   • Cadence trends — target 170-180spm for marathon efficiency
   • KM splits for pacing discipline (positive vs negative splits)
 
-RECOVERY PATTERNS:
-  • Continuous HR: resting HR elevated >3 days = systemic fatigue
-  • HRV RMSSD dropping week-on-week = parasympathetic suppression
-  • Sleep architecture: REM for cognitive/mood, deep for physical repair
-  • ANS charge correlates with readiness — use as daily go/no-go signal
-
 COACHING RULES:
 - Always reference Luke's actual numbers, never generic advice
-- Flag overtraining risk early and specifically
-- Connect every recommendation to London Marathon timeline
+- Flag overreaching risk immediately and specifically
+- Connect every recommendation to London Marathon timeline ({days_to_marathon} days away)
 - Be direct — Luke wants honesty, not encouragement
 - Use min/km for pace, bpm for HR, watts for power
 - Never break character — you are his coach, not an AI
 
-WRITE TRIGGERS (tell Luke about these if relevant):
+WRITE TRIGGERS:
 - "save run: ..." → saves to database with splits
 - "goal: ..." → saves race goal
 - "checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10" → logs wellness
 
 After every substantive response, end with:
-NOTE: <topic> | <one sentence summary>
-This saves to your coaching memory automatically."""
+NOTE: <topic> | <one sentence summary>"""
 
 def build_system_prompt(run_limit: int = 10, sleep_days: int = 7) -> str:
     try:
@@ -1236,16 +1334,30 @@ def send_morning_briefing():
             .order("date", desc=True).limit(1).execute()
         bot.send_message(YOUR_TELEGRAM_ID,
             format_recovery_dashboard(sleep.data, hrv.data), parse_mode="Markdown")
-        try:
-            cl = supabase.table("polar_cardio_load")\
-                .select("date,cardio_load,cardio_load_status")\
-                .order("date", desc=True).limit(3).execute()
-            load_context = ""
-            if cl.data:
-                latest       = cl.data[0]
-                load_context = f" Latest cardio load: {latest.get('cardio_load','?')} ({latest.get('cardio_load_status','?')})."
-        except:
-            load_context = ""
+
+        # SleepWise today
+        sw = supabase.table("polar_sleepwise")\
+            .select("date,grade,grade_classification,sleep_inertia,circadian_bedtime_start,circadian_bedtime_end")\
+            .order("date", desc=True).limit(1).execute()
+        sw_context = ""
+        if sw.data:
+            s  = sw.data[0]
+            gc = (s.get("grade_classification") or "").replace("GRADE_CLASSIFICATION_", "").replace("_", " ").title()
+            sw_context = f" SleepWise grade: {s.get('grade','?')} ({gc}), inertia: {s.get('sleep_inertia','?')}."
+
+        # Cardio load today
+        cl = supabase.table("polar_cardio_load")\
+            .select("date,cardio_load_status,cardio_load_ratio,strain,tolerance")\
+            .order("date", desc=True).limit(1).execute()
+        load_context = ""
+        if cl.data:
+            c            = cl.data[0]
+            load_context = (
+                f" Cardio load: {c.get('cardio_load_status','?')} | "
+                f"Strain {c.get('strain','?')} / Tolerance {c.get('tolerance','?')} | "
+                f"Ratio {c.get('cardio_load_ratio','?')}."
+            )
+
         marathon_date = datetime(2026, 4, 27).date()
         days_left     = (marathon_date - datetime.now().date()).days
         response = claude.messages.create(
@@ -1253,8 +1365,9 @@ def send_morning_briefing():
             max_tokens=500,
             system=build_system_prompt(),
             messages=[{"role": "user", "content": (
-                f"Morning briefing. London Marathon is {days_left} days away.{load_context} "
-                f"Give Luke: (1) readiness score 1-10 with reason, "
+                f"Morning briefing. London Marathon is {days_left} days away."
+                f"{sw_context}{load_context} "
+                f"Give Luke: (1) readiness score 1-10 combining SleepWise grade + cardio load ratio + HRV, "
                 f"(2) today's recommended session with specific effort/pace/HR targets, "
                 f"(3) one flag from recent data that needs attention, "
                 f"(4) weekly load check. Be specific and direct. Max 4 paragraphs."
@@ -1287,15 +1400,19 @@ def send_post_run_debrief(exercise_id: str):
         splits_resp = supabase.table("polar_km_splits")\
             .select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg")\
             .eq("exercise_id", exercise_id).order("lap_number").execute()
-        splits = splits_resp.data or []
+        splits     = splits_resp.data or []
         sleep_resp = supabase.table("polar_sleep")\
             .select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds")\
             .order("date", desc=True).limit(3).execute()
         sleep_rows = sleep_resp.data or []
-        hrv_resp = supabase.table("polar_hrv")\
+        hrv_resp   = supabase.table("polar_hrv")\
             .select("date,hrv_avg,ans_charge,recharge_status")\
             .order("date", desc=True).limit(1).execute()
-        hrv = hrv_resp.data[0] if hrv_resp.data else {}
+        hrv        = hrv_resp.data[0] if hrv_resp.data else {}
+        cl_resp    = supabase.table("polar_cardio_load")\
+            .select("date,cardio_load_status,cardio_load_ratio,strain,tolerance")\
+            .order("date", desc=True).limit(1).execute()
+        cl         = cl_resp.data[0] if cl_resp.data else {}
         now        = datetime.now(timezone.utc)
         week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
         load_resp  = supabase.table("polar_exercises")\
@@ -1309,10 +1426,10 @@ def send_post_run_debrief(exercise_id: str):
             f"- {g['race_name']} on {g['race_date']}: {g['distance_km']}km target {g['target_time']}"
             for g in (goals_resp.data or [])
         ]) or "No active goals."
-        dist_km = round((run.get("distance_meters") or 0) / 1000, 2)
-        dur_s   = run.get("duration_seconds") or 0
-        dur_str = f"{dur_s // 3600}h {(dur_s % 3600) // 60}m" if dur_s >= 3600 else f"{dur_s // 60}m {dur_s % 60}s"
-        pace_s  = (dur_s / dist_km) if dist_km > 0 else 0
+        dist_km    = round((run.get("distance_meters") or 0) / 1000, 2)
+        dur_s      = run.get("duration_seconds") or 0
+        dur_str    = f"{dur_s // 3600}h {(dur_s % 3600) // 60}m" if dur_s >= 3600 else f"{dur_s // 60}m {dur_s % 60}s"
+        pace_s     = (dur_s / dist_km) if dist_km > 0 else 0
         splits_text = ""
         if splits:
             lines = [
@@ -1329,13 +1446,17 @@ def send_post_run_debrief(exercise_id: str):
             f"score {s.get('sleep_score','?')}, deep {(s.get('deep_sleep_seconds') or 0)//60}min"
             for s in sleep_rows
         ]) or "No recent sleep data."
-        hrv_text = (
-            f"Latest recharge: {hrv.get('recharge_status','?')}, "
-            f"ANS charge {hrv.get('ans_charge','?')}, HRV avg {hrv.get('hrv_avg','?')}"
+        hrv_text    = (
+            f"Recharge: {hrv.get('recharge_status','?')}, ANS {hrv.get('ans_charge','?')}, HRV {hrv.get('hrv_avg','?')}"
         ) if hrv else "No HRV data."
+        cl_text     = (
+            f"Cardio load: {cl.get('cardio_load_status','?')} | "
+            f"Strain {cl.get('strain','?')} / Tolerance {cl.get('tolerance','?')} | "
+            f"Ratio {cl.get('cardio_load_ratio','?')}"
+        ) if cl else "No cardio load data."
         marathon_date = datetime(2026, 4, 27).date()
         days_left     = (marathon_date - datetime.now().date()).days
-        prompt = f"""You are an elite running coach. Luke just finished a run. Write a focused post-run debrief in exactly 3 short paragraphs (max 280 tokens total). Reference his actual numbers. No generic advice.
+        prompt = f"""You are an elite running coach. Luke just finished a run. Write a focused post-run debrief in exactly 3 short paragraphs (max 280 tokens). Reference his actual numbers.
 
 ATHLETE: Luke Worgan, 36yo, 167cm, 78kg, VO2max 55, max HR 198, aerobic threshold 149bpm, anaerobic threshold 178bpm
 LONDON MARATHON: {days_left} days away — target sub 3:30 (4:58/km)
@@ -1351,16 +1472,17 @@ TODAY'S RUN:
 RECOVERY CONTEXT:
 {sleep_text}
 {hrv_text}
+{cl_text}
 
 WEEK SO FAR: {round(weekly_km,1)}km | load {round(weekly_load,0)} across {len(week_runs)} sessions
 
-Paragraph 1: Quality of this run — was effort appropriate, HR vs pace vs zones, any pacing issues in splits.
-Paragraph 2: One specific strength and one thing to work on from this session.
-Paragraph 3: Rest of today — specific nutrition, recovery and movement advice given today's load and recent recovery data.
+Paragraph 1: Quality of this run — effort appropriateness, HR vs pace vs zones, pacing from splits.
+Paragraph 2: One specific strength and one thing to work on.
+Paragraph 3: Rest of today — specific nutrition, recovery and movement advice given cardio load ratio and recent recovery data.
 
 End with:
 NOTE: post-run debrief | <10-word summary>"""
-        response  = claude.messages.create(
+        response = claude.messages.create(
             model="claude-opus-4-5", max_tokens=400,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -1386,20 +1508,28 @@ def send_evening_debrief():
             .eq("date", today_str).execute()
         activity     = activity_resp.data[0] if activity_resp.data else None
         data_present = activity is not None
-        runs_resp  = supabase.table("polar_exercises")\
+        runs_resp    = supabase.table("polar_exercises")\
             .select("polar_exercise_id,distance_meters,duration_seconds,avg_heart_rate,training_load,sport")\
             .like("date", f"{today_str}%").execute()
-        runs_today = runs_resp.data or []
-        week_resp   = supabase.table("polar_exercises")\
+        runs_today   = runs_resp.data or []
+        week_resp    = supabase.table("polar_exercises")\
             .select("date,distance_meters,training_load,duration_seconds")\
             .gte("date", week_start).execute()
-        week_runs   = week_resp.data or []
-        weekly_km   = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
-        weekly_load = sum((r.get("training_load") or 0) for r in week_runs)
-        goals_resp  = supabase.table("goals")\
+        week_runs    = week_resp.data or []
+        weekly_km    = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
+        weekly_load  = sum((r.get("training_load") or 0) for r in week_runs)
+        cl_resp      = supabase.table("polar_cardio_load")\
+            .select("date,cardio_load_status,cardio_load_ratio,strain,tolerance")\
+            .order("date", desc=True).limit(1).execute()
+        cl           = cl_resp.data[0] if cl_resp.data else {}
+        sw_resp      = supabase.table("polar_sleepwise")\
+            .select("date,grade,grade_classification,circadian_bedtime_start,circadian_bedtime_end")\
+            .order("date", desc=True).limit(1).execute()
+        sw           = sw_resp.data[0] if sw_resp.data else {}
+        goals_resp   = supabase.table("goals")\
             .select("race_name,race_date,distance_km,target_time")\
             .eq("active", True).execute()
-        goals_text  = "\n".join([
+        goals_text   = "\n".join([
             f"- {g['race_name']} on {g['race_date']}: target {g['target_time']}"
             for g in (goals_resp.data or [])
         ]) or "No active goals."
@@ -1410,9 +1540,20 @@ def send_evening_debrief():
         checkin_today = last_checkin and last_checkin.get("date") == today_str
         marathon_date = datetime(2026, 4, 27).date()
         days_left     = (marathon_date - datetime.now().date()).days
+        cl_text = (
+            f"Cardio load: {cl.get('cardio_load_status','?')} | "
+            f"Strain {cl.get('strain','?')} / Tolerance {cl.get('tolerance','?')} | "
+            f"Ratio {cl.get('cardio_load_ratio','?')}"
+        ) if cl else ""
+        sw_text = ""
+        if sw:
+            gc      = (sw.get("grade_classification") or "").replace("GRADE_CLASSIFICATION_", "").replace("_", " ").title()
+            bed_str = f"Optimal bedtime: {sw.get('circadian_bedtime_start','?')}–{sw.get('circadian_bedtime_end','?')}" \
+                      if sw.get("circadian_bedtime_start") else ""
+            sw_text = f"SleepWise grade: {sw.get('grade','?')} ({gc}) | {bed_str}"
         if data_present:
-            steps      = activity.get("steps", "?")
-            active_min = round((activity.get("active_time_seconds") or 0) / 60)
+            steps       = activity.get("steps", "?")
+            active_min  = round((activity.get("active_time_seconds") or 0) / 60)
             run_summary = "No runs recorded today."
             if runs_today:
                 run_lines = []
@@ -1426,7 +1567,7 @@ def send_evening_debrief():
                     )
                 run_summary = "Runs today:\n" + "\n".join(run_lines)
             checkin_nudge   = "" if checkin_today else \
-                "\nAlso nudge Luke to log a quick wellness check-in (fatigue, sleep quality, mood out of 10)."
+                "\nNudge Luke to log a wellness check-in: fatigue, sleep quality, mood out of 10."
             checkin_context = ""
             if last_checkin:
                 checkin_context = (
@@ -1434,7 +1575,7 @@ def send_evening_debrief():
                     f"fatigue {last_checkin.get('fatigue_score','?')}/10, "
                     f"mood {last_checkin.get('mood_score','?')}/10"
                 )
-            prompt = f"""You are an elite running coach. It's Luke's end-of-day debrief. Write 3 short direct paragraphs (max 280 tokens). Reference actual numbers.
+            prompt = f"""You are an elite running coach. End-of-day debrief for Luke. 3 short direct paragraphs (max 280 tokens).
 
 ATHLETE: Luke Worgan, VO2max 55, max HR 198, aerobic threshold 149bpm
 LONDON MARATHON: {days_left} days away — target sub 3:30
@@ -1443,33 +1584,36 @@ GOALS:\n{goals_text}
 TODAY:
 - Steps: {steps} | Active time: {active_min}min
 {run_summary}
+{cl_text}
+{sw_text}
 
 WEEK SO FAR: {round(weekly_km,1)}km | load {round(weekly_load,0)} | {len(week_runs)} sessions
 {checkin_context}
 
-Paragraph 1: How today landed — training stress vs recovery balance, was today's work appropriate in context of the week.
-Paragraph 2: One green flag and one watch point heading into tomorrow. Be specific.
-Paragraph 3: Tonight's sleep and recovery recommendation — specific, not generic.
+Paragraph 1: How today landed — training stress vs recovery balance, cardio load ratio context.
+Paragraph 2: One green flag and one watch point heading into tomorrow.
+Paragraph 3: Tonight — specific sleep timing recommendation using SleepWise circadian bedtime window if available.
 {checkin_nudge}
 
 End with:
 NOTE: evening debrief | <10-word summary>"""
         else:
-            prompt = f"""You are an elite running coach. It's evening and today's Polar activity data hasn't synced yet.
+            prompt = f"""You are an elite running coach. Evening — today's Polar data hasn't fully synced.
 
 WEEK SO FAR: {round(weekly_km,1)}km across {len(week_runs)} runs
 LONDON MARATHON: {days_left} days away
-GOALS:\n{goals_text}
+{cl_text}
+{sw_text}
 
-Write 2 short paragraphs (max 150 tokens):
-- Acknowledge honestly that today's data is still syncing
-- Give one specific, useful evening tip for marathon/ultra training at this stage of prep
+2 short paragraphs (max 150 tokens):
+- Acknowledge data still syncing, give one useful evening tip for marathon prep at this stage
+- Sleep timing recommendation using circadian bedtime window if available
 
-Nudge Luke to log a wellness check-in if he hasn't: fatigue, sleep quality, mood out of 10.
+Nudge Luke to log a wellness check-in: fatigue, sleep quality, mood out of 10.
 
 End with:
-NOTE: evening debrief | data pending, general tip sent"""
-        response  = claude.messages.create(
+NOTE: evening debrief | data pending"""
+        response = claude.messages.create(
             model="claude-opus-4-5", max_tokens=400,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -1496,14 +1640,17 @@ def polar_sync_loop():
                 threading.Thread(
                     target=send_post_run_debrief, args=(ex["id"],), daemon=True
                 ).start()
-            sleep_n    = sync_sleep()
-            recharge_n = sync_nightly_recharge()
-            activity_n = sync_daily_activity()
-            hr_n       = sync_continuous_hr()
-            load_n     = sync_cardio_load()
-            if any([sleep_n, recharge_n, activity_n, hr_n, load_n]):
-                log.info(f"Passive sync: sleep={sleep_n} recharge={recharge_n} "
-                         f"activity={activity_n} hr={hr_n} load={load_n}")
+            sleep_n     = sync_sleep()
+            recharge_n  = sync_nightly_recharge()
+            activity_n  = sync_daily_activity()
+            hr_n        = sync_continuous_hr()
+            load_n      = sync_cardio_load()
+            sleepwise_n = sync_sleepwise()
+            if any([sleep_n, recharge_n, activity_n, hr_n, load_n, sleepwise_n]):
+                log.info(
+                    f"Passive sync: sleep={sleep_n} recharge={recharge_n} "
+                    f"activity={activity_n} hr={hr_n} load={load_n} sleepwise={sleepwise_n}"
+                )
         except Exception as e:
             log.error(f"Sync loop error: {e}")
         time.sleep(300)
@@ -1520,7 +1667,7 @@ def scheduler_loop():
         targets     = [t + timedelta(days=1) if now >= t else t for t in targets]
         next_target = min(targets)
         sleep_secs  = (next_target - now).total_seconds()
-        log.info(f"Scheduler: next event at {next_target.strftime('%H:%M UTC')} in {sleep_secs/60:.1f}min")
+        log.info(f"Scheduler: next at {next_target.strftime('%H:%M UTC')} in {sleep_secs/60:.1f}min")
         time.sleep(sleep_secs)
         fire_time = datetime.now(timezone.utc)
         if fire_time.hour == 7 and fire_time.minute < 5:
@@ -1556,6 +1703,7 @@ def handle_message(message):
             "/recovery — sleep & HRV dashboard\n"
             "/load — weekly training load\n"
             "/cardio — cardio load trend\n"
+            "/sleepwise — SleepWise alertness\n"
             "/hr — continuous HR dashboard\n"
             "/goals — target races\n"
             "/clear — clear conversation\n\n"
@@ -1569,12 +1717,13 @@ def handle_message(message):
 
     if lower == "/sync":
         bot.reply_to(message, "🔄 Syncing all Polar data...")
-        new        = sync_new_polar_exercises()
-        sleep_n    = sync_sleep()
-        recharge_n = sync_nightly_recharge()
-        activity_n = sync_daily_activity()
-        hr_n       = sync_continuous_hr()
-        load_n     = sync_cardio_load()
+        new         = sync_new_polar_exercises()
+        sleep_n     = sync_sleep()
+        recharge_n  = sync_nightly_recharge()
+        activity_n  = sync_daily_activity()
+        hr_n        = sync_continuous_hr()
+        load_n      = sync_cardio_load()
+        sleepwise_n = sync_sleepwise()
         if new:
             for ex in new:
                 bot.send_message(chat_id,
@@ -1586,11 +1735,12 @@ def handle_message(message):
         else:
             bot.send_message(chat_id, "No new exercises found.")
         parts = []
-        if sleep_n:    parts.append(f"😴 {sleep_n} sleep nights")
-        if recharge_n: parts.append(f"⚡ {recharge_n} recharge nights")
-        if activity_n: parts.append(f"👟 {activity_n} activity days")
-        if hr_n:       parts.append(f"❤️ {hr_n} HR days")
-        if load_n:     parts.append(f"🔥 {load_n} load days")
+        if sleep_n:     parts.append(f"😴 {sleep_n} sleep nights")
+        if recharge_n:  parts.append(f"⚡ {recharge_n} recharge nights")
+        if activity_n:  parts.append(f"👟 {activity_n} activity days")
+        if hr_n:        parts.append(f"❤️ {hr_n} HR days")
+        if load_n:      parts.append(f"🔥 {load_n} load days")
+        if sleepwise_n: parts.append(f"🧠 {sleepwise_n} SleepWise days")
         if parts:
             bot.send_message(chat_id, "✅ Synced: " + "  •  ".join(parts))
         return
@@ -1676,9 +1826,19 @@ def handle_message(message):
     if lower == "/cardio":
         try:
             cl = supabase.table("polar_cardio_load")\
-                .select("date,cardio_load,cardio_load_status,muscle_load")\
+                .select("date,cardio_load,cardio_load_status,cardio_load_ratio,strain,tolerance")\
                 .order("date", desc=True).limit(14).execute()
             bot.reply_to(message, format_cardio_load_dashboard(cl.data), parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+        return
+
+    if lower == "/sleepwise":
+        try:
+            sw = supabase.table("polar_sleepwise")\
+                .select("date,grade,grade_classification,sleep_inertia,circadian_bedtime_start,circadian_bedtime_end")\
+                .order("date", desc=True).limit(7).execute()
+            bot.reply_to(message, format_sleepwise_dashboard(sw.data), parse_mode="Markdown")
         except Exception as e:
             bot.reply_to(message, f"Error: {e}")
         return
@@ -1779,7 +1939,7 @@ def handle_message(message):
 # ══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    log.info("🏃 Polar Super Coach Bot v7.2 starting...")
+    log.info("🏃 Polar Super Coach Bot v7.3 starting...")
     log.info(f"Supabase: {SUPABASE_URL}")
     log.info(f"Polar User: {POLAR_USER_ID}")
     threading.Thread(target=polar_sync_loop, daemon=True).start()
