@@ -773,23 +773,26 @@ def sync_new_polar_exercises() -> list:
 
 def sync_sleep() -> int:
     try:
-        r = requests.get(f"{POLAR_BASE}/users/{POLAR_USER_ID}/sleep", headers=polar_headers())
+        r = requests.get(f"{POLAR_BASE}/users/sleep", headers=polar_headers())
         if r.status_code == 204 or not r.ok: return 0
-        data = r.json()
+        data   = r.json()
         nights = data.get("nights", data if isinstance(data, list) else [data])
-        count = 0
+        count  = 0
         for s in nights:
             date = (s.get("date") or s.get("night", ""))[:10]
             if not date: continue
+            light = s.get("light_sleep") or 0
+            deep  = s.get("deep_sleep")  or 0
+            rem   = s.get("rem_sleep")   or 0
             supabase.table("polar_sleep").upsert({
-                "date": date,
-                "total_sleep_seconds": _parse_pt_to_seconds(s.get("sleepTimeSeconds") or s.get("sleep_time") or 0) or None,
-                "sleep_score":         sf(s.get("sleepScore") or s.get("sleep_score")),
-                "rem_seconds":         _parse_pt_to_seconds(s.get("remSleepSeconds") or s.get("rem_sleep") or 0) or None,
-                "light_sleep_seconds": _parse_pt_to_seconds(s.get("lightSleepSeconds") or s.get("light_sleep") or 0) or None,
-                "deep_sleep_seconds":  _parse_pt_to_seconds(s.get("deepSleepSeconds") or s.get("deep_sleep") or 0) or None,
-                "interruptions":       si(s.get("numInterruptions") or s.get("interruptions")),
-                "avg_hrv":             sf(s.get("avgHrv") or s.get("avg_hrv")),
+                "date":                date,
+                "total_sleep_seconds": si(light + deep + rem) or None,
+                "sleep_score":         sf(s.get("sleep_score")),
+                "rem_seconds":         si(rem),
+                "light_sleep_seconds": si(light),
+                "deep_sleep_seconds":  si(deep),
+                "interruptions":       si(s.get("total_interruption_duration")),
+                "avg_hrv":             sf(s.get("avg_hrv")),
                 "raw_json":            json.dumps(s),
             }, on_conflict="date").execute()
             count += 1
@@ -806,7 +809,7 @@ def _recharge_status_label(status_int) -> str:
 
 def sync_nightly_recharge() -> int:
     try:
-        r = requests.get(f"{POLAR_BASE}/users/{POLAR_USER_ID}/nightly-recharge", headers=polar_headers())
+        r = requests.get(f"{POLAR_BASE}/users/nightly-recharge", headers=polar_headers())
         if r.status_code == 204 or not r.ok: return 0
         data   = r.json()
         nights = data.get("recharges", data if isinstance(data, list) else [data])
@@ -814,20 +817,13 @@ def sync_nightly_recharge() -> int:
         for h in nights:
             date = (h.get("date") or "")[:10]
             if not date: continue
-            hrv_avg = None
-            samples = h.get("hrv_samples") or h.get("hrvSamples", {})
-            if isinstance(samples, dict) and samples:
-                vals    = list(samples.values())
-                hrv_avg = round(sum(vals) / len(vals), 1)
-            if not hrv_avg:
-                hrv_avg = sf(h.get("heartRateVariabilityAvg") or h.get("hrv_avg"))
             supabase.table("polar_hrv").upsert({
                 "date":            date,
-                "hrv_avg":         hrv_avg,
-                "hrv_rmssd":       sf(h.get("beatToBeatAvg") or h.get("hrv_rmssd")),
-                "ans_charge":      sf(h.get("ansCharge") or h.get("ans_charge")),
-                "sleep_charge":    sf(h.get("ansChargeStatus") or h.get("sleep_charge")),
-                "recharge_status": _recharge_status_label(h.get("nightlyRechargeStatus") or h.get("nightly_recharge_status")),
+                "hrv_avg":         sf(h.get("heart_rate_variability_avg")),
+                "hrv_rmssd":       sf(h.get("beat_to_beat_avg")),
+                "ans_charge":      sf(h.get("ans_charge")),
+                "sleep_charge":    si(h.get("ans_charge_status")),
+                "recharge_status": _recharge_status_label(h.get("nightly_recharge_status")),
                 "raw_json":        json.dumps(h),
             }, on_conflict="date").execute()
             count += 1
@@ -950,6 +946,7 @@ def sync_sleepwise() -> int:
     except Exception as e:
         log.error(f"SleepWise sync error: {e}")
         return 0
+
 # ── CONTEXT FOR CLAUDE ─────────────────────────────────────────────────────
 
 def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
