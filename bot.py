@@ -1,5 +1,5 @@
 """
-bot.py - Polar Running Coach Telegram Bot v8.0
+bot.py - Polar Running Coach Telegram Bot v8.2
 Athlete: Luke Worgan | Goal: London Marathon 27 Apr 2026 + Ultra marathons
 Watch: Polar Grit X2 | Deployed: Railway.app
 """
@@ -410,16 +410,13 @@ def format_status_dashboard() -> str:
     hrv_emoji  = "🟢" if comp.get("hrv", 0.6) >= 0.8 else "🟡" if comp.get("hrv", 0.6) >= 0.6 else "🔴"
     hrv_score  = round(comp.get("hrv", 0.6) * 10, 1)
     lines = [
-        f"{readiness_emoji(score)} *Readiness Score: {score}/10*",
-        f"_{readiness['label']}_", "",
-        f"*Component Breakdown:*",
-        f"{sw_emoji} SleepWise grade: {sw_grade}/10  →  {sw_score}/10  _(30%)_",
-        f"{cl_emoji} Cardio load ratio: {ratio}  →  {cl_score}/10  _(30%)_",
-        f"   _{status_str}_",
-        f"{hr_emoji} Resting HR (3d avg): {avg_rhr}bpm  →  {hr_score}/10  _(20%)_",
-        f"{hrv_emoji} HRV trend: {hrv_this} vs {hrv_last} last week  →  {hrv_score}/10  _(20%)_",
-        "", f"🎯 *London Marathon: {dtm} days away*", "",
-        f"💡 *Today's Session:*", f"_{session}_",
+        f"{readiness_emoji(score)} *Readiness: {score}/10* — _{readiness['label']}_", "",
+        f"{sw_emoji} 🧠 SleepWise {sw_grade}/10 · {sw_score}/10 _(30%)_",
+        f"{cl_emoji} 🔥 Load ratio {ratio} · {status_str} · {cl_score}/10 _(30%)_",
+        f"{hr_emoji} ❤️ Resting HR {avg_rhr}bpm · {hr_score}/10 _(20%)_",
+        f"{hrv_emoji} 📉 HRV {hrv_this} vs {hrv_last}wk · {hrv_score}/10 _(20%)_",
+        "", f"🎯 *London: {dtm}d away*",
+        f"💡 _{session}_",
     ]
     return "\n".join(lines)
 # ── FIT FILE PARSING ───────────────────────────────────────────────────────
@@ -502,12 +499,12 @@ def format_splits_table(splits: list, header: str) -> str:
     return "\n".join(lines)
 
 def format_recovery_dashboard(sleep_data: list, hrv_data: list) -> str:
-    lines = ["💤 *Recovery Dashboard*\n"]
+    lines = ["💤 *Recovery*\n"]
     if hrv_data:
         h = hrv_data[0]
-        lines.append(f"{recharge_emoji(h.get('recharge_status',''))} *Nightly Recharge — {h['date']}*\n   ANS: {h.get('ans_charge','?')}  •  Sleep charge: {h.get('sleep_charge','?')}\n   HRV avg: {h.get('hrv_avg','?')}  •  RMSSD: {h.get('hrv_rmssd','?')}\n")
+        lines.append(f"{recharge_emoji(h.get('recharge_status',''))} *Recharge {h['date']}* · ANS {h.get('ans_charge','?')} · 💓 {h.get('hrv_avg','?')} · RMSSD {h.get('hrv_rmssd','?')}\n")
     if sleep_data:
-        lines.append("😴 *Sleep History*\n")
+        lines.append("😴 *Sleep*\n")
         for s in sleep_data:
             total_s = s.get("total_sleep_seconds") or 0
             score   = s.get("sleep_score") or 0
@@ -516,39 +513,42 @@ def format_recovery_dashboard(sleep_data: list, hrv_data: list) -> str:
             rem_m   = (s.get("rem_seconds") or 0) // 60
             deep_m  = (s.get("deep_sleep_seconds") or 0) // 60
             bar     = "█" * int(score / 10) + "░" * (10 - int(score / 10))
-            lines.append(f"*{s['date']}*  {hrs}h{mins:02d}m  Score: {score:.0f}\n   `{bar}`\n   REM {rem_m}min  •  Deep {deep_m}min  •  HRV {s.get('avg_hrv','?')}")
+            sg      = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
+            lines.append(f"{sg} *{s['date']}* {hrs}h{mins:02d}m · 📊 {score:.0f} · 💤 {rem_m}m · 🔵 {deep_m}m · 💓 {s.get('avg_hrv','?')}\n`{bar}`")
     return "\n".join(lines)
 
 def format_hr_dashboard(hr_data: list) -> str:
-    if not hr_data: return "No continuous HR data found."
-    lines = ["❤️ *Continuous Heart Rate — Last 7 Days*\n"]
+    if not hr_data: return "No continuous HR data."
+    lines = ["❤️ *Continuous HR*\n"]
     for h in hr_data:
-        lines.append(f"*{h['date']}*  Avg {h.get('avg_hr','?')}bpm  •  Min {h.get('min_hr','?')}  •  Max {h.get('max_hr','?')}")
+        avg = h.get('avg_hr','?')
+        rhr = h.get('min_hr','?')
+        hi  = h.get('max_hr','?')
+        flag = "🔴" if isinstance(rhr, (int,float)) and rhr > RESTING_HR_BASELINE + 5 else "🟢"
+        lines.append(f"{flag} *{h['date']}* · ❤️ {avg} · ↓{rhr} · ↑{hi}bpm")
     return "\n".join(lines)
 
 def format_cardio_load_dashboard(load_data: list) -> str:
-    if not load_data: return "No cardio load data found."
-    lines = ["🔥 *Cardio Load — Last 14 Days*\n"]
+    if not load_data: return "No cardio load data."
+    lines = ["🔥 *Cardio Load*\n"]
     for c in load_data:
-        status    = (c.get("cardio_load_status") or "").replace("_", " ").title()
-        strain    = c.get("strain")
-        tol       = c.get("tolerance")
-        ratio     = c.get("cardio_load_ratio")
-        strain_str = f"  Strain: {strain:.0f}" if strain else ""
-        tol_str    = f"  Tol: {tol:.0f}"       if tol    else ""
-        ratio_str  = f"  Ratio: {ratio:.2f}"   if ratio  else ""
-        lines.append(f"{load_emoji(c.get('cardio_load_status',''))} *{c['date']}*  {status}{strain_str}{tol_str}{ratio_str}")
+        status = (c.get("cardio_load_status") or "").replace("_", " ").title()
+        strain = c.get("strain");  tol = c.get("tolerance");  ratio = c.get("cardio_load_ratio")
+        s_str  = f" · 💪 {strain:.0f}" if strain else ""
+        t_str  = f" / {tol:.0f}"       if tol    else ""
+        r_str  = f" · ×{ratio:.2f}"    if ratio  else ""
+        lines.append(f"{load_emoji(c.get('cardio_load_status',''))} *{c['date']}* {status}{s_str}{t_str}{r_str}")
     return "\n".join(lines)
 
 def format_sleepwise_dashboard(sw_data: list) -> str:
-    if not sw_data: return "No SleepWise data found."
-    lines = ["🧠 *SleepWise Alertness — Last 7 Days*\n"]
+    if not sw_data: return "No SleepWise data."
+    lines = ["🧠 *SleepWise*\n"]
     for s in sw_data:
         grade   = s.get("grade")
-        gc      = (s.get("grade_classification") or "").replace("GRADE_CLASSIFICATION_", "").replace("_", " ").title()
-        inertia = (s.get("sleep_inertia") or "").replace("SLEEP_INERTIA_", "").replace("_", " ").title()
-        bed_str = f"  🛏 {s.get('circadian_bedtime_start','')}–{s.get('circadian_bedtime_end','')}" if s.get("circadian_bedtime_start") else ""
-        lines.append(f"{grade_emoji(grade)} *{s['date']}*  Grade: {grade or '?'}  •  {gc}\n   Sleep inertia: {inertia}{bed_str}")
+        gc      = (s.get("grade_classification") or "").replace("GRADE_CLASSIFICATION_", "").replace("_"," ").title()
+        inertia = (s.get("sleep_inertia") or "").replace("SLEEP_INERTIA_","").replace("_"," ").title()
+        bed_str = f" · 🛏 {s.get('circadian_bedtime_start','')}–{s.get('circadian_bedtime_end','')}" if s.get("circadian_bedtime_start") else ""
+        lines.append(f"{grade_emoji(grade)} *{s['date']}* {grade or '?'}/10 · {gc} · 💤 {inertia}{bed_str}")
     return "\n".join(lines)
 
 def format_goals(goals: list) -> str:
@@ -626,7 +626,7 @@ def save_manual_run(text: str) -> str:
         raw   = re.sub(r"^(save\s+run|log\s+run|manual\s+run|run\s+log)\s*[:：]\s*", "", text.strip(), flags=re.IGNORECASE)
         today = datetime.now().strftime("%Y-%m-%d")
         parse_resp = claude.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=1000,
+            model="claude-sonnet-4-6", max_tokens=1000,
             system="You are a precise data parser for running data. Extract all fields and return ONLY a valid JSON object. No markdown, no backticks, no explanation. All string values must use double quotes. Use null for missing fields. All numeric values must be plain numbers.\n\nRequired fields: date (YYYY-MM-DD), sport (RUNNING/TRAIL_RUNNING/TREADMILL_RUNNING), distance_meters, duration_seconds, avg_heart_rate, max_heart_rate, avg_power, max_power, avg_cadence, max_cadence, ascent, descent, calories, training_load, muscle_load, notes, splits (array).\n\nEach split: km_number, duration_seconds, split_time_seconds, distance_m, hr_avg, hr_max, power_avg, power_max, cadence_avg, cadence_max, pace_display (MM:SS/km).",
             messages=[{"role": "user", "content": f"Today is {today}. Parse this run:\n\n{raw}"}]
         )
@@ -1110,6 +1110,142 @@ def extract_and_save_note(reply: str, user_text: str):
         log.error(f"Extract note error: {e}")
     return reply
 
+def format_full_summary() -> str:
+    lines = [f"📊 *Full Summary — {datetime.now(timezone.utc).strftime('%-d %b %Y')}*",
+             f"🎯 *London: {days_to_marathon()}d away* — sub 3:30 @ 4:58/km\n"]
+
+    # ── Training ──
+    try:
+        runs = supabase.table("polar_exercises").select(
+            "date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load"
+        ).order("date", desc=True).limit(1).execute()
+        now        = datetime.now(timezone.utc)
+        week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+        wk         = supabase.table("polar_exercises").select("training_load,distance_meters").gte("date", week_start).execute()
+        if runs.data:
+            r        = runs.data[0]
+            dist_km  = (r.get("distance_meters") or 0) / 1000
+            dur_s    = r.get("duration_seconds") or 0
+            pace_s   = dur_s / dist_km if dist_km else 0
+            wk_km    = sum((x.get("distance_meters") or 0) for x in wk.data) / 1000
+            wk_load  = sum((x.get("training_load") or 0) for x in wk.data)
+            lines.append(f"🏃 *Training*")
+            lines.append(f"  Last: {fmt_date(r['date'])} · {sport_emoji(r.get('sport',''))} {dist_km:.1f}km · 💨 {seconds_to_pace(pace_s)} · ❤️ {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')} · 🔥 {r.get('training_load') or '?'}")
+            lines.append(f"  Week: 📏 {wk_km:.1f}km · {len(wk.data)} sessions · Load {wk_load:.0f}\n")
+    except: pass
+
+    # ── Sleep ──
+    try:
+        sleep = supabase.table("polar_sleep").select(
+            "date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds,light_sleep_seconds,avg_hrv,interruptions"
+        ).order("date", desc=True).limit(3).execute()
+        if sleep.data:
+            lines.append(f"💤 *Sleep*")
+            for s in sleep.data:
+                total_s = s.get("total_sleep_seconds") or 0
+                score   = s.get("sleep_score") or 0
+                hrs     = total_s // 3600; mins = (total_s % 3600) // 60
+                rem_m   = (s.get("rem_seconds") or 0) // 60
+                deep_m  = (s.get("deep_sleep_seconds") or 0) // 60
+                sg      = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
+                lines.append(f"  {sg} {s['date']} · {hrs}h{mins:02d}m · 📊{score:.0f} · 💤{rem_m}m · 🔵{deep_m}m · 💓{s.get('avg_hrv','?')}")
+            lines.append("")
+    except: pass
+
+    # ── Recharge / HRV ──
+    try:
+        hrv = supabase.table("polar_hrv").select(
+            "date,recharge_status,ans_charge,sleep_charge,hrv_avg,hrv_rmssd"
+        ).order("date", desc=True).limit(3).execute()
+        if hrv.data:
+            lines.append(f"⚡ *Recharge*")
+            for h in hrv.data:
+                lines.append(f"  {recharge_emoji(h.get('recharge_status',''))} {h['date']} · {h.get('recharge_status','?')} · ANS {h.get('ans_charge','?')} · 💓 {h.get('hrv_avg','?')} · RMSSD {h.get('hrv_rmssd','?')}")
+            lines.append("")
+    except: pass
+
+    # ── Resting HR ──
+    try:
+        chr_data = supabase.table("polar_continuous_hr").select("date,avg_hr,min_hr,max_hr").order("date", desc=True).limit(3).execute()
+        if chr_data.data:
+            hr_vals  = [r["min_hr"] for r in chr_data.data if r.get("min_hr")]
+            avg_rhr  = round(sum(hr_vals) / len(hr_vals), 1) if hr_vals else "?"
+            hr_flag  = "🟢" if isinstance(avg_rhr, float) and avg_rhr <= RESTING_HR_BASELINE + 3 else "🟡" if isinstance(avg_rhr, float) and avg_rhr <= RESTING_HR_BASELINE + 6 else "🔴"
+            lines.append(f"❤️ *Resting HR* (3d avg)")
+            lines.append(f"  {hr_flag} {avg_rhr}bpm (baseline {RESTING_HR_BASELINE}bpm)")
+            for h in chr_data.data:
+                lines.append(f"  · {h['date']} ❤️ {h.get('avg_hr','?')} ↓{h.get('min_hr','?')} ↑{h.get('max_hr','?')}")
+            lines.append("")
+    except: pass
+
+    # ── Cardio Load ──
+    try:
+        cl = supabase.table("polar_cardio_load").select(
+            "date,cardio_load,cardio_load_status,cardio_load_ratio,strain,tolerance"
+        ).order("date", desc=True).limit(3).execute()
+        if cl.data:
+            lines.append(f"🔥 *Cardio Load*")
+            for c in cl.data:
+                status = (c.get("cardio_load_status") or "").replace("_"," ").title()
+                ratio  = c.get("cardio_load_ratio")
+                r_str  = f" · ×{ratio:.2f}" if ratio else ""
+                lines.append(f"  {load_emoji(c.get('cardio_load_status',''))} {c['date']} · {status} · 💪{c.get('strain','?')}/{c.get('tolerance','?')}{r_str}")
+            lines.append("")
+    except: pass
+
+    # ── SleepWise ──
+    try:
+        sw = supabase.table("polar_sleepwise").select(
+            "date,grade,grade_classification,sleep_inertia,circadian_bedtime_start,circadian_bedtime_end"
+        ).order("date", desc=True).limit(3).execute()
+        if sw.data:
+            lines.append(f"🧠 *SleepWise*")
+            for s in sw.data:
+                grade   = s.get("grade")
+                gc      = (s.get("grade_classification") or "").replace("GRADE_CLASSIFICATION_","").replace("_"," ").title()
+                bed_str = f" · 🛏 {s.get('circadian_bedtime_start','')}–{s.get('circadian_bedtime_end','')}" if s.get("circadian_bedtime_start") else ""
+                lines.append(f"  {grade_emoji(grade)} {s['date']} · {grade or '?'}/10 · {gc}{bed_str}")
+            lines.append("")
+    except: pass
+
+    # ── Daily Activity ──
+    try:
+        act = supabase.table("polar_daily_activity").select(
+            "date,steps,calories_total,active_calories,active_time_seconds"
+        ).order("date", desc=True).limit(3).execute()
+        if act.data:
+            lines.append(f"👟 *Activity*")
+            for a in act.data:
+                active_min = round((a.get("active_time_seconds") or 0) / 60)
+                lines.append(f"  · {a['date']} · 👣 {a.get('steps','?')} · 🔥 {a.get('calories_total','?')}kcal · ⏱ {active_min}min")
+            lines.append("")
+    except: pass
+
+    # ── Wellness ──
+    try:
+        well = supabase.table("wellness_checkins").select(
+            "date,weight_kg,fatigue_score,sleep_score,mood_score"
+        ).order("date", desc=True).limit(1).execute()
+        if well.data:
+            w     = well.data[0]
+            parts = []
+            if w.get("weight_kg"):    parts.append(f"⚖️ {w['weight_kg']}kg")
+            if w.get("fatigue_score"): parts.append(f"😓 {w['fatigue_score']}/10")
+            if w.get("sleep_score"):  parts.append(f"😴 {w['sleep_score']}/10")
+            if w.get("mood_score"):   parts.append(f"😊 {w['mood_score']}/10")
+            lines.append(f"💊 *Wellness* — {w['date']}")
+            lines.append(f"  {' · '.join(parts)}\n")
+    except: pass
+
+    # ── Readiness ──
+    readiness = compute_readiness_score()
+    session   = recommend_session(readiness)
+    lines.append("─" * 28)
+    lines.append(f"{readiness_emoji(readiness['score'])} *Readiness: {readiness['score']}/10* — _{readiness['label']}_")
+    lines.append(f"💡 _{session}_")
+    return "\n".join(lines)
+
+
 # ── BRIEFINGS ──────────────────────────────────────────────────────────────
 
 def send_morning_briefing():
@@ -1135,7 +1271,7 @@ def send_morning_briefing():
             load_context = f" Cardio load: {c.get('cardio_load_status','?')} | Strain {c.get('strain','?')} / Tolerance {c.get('tolerance','?')} | Ratio {c.get('cardio_load_ratio','?')}."
 
         response = claude.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=500,
+            model="claude-sonnet-4-6", max_tokens=500,
             system=build_system_prompt(),
             messages=[{"role": "user", "content": f"Morning briefing. London Marathon is {days_to_marathon()} days away.{sw_context}{load_context} Algorithmic readiness: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}. Give Luke: (1) validate or challenge the readiness score, (2) confirm or adjust session with specific pace/HR targets, (3) one flag from recent data, (4) weekly load check. Max 4 paragraphs."}]
         )
@@ -1197,7 +1333,7 @@ Para 2: One strength, one thing to work on.
 Para 3: Rest of today — nutrition, recovery, movement given cardio load.
 
 End with: NOTE: post-run debrief | <10-word summary>"""
-        response = claude.messages.create(model="claude-sonnet-4-20250514", max_tokens=400, messages=[{"role": "user", "content": prompt}])
+        response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
         reply    = extract_and_save_note(response.content[0].text, "post-run debrief")
         msg      = f"🏃 *Post-run debrief* — {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)}\n\n{reply}"
         bot.send_message(YOUR_TELEGRAM_ID, msg[:4000], parse_mode="Markdown")
@@ -1268,7 +1404,7 @@ WEEK: {round(weekly_km,1)}km | {len(week_runs)} runs | LONDON: {days_to_marathon
 2 short paragraphs: one evening tip for marathon prep, sleep timing recommendation.
 Nudge Luke to log check-in: fatigue, sleep, mood out of 10.
 End with: NOTE: evening debrief | data pending"""
-        response = claude.messages.create(model="claude-sonnet-4-20250514", max_tokens=400, messages=[{"role": "user", "content": prompt}])
+        response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
         reply    = extract_and_save_note(response.content[0].text, "evening debrief")
         icon     = "📊" if activity else "⏳"
         msg      = f"{icon} *Evening Debrief — {datetime.now(timezone.utc).strftime('%-d %b')}*\n\n{reply}"
@@ -1328,7 +1464,37 @@ def handle_message(message):
     lower     = user_text.lower()
 
     if lower in ["/start", "/help"]:
-        bot.reply_to(message, "👋 *Hey Luke!* Your Polar super coach is live.\n\n*Commands:*\n/status — readiness score + today's session\n/sync — sync all Polar data\n/briefing — morning briefing now\n/evening — evening debrief now\n/runs — last 10 runs _(or /runs 30)_\n/splits — km splits for last run\n/recovery — sleep & HRV dashboard\n/load — weekly training load\n/cardio — cardio load trend\n/sleepwise — SleepWise alertness\n/hr — continuous HR dashboard\n/goals — target races\n/push — check & send pending alerts\n/clear — clear conversation\n\n*Log data:*\n`save run: <paste Polar stats>`\n`goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`\n`checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10`\n\nOr just ask me anything 💬", parse_mode="Markdown")
+        bot.reply_to(message, (
+            "👋 *Hey Luke!*\n\n"
+            "📋 *Commands*\n"
+            "📊 /summary — all data at a glance\n"
+            "🟢 /status — readiness + today's session\n"
+            "🔄 /sync — sync Polar data\n"
+            "☀️ /briefing — morning briefing now\n"
+            "🌙 /evening — evening debrief now\n"
+            "🏃 /runs — last 10 runs _(or /runs 30)_\n"
+            "📈 /splits — km splits for last run\n"
+            "💤 /recovery — sleep & HRV\n"
+            "📦 /load — weekly training load\n"
+            "🔥 /cardio — cardio load trend\n"
+            "🧠 /sleepwise — SleepWise alertness\n"
+            "❤️ /hr — continuous HR\n"
+            "🎯 /goals — target races\n"
+            "🔔 /push — check alerts\n"
+            "🗑 /clear — clear conversation\n\n"
+            "✏️ *Log data*\n"
+            "`save run: <Polar stats>`\n"
+            "`goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`\n"
+            "`checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10`\n\n"
+            "💬 _Or just ask me anything_"
+        ), parse_mode="Markdown")
+        return
+
+    if lower == "/summary":
+        try:
+            bot.send_chat_action(chat_id, "typing")
+            bot.reply_to(message, format_full_summary(), parse_mode="Markdown")
+        except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
     if lower == "/status":
@@ -1494,7 +1660,7 @@ def handle_message(message):
         bot.send_chat_action(chat_id, "typing")
         add_to_history(chat_id, "user", user_text)
         response = claude.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=1000,
+            model="claude-sonnet-4-6", max_tokens=1000,
             system=build_system_prompt(run_limit=run_limit, sleep_days=sleep_days),
             messages=get_history(chat_id)
         )
@@ -1512,7 +1678,7 @@ def handle_message(message):
 # ── MAIN ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    log.info("🏃 Polar Super Coach Bot v8.0 starting...")
+    log.info("🏃 Polar Super Coach Bot v8.2 starting...")
     log.info(f"Supabase: {SUPABASE_URL}")
     log.info(f"Polar User: {POLAR_USER_ID}")
     threading.Thread(target=polar_sync_loop, daemon=True).start()
