@@ -1,5 +1,5 @@
 """
-bot.py - Polar Running Coach Telegram Bot v8.0
+bot.py - Polar Running Coach Telegram Bot v8.1
 Athlete: Luke Worgan | Goal: London Marathon 27 Apr 2026 + Ultra marathons
 Watch: Polar Grit X2 | Deployed: Railway.app
 """
@@ -626,7 +626,7 @@ def save_manual_run(text: str) -> str:
         raw   = re.sub(r"^(save\s+run|log\s+run|manual\s+run|run\s+log)\s*[:：]\s*", "", text.strip(), flags=re.IGNORECASE)
         today = datetime.now().strftime("%Y-%m-%d")
         parse_resp = claude.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=1000,
+            model="claude-sonnet-4-6", max_tokens=1000,
             system="You are a precise data parser for running data. Extract all fields and return ONLY a valid JSON object. No markdown, no backticks, no explanation. All string values must use double quotes. Use null for missing fields. All numeric values must be plain numbers.\n\nRequired fields: date (YYYY-MM-DD), sport (RUNNING/TRAIL_RUNNING/TREADMILL_RUNNING), distance_meters, duration_seconds, avg_heart_rate, max_heart_rate, avg_power, max_power, avg_cadence, max_cadence, ascent, descent, calories, training_load, muscle_load, notes, splits (array).\n\nEach split: km_number, duration_seconds, split_time_seconds, distance_m, hr_avg, hr_max, power_avg, power_max, cadence_avg, cadence_max, pace_display (MM:SS/km).",
             messages=[{"role": "user", "content": f"Today is {today}. Parse this run:\n\n{raw}"}]
         )
@@ -1135,7 +1135,7 @@ def send_morning_briefing():
             load_context = f" Cardio load: {c.get('cardio_load_status','?')} | Strain {c.get('strain','?')} / Tolerance {c.get('tolerance','?')} | Ratio {c.get('cardio_load_ratio','?')}."
 
         response = claude.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=500,
+            model="claude-sonnet-4-6", max_tokens=500,
             system=build_system_prompt(),
             messages=[{"role": "user", "content": f"Morning briefing. London Marathon is {days_to_marathon()} days away.{sw_context}{load_context} Algorithmic readiness: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}. Give Luke: (1) validate or challenge the readiness score, (2) confirm or adjust session with specific pace/HR targets, (3) one flag from recent data, (4) weekly load check. Max 4 paragraphs."}]
         )
@@ -1197,7 +1197,7 @@ Para 2: One strength, one thing to work on.
 Para 3: Rest of today — nutrition, recovery, movement given cardio load.
 
 End with: NOTE: post-run debrief | <10-word summary>"""
-        response = claude.messages.create(model="claude-sonnet-4-20250514", max_tokens=400, messages=[{"role": "user", "content": prompt}])
+        response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
         reply    = extract_and_save_note(response.content[0].text, "post-run debrief")
         msg      = f"🏃 *Post-run debrief* — {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)}\n\n{reply}"
         bot.send_message(YOUR_TELEGRAM_ID, msg[:4000], parse_mode="Markdown")
@@ -1268,7 +1268,7 @@ WEEK: {round(weekly_km,1)}km | {len(week_runs)} runs | LONDON: {days_to_marathon
 2 short paragraphs: one evening tip for marathon prep, sleep timing recommendation.
 Nudge Luke to log check-in: fatigue, sleep, mood out of 10.
 End with: NOTE: evening debrief | data pending"""
-        response = claude.messages.create(model="claude-sonnet-4-20250514", max_tokens=400, messages=[{"role": "user", "content": prompt}])
+        response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
         reply    = extract_and_save_note(response.content[0].text, "evening debrief")
         icon     = "📊" if activity else "⏳"
         msg      = f"{icon} *Evening Debrief — {datetime.now(timezone.utc).strftime('%-d %b')}*\n\n{reply}"
@@ -1494,7 +1494,7 @@ def handle_message(message):
         bot.send_chat_action(chat_id, "typing")
         add_to_history(chat_id, "user", user_text)
         response = claude.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=1000,
+            model="claude-sonnet-4-6", max_tokens=1000,
             system=build_system_prompt(run_limit=run_limit, sleep_days=sleep_days),
             messages=get_history(chat_id)
         )
@@ -1512,7 +1512,7 @@ def handle_message(message):
 # ── MAIN ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    log.info("🏃 Polar Super Coach Bot v8.0 starting...")
+    log.info("🏃 Polar Super Coach Bot v8.1 starting...")
     log.info(f"Supabase: {SUPABASE_URL}")
     log.info(f"Polar User: {POLAR_USER_ID}")
     threading.Thread(target=polar_sync_loop, daemon=True).start()
