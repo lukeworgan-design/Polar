@@ -1358,7 +1358,7 @@ def send_evening_debrief():
         week_start    = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
         activity_resp = supabase.table("polar_daily_activity").select("date,steps,active_calories,active_time_seconds").eq("date", today_str).execute()
         activity      = activity_resp.data[0] if activity_resp.data else None
-        runs_today    = supabase.table("polar_exercises").select("polar_exercise_id,distance_meters,duration_seconds,avg_heart_rate,training_load,sport").like("date", f"{today_str}%").execute().data or []
+        runs_today    = supabase.table("polar_exercises").select("polar_exercise_id,distance_meters,duration_seconds,avg_heart_rate,training_load,sport").gte("date", today_str).lt("date", (now + timedelta(days=1)).strftime("%Y-%m-%d")).execute().data or []
         week_runs     = supabase.table("polar_exercises").select("date,distance_meters,training_load,duration_seconds").gte("date", week_start).execute().data or []
         weekly_km     = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
         weekly_load   = sum((r.get("training_load") or 0) for r in week_runs)
