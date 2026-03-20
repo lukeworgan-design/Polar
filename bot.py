@@ -1271,15 +1271,25 @@ def send_morning_briefing():
             load_context = f" Cardio load: {c.get('cardio_load_status','?')} | Strain {c.get('strain','?')} / Tolerance {c.get('tolerance','?')} | Ratio {c.get('cardio_load_ratio','?')}."
 
         response = claude.messages.create(
-            model="claude-sonnet-4-6", max_tokens=500,
+            model="claude-sonnet-4-6", max_tokens=600,
             system=build_system_prompt(),
-            messages=[{"role": "user", "content": f"Morning briefing. London Marathon is {days_to_marathon()} days away.{sw_context}{load_context} Algorithmic readiness: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}. Give Luke: (1) validate or challenge the readiness score, (2) confirm or adjust session with specific pace/HR targets, (3) one flag from recent data, (4) weekly load check. Max 4 paragraphs."}]
+            messages=[{"role": "user", "content": f"""Post-run AM briefing. Luke runs at 5am. London Marathon is {days_to_marathon()} days away.{sw_context}{load_context} Algorithmic readiness: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
+
+Structure your reply with clear emoji-led sections so it's easy to scan on mobile:
+
+🏃 POST-RUN SNAPSHOT — validate or challenge the readiness score based on today's run data (2-3 sentences)
+🧘 REST & MOBILITY TODAY — specific recovery actions for the rest of today (stretches, foam rolling, nutrition, nap if needed). Be concrete.
+📅 WEEK AHEAD PLAN — brief day-by-day plan for remaining sessions this week, factoring in current cardio load and marathon proximity. One line per day.
+⚑ FLAG — one watch point from recent data.
+
+Use emojis to break up each section. Keep each section tight. Max 5 short sections total."""}]
         )
         reply = extract_and_save_note(response.content[0].text, "morning briefing")
-        bot.send_message(YOUR_TELEGRAM_ID, f"☀️ *Morning Briefing — {datetime.now().strftime('%-d %b')}*\n\n{readiness_emoji(readiness['score'])} *Readiness: {readiness['score']}/10* — _{readiness['label']}_\n\n{reply}", parse_mode="Markdown")
+        bot.send_message(YOUR_TELEGRAM_ID, f"🌅 *Post-Run AM Briefing — {datetime.now().strftime('%-d %b')}*\n\n{readiness_emoji(readiness['score'])} *Readiness: {readiness['score']}/10* — _{readiness['label']}_\n\n{reply}", parse_mode="Markdown")
         check_and_push_alerts()
     except Exception as e:
         log.error(f"Briefing error: {e}")
+        bot.send_message(YOUR_TELEGRAM_ID, f"⚠️ Briefing error: {e}")
 
 
 def send_post_run_debrief(exercise_id: str):
@@ -1380,7 +1390,7 @@ def send_evening_debrief():
                 run_summary = "Runs today:\n" + "\n".join(run_lines)
             checkin_nudge   = "" if checkin_today else "\nNudge Luke to log a wellness check-in: fatigue, sleep quality, mood out of 10."
             checkin_context = f"\nLast check-in ({last_checkin['date']}): fatigue {last_checkin.get('fatigue_score','?')}/10, mood {last_checkin.get('mood_score','?')}/10" if last_checkin else ""
-            prompt = f"""Elite running coach. End-of-day debrief. 3 short paragraphs (max 280 tokens).
+            prompt = f"""Elite running coach. Evening data summary — short and scannable. Use emojis to lead each section so it's easy to read on mobile.
 
 ATHLETE: Luke Worgan | LONDON MARATHON: {days_to_marathon()} days away — target sub 3:30
 GOALS:\n{goals_text}
@@ -1392,17 +1402,21 @@ TODAY: Steps {steps} | Active {active_min}min
 WEEK: {round(weekly_km,1)}km | load {round(weekly_load,0)} | {len(week_runs)} sessions
 {checkin_context}
 
-Para 1: Training stress vs recovery balance today, cardio load ratio context.
-Para 2: One green flag, one watch point for tomorrow.
-Para 3: Tonight — specific sleep timing using SleepWise circadian bedtime window.
+Structure with these emoji-led sections, 1-3 sentences each:
+📊 TODAY'S NUMBERS — one-line snapshot of all key data points (steps, run if any, load ratio, HRV/recharge)
+⚖️ BALANCE CHECK — training stress vs recovery today, one green flag, one watch point
+🌙 TONIGHT — specific sleep timing from SleepWise window, wind-down tip
 {checkin_nudge}
 End with: NOTE: evening debrief | <10-word summary>"""
         else:
-            prompt = f"""Elite running coach. Evening — data still syncing.
+            prompt = f"""Elite running coach. Evening — data still syncing. Keep it short and emoji-led.
+
 WEEK: {round(weekly_km,1)}km | {len(week_runs)} runs | LONDON: {days_to_marathon()} days
 {cl_text}\n{sw_text}
-2 short paragraphs: one evening tip for marathon prep, sleep timing recommendation.
-Nudge Luke to log check-in: fatigue, sleep, mood out of 10.
+
+📊 DATA STATUS — note data is still syncing, share what's available
+🌙 TONIGHT — one specific sleep/recovery tip for marathon prep
+{f"Nudge Luke to log check-in: fatigue, sleep, mood out of 10." if not checkin_today else ""}
 End with: NOTE: evening debrief | data pending"""
         response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
         reply    = extract_and_save_note(response.content[0].text, "evening debrief")
@@ -1411,6 +1425,7 @@ End with: NOTE: evening debrief | data pending"""
         bot.send_message(YOUR_TELEGRAM_ID, msg[:4000], parse_mode="Markdown")
     except Exception as e:
         log.error(f"Evening debrief error: {e}")
+        bot.send_message(YOUR_TELEGRAM_ID, f"⚠️ Evening debrief error: {e}")
 
 # ── BACKGROUND LOOPS ───────────────────────────────────────────────────────
 
@@ -1437,13 +1452,13 @@ def polar_sync_loop():
 def scheduler_loop():
     while True:
         now     = datetime.now(timezone.utc)
-        targets = [now.replace(hour=7, minute=0, second=0, microsecond=0), now.replace(hour=20, minute=30, second=0, microsecond=0), now.replace(hour=0, minute=5, second=0, microsecond=0)]
+        targets = [now.replace(hour=5, minute=30, second=0, microsecond=0), now.replace(hour=20, minute=30, second=0, microsecond=0), now.replace(hour=0, minute=5, second=0, microsecond=0)]
         targets = [t + timedelta(days=1) if now >= t else t for t in targets]
         sleep_secs = (min(targets) - now).total_seconds()
         log.info(f"Scheduler: next in {sleep_secs/60:.1f}min")
         time.sleep(sleep_secs)
         fire_time = datetime.now(timezone.utc)
-        if fire_time.hour == 7 and fire_time.minute < 5:
+        if fire_time.hour == 5 and fire_time.minute >= 30 and fire_time.minute < 35:
             send_morning_briefing()
         elif fire_time.hour == 20 and fire_time.minute >= 30 and fire_time.minute < 35:
             send_evening_debrief()
@@ -1539,12 +1554,12 @@ def handle_message(message):
 
     if lower == "/briefing":
         bot.reply_to(message, "⏳ Generating briefing...")
-        send_morning_briefing()
+        threading.Thread(target=send_morning_briefing, daemon=True).start()
         return
 
     if lower == "/evening":
         bot.reply_to(message, "⏳ Generating evening debrief...")
-        send_evening_debrief()
+        threading.Thread(target=send_evening_debrief, daemon=True).start()
         return
 
     if lower == "/splits":
@@ -1627,7 +1642,11 @@ def handle_message(message):
         return
 
     if re.match(r"^(goal|race|target)\s*[:：]", lower):
-        bot.reply_to(message, save_goal(user_text), parse_mode="Markdown")
+        result = save_goal(user_text)
+        try:
+            bot.reply_to(message, result, parse_mode="Markdown")
+        except Exception:
+            bot.reply_to(message, result)
         return
 
     if re.match(r"^(save\s+run|log\s+run|manual\s+run|run\s+log)\s*[:：]", lower):
