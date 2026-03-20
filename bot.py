@@ -1289,6 +1289,7 @@ Use emojis to break up each section. Keep each section tight. Max 5 short sectio
         check_and_push_alerts()
     except Exception as e:
         log.error(f"Briefing error: {e}")
+        bot.send_message(YOUR_TELEGRAM_ID, f"⚠️ Briefing error: {e}")
 
 
 def send_post_run_debrief(exercise_id: str):
@@ -1424,6 +1425,7 @@ End with: NOTE: evening debrief | data pending"""
         bot.send_message(YOUR_TELEGRAM_ID, msg[:4000], parse_mode="Markdown")
     except Exception as e:
         log.error(f"Evening debrief error: {e}")
+        bot.send_message(YOUR_TELEGRAM_ID, f"⚠️ Evening debrief error: {e}")
 
 # ── BACKGROUND LOOPS ───────────────────────────────────────────────────────
 
@@ -1552,12 +1554,12 @@ def handle_message(message):
 
     if lower == "/briefing":
         bot.reply_to(message, "⏳ Generating briefing...")
-        send_morning_briefing()
+        threading.Thread(target=send_morning_briefing, daemon=True).start()
         return
 
     if lower == "/evening":
         bot.reply_to(message, "⏳ Generating evening debrief...")
-        send_evening_debrief()
+        threading.Thread(target=send_evening_debrief, daemon=True).start()
         return
 
     if lower == "/splits":
@@ -1640,7 +1642,11 @@ def handle_message(message):
         return
 
     if re.match(r"^(goal|race|target)\s*[:：]", lower):
-        bot.reply_to(message, save_goal(user_text), parse_mode="Markdown")
+        result = save_goal(user_text)
+        try:
+            bot.reply_to(message, result, parse_mode="Markdown")
+        except Exception:
+            bot.reply_to(message, result)
         return
 
     if re.match(r"^(save\s+run|log\s+run|manual\s+run|run\s+log)\s*[:：]", lower):
