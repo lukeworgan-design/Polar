@@ -192,14 +192,32 @@ bot.catch((err, ctx) => {
 
 // ── Launch ────────────────────────────────────────────────────────────────────
 
+async function launchWithRetry(maxAttempts = 5, baseDelayMs = 3000): Promise<void> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await bot.launch();
+      return;
+    } catch (err: any) {
+      const is409 = err?.response?.error_code === 409;
+      if (is409 && attempt < maxAttempts) {
+        const delay = baseDelayMs * attempt;
+        console.log(`409 conflict (attempt ${attempt}/${maxAttempts}), retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
 async function main(): Promise<void> {
   console.log('Starting Rose...');
 
   // Initialise the scheduler with a send function
   initScheduler(sendToGroup);
 
-  // Launch the bot
-  await bot.launch();
+  // Launch the bot (retries on 409 conflict during rolling redeploys)
+  await launchWithRetry();
 
   const botInfo = await bot.telegram.getMe();
   console.log(`Rose is running as @${botInfo.username} ✓`);
