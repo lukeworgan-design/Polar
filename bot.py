@@ -502,9 +502,12 @@ def format_recovery_dashboard(sleep_data: list, hrv_data: list) -> str:
     lines = ["💤 *Recovery*\n"]
     if hrv_data:
         h = hrv_data[0]
-        lines.append(f"{recharge_emoji(h.get('recharge_status',''))} *Recharge {h['date']}* · ANS {h.get('ans_charge','?')} · 💓 {h.get('hrv_avg','?')} · RMSSD {h.get('hrv_rmssd','?')}\n")
+        hrv_avg  = h.get('hrv_avg')  or '—'
+        hrv_rms  = h.get('hrv_rmssd') or '—'
+        ans      = h.get('ans_charge') or '—'
+        lines.append(f"{recharge_emoji(h.get('recharge_status',''))} *Recharge {h['date']}*\nANS {ans} · HRV {hrv_avg} · RMSSD {hrv_rms}\n")
     if sleep_data:
-        lines.append("😴 *Sleep*\n")
+        lines.append("😴 *Sleep — last 7 nights*\n")
         for s in sleep_data:
             total_s = s.get("total_sleep_seconds") or 0
             score   = s.get("sleep_score") or 0
@@ -512,9 +515,11 @@ def format_recovery_dashboard(sleep_data: list, hrv_data: list) -> str:
             mins    = (total_s % 3600) // 60
             rem_m   = (s.get("rem_seconds") or 0) // 60
             deep_m  = (s.get("deep_sleep_seconds") or 0) // 60
-            bar     = "█" * int(score / 10) + "░" * (10 - int(score / 10))
+            hrv_val = s.get("avg_hrv") or '—'
+            filled  = int(score / 10)
+            bar     = "█" * filled + "░" * (10 - filled)
             sg      = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
-            lines.append(f"{sg} *{s['date']}* {hrs}h{mins:02d}m · 📊 {score:.0f} · 💤 {rem_m}m · 🔵 {deep_m}m · 💓 {s.get('avg_hrv','?')}\n`{bar}`")
+            lines.append(f"{sg} *{s['date']}*  {hrs}h{mins:02d}m  Score {score:.0f}  HRV {hrv_val}\n{bar}  REM {rem_m}m · Deep {deep_m}m")
     return "\n".join(lines)
 
 def format_hr_dashboard(hr_data: list) -> str:
@@ -1257,6 +1262,19 @@ def send_morning_briefing():
         readiness = compute_readiness_score()
         session   = recommend_session(readiness)
 
+        # Check for a run this morning (any exercise logged today)
+        today_str   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        runs_today  = supabase.table("polar_exercises").select("polar_exercise_id,distance_meters,duration_seconds,avg_heart_rate,training_load,sport").gte("date", today_str).execute().data or []
+        ran_today   = bool(runs_today)
+        run_context = ""
+        if ran_today:
+            r = runs_today[0]
+            dist_km  = (r.get("distance_meters") or 0) / 1000
+            dur_min  = (r.get("duration_seconds") or 0) // 60
+            run_context = f" Today's run: {dist_km:.1f}km in {dur_min}min, avg HR {r.get('avg_heart_rate','?')}bpm, load {r.get('training_load','?')}."
+        else:
+            run_context = " No run detected this morning — rest or cross-training day."
+
         sw = supabase.table("polar_sleepwise").select("date,grade,grade_classification,sleep_inertia").order("date", desc=True).limit(1).execute()
         sw_context = ""
         if sw.data:
@@ -1270,22 +1288,32 @@ def send_morning_briefing():
             c = cl.data[0]
             load_context = f" Cardio load: {c.get('cardio_load_status','?')} | Strain {c.get('strain','?')} / Tolerance {c.get('tolerance','?')} | Ratio {c.get('cardio_load_ratio','?')}."
 
+        if ran_today:
+            briefing_type = "Post-run AM briefing"
+            sections = """🏃 RUN SNAPSHOT — briefly validate or challenge the readiness score based on today's run data (2-3 sentences)
+🧘 RECOVERY TODAY — specific recovery actions: stretches, foam rolling, nutrition. Be concrete.
+📅 WEEK AHEAD — day-by-day plan for remaining sessions this week. One line per day.
+⚑ FLAG — one watch point from recent data."""
+        else:
+            briefing_type = "Morning briefing (rest day)"
+            sections = """🧘 TODAY'S FOCUS — what to do on a rest day given current load and readiness (recovery, mobility, cross-training). Be specific.
+📅 WEEK AHEAD — day-by-day plan for remaining sessions this week. One line per day.
+⚑ FLAG — one watch point from recent data."""
+
         response = claude.messages.create(
             model="claude-sonnet-4-6", max_tokens=600,
             system=build_system_prompt(),
-            messages=[{"role": "user", "content": f"""Post-run AM briefing. Luke runs at 5am. London Marathon is {days_to_marathon()} days away.{sw_context}{load_context} Algorithmic readiness: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
+            messages=[{"role": "user", "content": f"""{briefing_type}. London Marathon is {days_to_marathon()} days away.{run_context}{sw_context}{load_context} Algorithmic readiness: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
 
 Structure your reply with clear emoji-led sections so it's easy to scan on mobile:
 
-🏃 POST-RUN SNAPSHOT — validate or challenge the readiness score based on today's run data (2-3 sentences)
-🧘 REST & MOBILITY TODAY — specific recovery actions for the rest of today (stretches, foam rolling, nutrition, nap if needed). Be concrete.
-📅 WEEK AHEAD PLAN — brief day-by-day plan for remaining sessions this week, factoring in current cardio load and marathon proximity. One line per day.
-⚑ FLAG — one watch point from recent data.
+{sections}
 
-Use emojis to break up each section. Keep each section tight. Max 5 short sections total."""}]
+Keep each section tight. Max 4 short sections total."""}]
         )
         reply = extract_and_save_note(response.content[0].text, "morning briefing")
-        bot.send_message(YOUR_TELEGRAM_ID, f"🌅 *Post-Run AM Briefing — {datetime.now().strftime('%-d %b')}*\n\n{readiness_emoji(readiness['score'])} *Readiness: {readiness['score']}/10* — _{readiness['label']}_\n\n{reply}", parse_mode="Markdown")
+        title = "🌅 *Post-Run AM Briefing" if ran_today else "🌅 *AM Briefing"
+        bot.send_message(YOUR_TELEGRAM_ID, f"{title} — {datetime.now().strftime('%-d %b')}*\n\n{readiness_emoji(readiness['score'])} *Readiness: {readiness['score']}/10* — _{readiness['label']}_\n\n{reply}", parse_mode="Markdown")
         check_and_push_alerts()
     except Exception as e:
         log.error(f"Briefing error: {e}")
@@ -1452,13 +1480,13 @@ def polar_sync_loop():
 def scheduler_loop():
     while True:
         now     = datetime.now(timezone.utc)
-        targets = [now.replace(hour=5, minute=30, second=0, microsecond=0), now.replace(hour=20, minute=30, second=0, microsecond=0), now.replace(hour=0, minute=5, second=0, microsecond=0)]
+        targets = [now.replace(hour=6, minute=15, second=0, microsecond=0), now.replace(hour=20, minute=30, second=0, microsecond=0), now.replace(hour=0, minute=5, second=0, microsecond=0)]
         targets = [t + timedelta(days=1) if now >= t else t for t in targets]
         sleep_secs = (min(targets) - now).total_seconds()
         log.info(f"Scheduler: next in {sleep_secs/60:.1f}min")
         time.sleep(sleep_secs)
         fire_time = datetime.now(timezone.utc)
-        if fire_time.hour == 5 and fire_time.minute >= 30 and fire_time.minute < 35:
+        if fire_time.hour == 6 and fire_time.minute >= 15 and fire_time.minute < 20:
             send_morning_briefing()
         elif fire_time.hour == 20 and fire_time.minute >= 30 and fire_time.minute < 35:
             send_evening_debrief()
