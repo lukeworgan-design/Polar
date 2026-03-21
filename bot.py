@@ -32,6 +32,7 @@ POLAR_CLIENT_ID     = os.environ["POLAR_CLIENT_ID"]
 POLAR_CLIENT_SECRET = os.environ["POLAR_CLIENT_SECRET"]
 POLAR_USER_ID       = os.environ["POLAR_USER_ID"]
 YOUR_TELEGRAM_ID    = int(os.environ["YOUR_TELEGRAM_ID"])
+GROUP_CHAT_ID       = -5260916370
 SUPABASE_URL        = os.environ["SUPABASE_URL"].rstrip("/")
 SUPABASE_KEY        = os.environ["SUPABASE_KEY"]
 
@@ -1500,7 +1501,7 @@ def scheduler_loop():
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     chat_id   = message.chat.id
-    if chat_id != YOUR_TELEGRAM_ID:
+    if chat_id not in (YOUR_TELEGRAM_ID, GROUP_CHAT_ID):
         bot.reply_to(message, "Unauthorised.")
         return
     user_text = message.text.strip()
