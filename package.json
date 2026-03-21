@@ -8,7 +8,7 @@
     "start": "node dist/bot.js",
     "dev": "ts-node src/bot.ts",
     "auth": "ts-node auth.ts",
-    "postinstall": "npm run build"
+    "postinstall": "echo 'skipping build in postinstall'"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
