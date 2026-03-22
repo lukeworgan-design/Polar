@@ -2,7 +2,7 @@ import { createServer } from 'http';
 import { Telegraf, Context } from 'telegraf';
 import { Message } from 'telegraf/typings/core/types/typegram';
 import { config, getUserName } from './config';
-import { generateResponse, shouldRoseRespond } from './ai';
+import { generateResponse } from './ai';
 import { initScheduler } from './scheduler';
 
 const bot = new Telegraf(config.telegram.botToken);
@@ -80,11 +80,6 @@ async function handleGroupMessage(ctx: Context): Promise<void> {
 
   const mentioned = isDirectlyMentioned(text, botUsername);
   const userName = getUserName(userId);
-
-  // Decide whether Rose should respond
-  const shouldRespond = mentioned || await shouldRoseRespond(text, false);
-
-  if (!shouldRespond) return;
 
   updateRateLimit(userId);
 
