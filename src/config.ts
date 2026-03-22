@@ -6,6 +6,16 @@ export interface UserConfig {
   name: string;
 }
 
+export interface ChildConfig {
+  name: string;
+  age: number;
+}
+
+export interface FamilyConfig {
+  children: ChildConfig[];
+  babyDue: string; // ISO date string
+}
+
 function requireEnv(key: string): string {
   const value = process.env[key];
   if (!value) {
@@ -39,6 +49,13 @@ export const config = {
     },
   },
   timezone: process.env['TIMEZONE'] || 'Europe/London',
+  family: {
+    children: [
+      { name: 'Poppy', age: 7 },
+      { name: 'Billy', age: 5 },
+    ],
+    babyDue: '2026-08-17',
+  },
 };
 
 export function getUserByTelegramId(telegramId: number): UserConfig | null {

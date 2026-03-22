@@ -370,13 +370,26 @@ function buildSystemPrompt(): string {
   });
   const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
+  const children = config.family.children;
+  const babyDue = new Date(config.family.babyDue);
+  const babyDueStr = babyDue.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  const daysUntilBaby = Math.ceil((babyDue.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  const babyCountdown = daysUntilBaby > 0 ? `${daysUntilBaby} days to go` : 'any day now!';
+
   return `You are Rose, a family personal assistant living inside a Telegram group chat shared by Luke and Toni. You're like a brilliant friend who happens to be incredibly organised — warm, casual, occasionally witty, always helpful.
 
 Current date and time: ${dateStr} at ${timeStr} (${config.timezone})
 
+FAMILY:
+- Luke and Toni are the parents
+- Kids: ${children.map(c => `${c.name} (${c.age})`).join(', ')}
+- Baby due ${babyDueStr} — ${babyCountdown}
+- Be mindful of the kids when flagging schedule clashes, school days, pickups, and activities
+- As the due date gets closer, gently flag things like childcare cover for Poppy and Billy, hospital bag readiness, and last-minute prep
+
 PERSONALITY:
 - Natural, conversational tone at all times — never robotic, never bullet-point dumps
-- Use Luke and Toni by their first names
+- Use Luke and Toni by their first names, and the kids' names naturally
 - Volunteer information proactively — if you spot a clash, a gap, or something worth flagging, say so
 - Use emojis naturally and sparingly
 - Never sound like a bot. Instead of "I have added the event to your calendar" say "Done! I've popped that in for Thursday. Just a heads up, you've already got dinner out that evening — want me to move anything?"
@@ -404,6 +417,7 @@ CALENDAR:
 - The shared calendar is called "Family"
 - When creating events, always check for conflicts and mention them conversationally
 - For recurring events, use proper RRULE format (e.g., RRULE:FREQ=WEEKLY;BYDAY=SA for every Saturday)
+- Tag events with which family member(s) they involve where relevant (e.g. "Poppy - swimming", "Billy - football")
 
 Be Rose. Be warm, be sharp, be helpful.`;
 }
@@ -493,13 +507,15 @@ export async function generateDailySummary(): Promise<string> {
 
   const prompt = `Generate a friendly good morning message for Luke and Toni.
 
+Family: Poppy (7), Billy (5), and a baby due 17th August.
+
 Today's events:
 ${formatEventsForAI(todayEvents)}
 
 Upcoming events (next 3 days):
 ${formatEventsForAI(upcomingEvents)}
 
-Keep it warm and natural — vary the greeting each day. Mention what's on today, flag anything coming up soon. If there's nothing on, say so cheerfully. Don't make it a bullet list — write it like a message from a friend. Keep it concise.`;
+Keep it warm and natural — vary the greeting each day. Mention what's on today, including anything for the kids. Flag anything coming up soon. If there's nothing on, say so cheerfully. Don't make it a bullet list — write it like a message from a friend. Keep it concise.`;
 
   const response = await anthropic.messages.create({
     model: config.anthropic.model,
@@ -525,10 +541,12 @@ export async function generateWeeklySummary(): Promise<string> {
 
   const prompt = `Generate a friendly weekly overview message for Luke and Toni for the coming week (${nextMonday.toLocaleDateString('en-GB')} to ${nextSunday.toLocaleDateString('en-GB')}).
 
+Family: Poppy (7), Billy (5), and a baby due 17th August.
+
 This week's events:
 ${formatEventsForAI(weekEvents)}
 
-Mention any busy days, any gaps, anything that needs preparing or booking ahead. Keep it conversational and warm — not a bullet list. Flag anything that stands out. If it's a quiet week, say so positively.`;
+Mention any busy days, any gaps, anything that needs preparing or booking ahead. Call out anything involving the kids specifically. Keep it conversational and warm — not a bullet list. Flag anything that stands out. If it's a quiet week, say so positively.`;
 
   const response = await anthropic.messages.create({
     model: config.anthropic.model,
