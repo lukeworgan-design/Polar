@@ -192,9 +192,11 @@ bot.catch((err, ctx) => {
 
 // ── Launch ────────────────────────────────────────────────────────────────────
 
-async function launchWithRetry(maxAttempts = 5, baseDelayMs = 3000): Promise<void> {
+async function launchWithRetry(maxAttempts = 10, baseDelayMs = 5000): Promise<void> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
+      // Drop any existing polling/webhook session before launching
+      await bot.telegram.deleteWebhook({ drop_pending_updates: false });
       await bot.launch();
       return;
     } catch (err: any) {
