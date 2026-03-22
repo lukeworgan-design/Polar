@@ -17,8 +17,7 @@ function isFromGroup(ctx: Context): boolean {
 function getMentionPatterns(botUsername: string): RegExp[] {
   return [
     new RegExp(`@${botUsername}`, 'i'),
-    /\brose[,!?\s]/i,
-    /^rose$/i,
+    /\brose([,!?\s]|$)/i,
     /\bhey rose\b/i,
   ];
 }
@@ -126,27 +125,6 @@ async function handleGroupMessage(ctx: Context): Promise<void> {
 
 // ── Bot setup ─────────────────────────────────────────────────────────────────
 
-bot.on('message', async (ctx) => {
-  const chatId = ctx.chat?.id;
-  const chatType = ctx.chat?.type;
-  const text = (ctx.message as any)?.text ?? '(no text)';
-  console.log(`Message received: chatId=${chatId}, type=${chatType}, text="${text.slice(0, 50)}"`);
-
-  // Only handle messages from our group
-  if (!isFromGroup(ctx)) {
-    console.log(`Ignoring: chatId ${chatId} !== GROUP_ID ${GROUP_ID}`);
-    // If someone messages Rose directly (DM), let them know
-    if (ctx.chat?.type === 'private') {
-      await ctx.reply(
-        "Hey! I live in the family group chat — head over there and we can chat properly 😊"
-      );
-    }
-    return;
-  }
-
-  await handleGroupMessage(ctx);
-});
-
 // Handle /start command (if someone adds Rose to the group)
 bot.command('start', async (ctx) => {
   if (!isFromGroup(ctx)) {
@@ -190,6 +168,27 @@ bot.command('whoami', async (ctx) => {
     `Your Telegram user ID is \`${userId}\`${firstName ? ` (${firstName})` : ''}${username ? ` @${username}` : ''}. Pass this to Luke to add you to Rose's config!`,
     { parse_mode: 'Markdown' }
   );
+});
+
+bot.on('message', async (ctx) => {
+  const chatId = ctx.chat?.id;
+  const chatType = ctx.chat?.type;
+  const text = (ctx.message as any)?.text ?? '(no text)';
+  console.log(`Message received: chatId=${chatId}, type=${chatType}, text="${text.slice(0, 50)}"`);
+
+  // Only handle messages from our group
+  if (!isFromGroup(ctx)) {
+    console.log(`Ignoring: chatId ${chatId} !== GROUP_ID ${GROUP_ID}`);
+    // If someone messages Rose directly (DM), let them know
+    if (ctx.chat?.type === 'private') {
+      await ctx.reply(
+        "Hey! I live in the family group chat — head over there and we can chat properly 😊"
+      );
+    }
+    return;
+  }
+
+  await handleGroupMessage(ctx);
 });
 
 // Error handling
