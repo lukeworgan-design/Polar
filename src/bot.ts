@@ -192,47 +192,35 @@ bot.catch((err, ctx) => {
 
 // ── Launch ────────────────────────────────────────────────────────────────────
 
-async function launchWithRetry(maxAttempts = 12, retryDelayMs = 15000): Promise<void> {
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await bot.launch();
-      return;
-    } catch (err: any) {
-      const is409 = err?.response?.error_code === 409;
-      if (is409 && attempt < maxAttempts) {
-        // 409 = old instance still has an active long-poll (50s Telegram timeout).
-        // Wait 15s per retry; after ~3-4 attempts the old session will have expired.
-        console.log(`409 conflict (attempt ${attempt}/${maxAttempts}), retrying in ${retryDelayMs / 1000}s...`);
-        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
-      } else {
-        throw err;
-      }
-    }
-  }
-}
-
 async function main(): Promise<void> {
   console.log('Starting Rose...');
 
-  // Initialise the scheduler with a send function
   initScheduler(sendToGroup);
 
-  // Launch the bot (retries on 409 conflict during rolling redeploys)
-  await launchWithRetry();
+  const domain = process.env['RAILWAY_PUBLIC_DOMAIN'];
+  const port = parseInt(process.env['PORT'] || '3000', 10);
+
+  if (domain) {
+    // Webhook mode — no polling conflicts, works with Railway rolling deploys
+    await bot.launch({
+      webhook: {
+        domain,
+        port,
+        path: '/webhook',
+      },
+    });
+    console.log(`Rose is running in webhook mode on port ${port} ✓`);
+  } else {
+    // Local dev — fall back to long polling
+    await bot.launch();
+    console.log('Rose is running in polling mode (local) ✓');
+  }
 
   const botInfo = await bot.telegram.getMe();
-  console.log(`Rose is running as @${botInfo.username} ✓`);
-  console.log(`Listening to group: ${GROUP_ID}`);
+  console.log(`Running as @${botInfo.username}, listening to group: ${GROUP_ID}`);
 
-  // Graceful shutdown
-  process.once('SIGINT', () => {
-    console.log('Shutting down...');
-    bot.stop('SIGINT');
-  });
-  process.once('SIGTERM', () => {
-    console.log('Shutting down...');
-    bot.stop('SIGTERM');
-  });
+  process.once('SIGINT', () => { console.log('Shutting down...'); bot.stop('SIGINT'); });
+  process.once('SIGTERM', () => { console.log('Shutting down...'); bot.stop('SIGTERM'); });
 }
 
 main().catch((err) => {
