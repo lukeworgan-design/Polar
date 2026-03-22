@@ -413,6 +413,7 @@ TIME HANDLING:
 - For events without a specified duration, default to 1 hour
 - For all-day events (birthdays, holidays), use all_day: true
 - Always use the timezone ${config.timezone}
+- Always use 24-hour clock format for times (e.g. 14:30, not 2:30pm)
 - CRITICAL: When confirming a date back to the user, always derive the day name from the actual date — never guess or assume. Use the reference calendar below.
 - If a user says "Friday" resolve it to the correct date. If a user says "the 28th" resolve it to the correct day name. Never combine a day name and a date number unless they match in the reference below.
 
