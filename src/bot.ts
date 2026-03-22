@@ -215,7 +215,19 @@ async function main(): Promise<void> {
     // No domain yet — bind to PORT so Railway can generate a public URL,
     // then fall back to long polling until next deploy.
     createServer((req, res) => { res.writeHead(200); res.end('OK'); }).listen(port);
-    await bot.launch();
+    for (let attempt = 1; attempt <= 12; attempt++) {
+      try {
+        await bot.launch();
+        break;
+      } catch (err: any) {
+        if (err?.response?.error_code === 409 && attempt < 12) {
+          console.log(`409 conflict (attempt ${attempt}/12), retrying in 15s...`);
+          await new Promise(r => setTimeout(r, 15000));
+        } else {
+          throw err;
+        }
+      }
+    }
     console.log(`Rose is running in polling mode, HTTP server on port ${port} ✓`);
   }
 
