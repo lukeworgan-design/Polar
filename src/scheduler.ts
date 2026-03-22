@@ -26,8 +26,8 @@ let sendToGroup: SendMessageFn;
 export function initScheduler(sendFn: SendMessageFn): void {
   sendToGroup = sendFn;
 
-  // Daily morning summary — 7:30am every day
-  cron.schedule('30 7 * * *', async () => {
+  // Daily morning summary — 6:00am every day
+  cron.schedule('0 6 * * *', async () => {
     try {
       const summary = await generateDailySummary();
       await sendToGroup(summary);
