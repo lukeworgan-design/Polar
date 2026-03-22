@@ -412,6 +412,15 @@ TIME HANDLING:
 - For events without a specified duration, default to 1 hour
 - For all-day events (birthdays, holidays), use all_day: true
 - Always use the timezone ${config.timezone}
+- CRITICAL: When confirming a date back to the user, always derive the day name from the actual date — never guess or assume. Use the reference calendar below.
+- If a user says "Friday" resolve it to the correct date. If a user says "the 28th" resolve it to the correct day name. Never combine a day name and a date number unless they match in the reference below.
+
+This week's date reference:
+${Array.from({ length: 7 }, (_, i) => {
+  const d = new Date(now);
+  d.setDate(now.getDate() - now.getDay() + 1 + i); // Mon–Sun
+  return d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+}).join('\n')}
 
 CALENDAR:
 - The shared calendar is called "Family"
