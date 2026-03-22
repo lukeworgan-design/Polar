@@ -205,7 +205,7 @@ export async function deleteEvent(eventId: string): Promise<void> {
   await cal.events.delete({ calendarId: cid, eventId });
 }
 
-export async function findEventsByKeyword(keyword: string, daysAhead: number = 30): Promise<CalendarEvent[]> {
+export async function findEventsByKeyword(keyword: string, daysAhead: number = 365): Promise<CalendarEvent[]> {
   const now = new Date();
   const future = new Date();
   future.setDate(now.getDate() + daysAhead);

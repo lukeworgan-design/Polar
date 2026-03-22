@@ -220,6 +220,17 @@ async function executeTool(
       case 'create_calendar_event': {
         const start = new Date(toolInput['start_datetime'] as string);
         const end = new Date(toolInput['end_datetime'] as string);
+        const summary = toolInput['summary'] as string;
+
+        // Duplicate guard: check if an event with this exact summary already exists on the same day
+        const existingMatches = await findEventsByKeyword(summary);
+        const sameDay = existingMatches.filter(e => {
+          const d = new Date(e.start);
+          return d.toDateString() === start.toDateString();
+        });
+        if (sameDay.length > 0) {
+          return `DUPLICATE BLOCKED: An event named "${sameDay[0]!.summary}" already exists on ${start.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}. No new event was created. If you meant to update it, use update_calendar_event instead.`;
+        }
 
         // Check for conflicts first
         const conflicts = await checkConflicts(start, end);
@@ -230,7 +241,7 @@ async function executeTool(
           : undefined;
 
         const event = await createEvent({
-          summary: toolInput['summary'] as string,
+          summary,
           start,
           end,
           description: toolInput['description'] as string | undefined,
@@ -296,10 +307,15 @@ async function executeTool(
       case 'delete_calendar_event': {
         const keyword = toolInput['event_keyword'] as string;
         const events = await findEventsByKeyword(keyword);
-        if (events.length === 0) return `Could not find any event matching "${keyword}"`;
-        const event = events[0]!;
-        await deleteEvent(event.id);
-        return `Deleted event: "${event.summary}"`;
+        if (events.length === 0) return `Could not find any event matching "${keyword}" in the next 365 days. No events were deleted.`;
+        const deleted: string[] = [];
+        for (const ev of events) {
+          await deleteEvent(ev.id);
+          const dt = new Date(ev.start);
+          const label = dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+          deleted.push(`"${ev.summary}" on ${label}`);
+        }
+        return `Deleted ${deleted.length} event(s):\n${deleted.map(d => `- ${d}`).join('\n')}`;
       }
 
       case 'get_shopping_list': {
