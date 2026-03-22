@@ -239,7 +239,12 @@ async function executeTool(
           recurrence,
         });
 
-        let result = `Created event: "${event.summary}" on ${new Date(event.start).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}`;
+        const startDt = new Date(event.start);
+        const endDt = new Date(event.end);
+        const dateStr2 = startDt.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+        const startTime = startDt.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true });
+        const endTime = endDt.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true });
+        let result = `Created event: "${event.summary}" on ${dateStr2}, ${startTime}–${endTime}`;
         if (conflicts.length > 0) {
           result += `\n\nCONFLICT WARNING: There are already events at this time:\n${formatEventsForAI(conflicts)}`;
         }
@@ -267,7 +272,12 @@ async function executeTool(
         if (updates.start && updates.end) {
           const conflicts = await checkConflicts(updates.start, updates.end, event.id);
           const updated = await updateEvent(event.id, updates);
-          let result = `Updated "${updated.summary}"`;
+          const updStartDt = new Date(updated.start);
+          const updEndDt = new Date(updated.end);
+          const updDate = updStartDt.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+          const updStart = updStartDt.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true });
+          const updEnd = updEndDt.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true });
+          let result = `Updated "${updated.summary}" — now on ${updDate}, ${updStart}–${updEnd}`;
           if (conflicts.length > 0) {
             result += `\n\nCONFLICT WARNING:\n${formatEventsForAI(conflicts)}`;
           }
@@ -275,7 +285,12 @@ async function executeTool(
         }
 
         const updated = await updateEvent(event.id, updates);
-        return `Updated "${updated.summary}"`;
+        const updStartDt2 = new Date(updated.start);
+        const updEndDt2 = new Date(updated.end);
+        const updDate2 = updStartDt2.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+        const updStart2 = updStartDt2.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true });
+        const updEnd2 = updEndDt2.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true });
+        return `Updated "${updated.summary}" — now on ${updDate2}, ${updStart2}–${updEnd2}`;
       }
 
       case 'delete_calendar_event': {
