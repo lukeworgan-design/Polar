@@ -942,6 +942,8 @@ def sync_sleepwise() -> int:
         r2 = requests.get(f"{POLAR_BASE}/users/sleepwise/circadian-bedtime", headers=polar_headers())
         if r2.ok:
             cb      = r2.json()
+            if isinstance(cb, list):
+                cb = cb[0] if cb else {}
             today   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             start_t = cb.get("start") or cb.get("bedtime_start") or cb.get("circadian_start")
             end_t   = cb.get("end")   or cb.get("bedtime_end")   or cb.get("circadian_end")
