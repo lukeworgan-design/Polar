@@ -1155,7 +1155,7 @@ def format_full_summary() -> str:
                 rem_m   = (s.get("rem_seconds") or 0) // 60
                 deep_m  = (s.get("deep_sleep_seconds") or 0) // 60
                 sg      = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
-                lines.append(f"  {sg} {s['date']} · {hrs}h{mins:02d}m · 📊{score:.0f} · 💤{rem_m}m · 🔵{deep_m}m · 💓{s.get('avg_hrv','?')}")
+                lines.append(f"  {sg} {s['date']} · {hrs}h{mins:02d}m · 📊{score:.0f} · 💤{rem_m}m · 🔵{deep_m}m · 💓{s.get('avg_hrv') or '—'}")
             lines.append("")
     except: pass
 
@@ -1167,7 +1167,7 @@ def format_full_summary() -> str:
         if hrv.data:
             lines.append(f"⚡ *Recharge*")
             for h in hrv.data:
-                lines.append(f"  {recharge_emoji(h.get('recharge_status',''))} {h['date']} · {h.get('recharge_status','?')} · ANS {h.get('ans_charge','?')} · 💓 {h.get('hrv_avg','?')} · RMSSD {h.get('hrv_rmssd','?')}")
+                lines.append(f"  {recharge_emoji(h.get('recharge_status',''))} {h['date']} · {h.get('recharge_status','?')} · ANS {h.get('ans_charge') or '—'} · 💓 {h.get('hrv_avg') or '—'} · RMSSD {h.get('hrv_rmssd') or '—'}")
             lines.append("")
     except: pass
 
@@ -1196,7 +1196,11 @@ def format_full_summary() -> str:
                 status = (c.get("cardio_load_status") or "").replace("_"," ").title()
                 ratio  = c.get("cardio_load_ratio")
                 r_str  = f" · ×{ratio:.2f}" if ratio else ""
-                lines.append(f"  {load_emoji(c.get('cardio_load_status',''))} {c['date']} · {status} · 💪{c.get('strain','?')}/{c.get('tolerance','?')}{r_str}")
+                strain  = c.get('strain')
+                tol     = c.get('tolerance')
+                s_str   = f"{float(strain):.1f}" if strain is not None else '—'
+                t_str   = f"{float(tol):.1f}"    if tol     is not None else '—'
+                lines.append(f"  {load_emoji(c.get('cardio_load_status',''))} {c['date']} · {status} · 💪{s_str}/{t_str}{r_str}")
             lines.append("")
     except: pass
 
