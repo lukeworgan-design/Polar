@@ -439,7 +439,7 @@ function buildSystemPrompt(): string {
     month: 'long',
     year: 'numeric',
   });
-  const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
 
   const children = config.family.children;
   const babyDue = new Date(config.family.babyDue);
@@ -701,7 +701,7 @@ export async function generateEventReminder(event: CalendarEvent, hoursUntil: nu
   const prompt = `Generate a friendly reminder about this upcoming event for Luke and Toni:
 
 Event: ${event.summary}
-Start: ${new Date(event.start).toLocaleString('en-GB')}
+Start: ${new Date(event.start).toLocaleString('en-GB', { hour12: false })}
 ${event.location ? `Location: ${event.location}` : ''}
 Hours until event: ${hoursUntil}
 

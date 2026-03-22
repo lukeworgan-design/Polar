@@ -246,7 +246,7 @@ export function formatEventsForAI(events: CalendarEvent[]): string {
       if (isAllDayEvent) {
         timeStr = start.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
       } else {
-        timeStr = `${start.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} at ${start.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}–${end.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+        timeStr = `${start.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} at ${start.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })}–${end.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
       }
 
       let str = `- ${e.summary} (${timeStr})`;
