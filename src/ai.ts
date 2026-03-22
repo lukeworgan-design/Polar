@@ -613,7 +613,20 @@ export async function generateDailySummary(): Promise<string> {
   const todayEvents = await getTodaysEvents();
   const upcomingEvents = await getUpcomingEvents(3);
 
-  const prompt = `Generate a friendly good morning message for Luke and Toni.
+  const today = new Date();
+  const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat
+  const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+
+  const schoolRunSchedule: Record<number, string> = {
+    1: 'Luke does drop-off and after-school club pick-up',
+    2: 'Grandma handles both — nothing needed from you two',
+    3: 'Breakfast club drop-off, Granddad picks up — you\'re off the hook',
+    4: 'Luke does drop-off, Toni picks up',
+    5: 'Toni does both',
+  };
+  const todaySchoolRun = isWeekday ? schoolRunSchedule[dayOfWeek] : null;
+
+  const prompt = `Generate a punchy good morning message for Luke and Toni. Use short bulleted lines with emojis. Group items under bold topic headers where relevant (e.g. **🎒 Kids**, **📅 Today**, **👀 Coming up**). Keep the tone warm with light wit — like a witty friend who also happens to be extremely organised.
 
 Family: Poppy (7), Billy (5), and a baby due 17th August.
 
@@ -623,7 +636,15 @@ ${formatEventsForAI(todayEvents)}
 Upcoming events (next 3 days):
 ${formatEventsForAI(upcomingEvents)}
 
-Keep it warm and natural — vary the greeting each day. Mention what's on today, including anything for the kids. Flag anything coming up soon. If there's nothing on, say so cheerfully. Don't make it a bullet list — write it like a message from a friend. Keep it concise.`;
+${todaySchoolRun ? `SCHOOL RUN TODAY: ${todaySchoolRun}. Include a **🚌 School run** section confirming who's doing what today. If it's all covered by Grandma/Granddad, a little reassurance goes a long way.` : ''}
+
+Rules:
+- Start with a varied one-liner greeting (no "Good morning!" every day)
+- Use bullet points, not paragraphs
+- Group related items under bold emoji headers
+- If nothing's on, say so with a bit of cheer
+- Keep it tight — no waffle
+- Vary the tone and emojis day to day so it doesn't feel like a template`;
 
   const response = await anthropic.messages.create({
     model: config.anthropic.model,
