@@ -82,19 +82,7 @@ async function handleGroupMessage(ctx: Context): Promise<void> {
   const userName = getUserName(userId);
 
   // Decide whether Rose should respond
-  let shouldRespond = mentioned;
-
-  if (!shouldRespond) {
-    // Use AI to decide if this is worth responding to
-    // But only if the message looks like it could be relevant (avoid calling AI for every message)
-    const mightBeRelevant =
-      text.includes('?') ||
-      /\b(calendar|schedule|shopping|list|remind|birthday|tomorrow|today|week|add|remove|cancel|book|dentist|meeting|doctor)\b/i.test(text);
-
-    if (mightBeRelevant) {
-      shouldRespond = await shouldRoseRespond(text, false);
-    }
-  }
+  const shouldRespond = mentioned || await shouldRoseRespond(text, false);
 
   if (!shouldRespond) return;
 
