@@ -192,19 +192,18 @@ bot.catch((err, ctx) => {
 
 // ── Launch ────────────────────────────────────────────────────────────────────
 
-async function launchWithRetry(maxAttempts = 10, baseDelayMs = 5000): Promise<void> {
+async function launchWithRetry(maxAttempts = 12, retryDelayMs = 15000): Promise<void> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      // Drop any existing polling/webhook session before launching
-      await bot.telegram.deleteWebhook({ drop_pending_updates: false });
       await bot.launch();
       return;
     } catch (err: any) {
       const is409 = err?.response?.error_code === 409;
       if (is409 && attempt < maxAttempts) {
-        const delay = baseDelayMs * attempt;
-        console.log(`409 conflict (attempt ${attempt}/${maxAttempts}), retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        // 409 = old instance still has an active long-poll (50s Telegram timeout).
+        // Wait 15s per retry; after ~3-4 attempts the old session will have expired.
+        console.log(`409 conflict (attempt ${attempt}/${maxAttempts}), retrying in ${retryDelayMs / 1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
       } else {
         throw err;
       }
