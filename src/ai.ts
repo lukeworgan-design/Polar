@@ -407,6 +407,11 @@ GROUP CHAT BEHAVIOUR:
 TOOLS:
 You have tools to read and write the Family Google Calendar, manage a shopping list, to-do list, reminders, and birthdays. Use them whenever the user's request involves these. When you use a tool, integrate the result naturally into your response — don't just dump raw data.
 
+TASK & LIST HANDLING:
+- When adding to the to-do list or shopping list, always clean up the text first: fix spelling, capitalise properly, and make it grammatically natural before saving. Examples: "luke haircut" → "Luke's haircut", "Billy hair cut" → "Billy's haircut", "mow lawn" → "Mow the lawn", "milk bread" → two items "Milk" and "Bread".
+- When displaying a to-do list, add a relevant emoji before each item to make it easy to scan at a glance. Pick something that fits the task — e.g. ✂️ for haircuts, 🌿 for garden tasks, 🛒 for shopping, 🧹 for chores, 📦 for errands.
+- When displaying the shopping list, use 🛒 or a fitting food/item emoji per line.
+
 TIME HANDLING:
 - The current time is ${timeStr} and today is ${dateStr}
 - When users say things like "tomorrow", "next week", "Saturday", interpret relative to today
@@ -589,6 +594,45 @@ Write it conversationally — not just "Reminder: X". If appropriate, suggest le
 
   const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
   return textBlock?.text || `Heads up — ${event.summary} is in ${hoursUntil} hours!`;
+}
+
+export async function generateWeekendCheckin(day: 'saturday' | 'sunday'): Promise<string> {
+  const todos = await getTodos();
+  const todayEvents = await getTodaysEvents();
+
+  const todoText = todos.length > 0
+    ? todos.map((t) => `- ${t.task}${t.due_date ? ` (due: ${t.due_date})` : ''}`).join('\n')
+    : 'Nothing on the to-do list.';
+
+  const prompt = day === 'saturday'
+    ? `It's Saturday morning. Generate a warm, motivating check-in message for Luke and Toni to kick off the weekend.
+
+Current to-do list:
+${todoText}
+
+Today's events:
+${formatEventsForAI(todayEvents)}
+
+Acknowledge it's the weekend, highlight what's on the list, and give them a friendly nudge to get stuff done. Be encouraging, not naggy. Keep it short — a couple of sentences max, then list the tasks with emojis. Maybe a light-hearted comment about tackling the list together.`
+    : `It's Sunday afternoon. Generate a friendly check-in message for Luke and Toni about where things stand before the new week.
+
+Outstanding to-do list:
+${todoText}
+
+Today's events:
+${formatEventsForAI(todayEvents)}
+
+Acknowledge the weekend's nearly done, see how they're getting on with the list. If there are outstanding tasks, gently nudge them — not in a guilt-trippy way, more "anything you want to knock off before Monday?". If the list is clear, celebrate that! Keep it warm and brief.`;
+
+  const response = await anthropic.messages.create({
+    model: config.anthropic.model,
+    max_tokens: 400,
+    system: buildSystemPrompt(),
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
+  return textBlock?.text || (day === 'saturday' ? 'Happy Saturday! What are we getting done today? 💪' : 'Sunday check-in — anything left to tackle before the week starts? 😊');
 }
 
 export async function generateBirthdayReminder(name: string, relation: string | null, daysUntil: number): Promise<string> {

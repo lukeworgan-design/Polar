@@ -10,6 +10,7 @@ import {
   generateWeeklySummary,
   generateEventReminder,
   generateBirthdayReminder,
+  generateWeekendCheckin,
 } from './ai';
 import {
   getPendingReminders,
@@ -61,6 +62,25 @@ export function initScheduler(sendFn: SendMessageFn): void {
       await checkPersonalReminders();
     } catch (err) {
       console.error('Error checking personal reminders:', err);
+    }
+  }, { timezone: config.timezone });
+
+  // Weekend check-ins — Saturday 9am and Sunday 4pm
+  cron.schedule('0 9 * * 6', async () => {
+    try {
+      const message = await generateWeekendCheckin('saturday');
+      await sendToGroup(message);
+    } catch (err) {
+      console.error('Error sending Saturday check-in:', err);
+    }
+  }, { timezone: config.timezone });
+
+  cron.schedule('0 16 * * 0', async () => {
+    try {
+      const message = await generateWeekendCheckin('sunday');
+      await sendToGroup(message);
+    } catch (err) {
+      console.error('Error sending Sunday check-in:', err);
     }
   }, { timezone: config.timezone });
 
