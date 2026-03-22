@@ -201,6 +201,8 @@ async function main(): Promise<void> {
   const domain = process.env['RAILWAY_PUBLIC_DOMAIN'];
   const port = parseInt(process.env['PORT'] || '3000', 10);
 
+  console.log(`RAILWAY_PUBLIC_DOMAIN=${domain ?? '(not set)'}, PORT=${port}`);
+
   if (domain) {
     // Webhook mode — no polling conflicts, works with Railway rolling deploys
     await bot.launch({
