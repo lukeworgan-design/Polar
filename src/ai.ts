@@ -288,43 +288,43 @@ async function executeTool(
       }
 
       case 'get_shopping_list': {
-        const items = db.getShoppingList();
+        const items = await db.getShoppingList();
         if (items.length === 0) return 'Shopping list is empty.';
         return items.map((i) => `- ${i.item} (added by ${i.added_by})`).join('\n');
       }
 
       case 'add_shopping_item': {
-        db.addShoppingItem(toolInput['item'] as string, userName);
+        await db.addShoppingItem(toolInput['item'] as string, userName);
         return `Added "${toolInput['item']}" to the shopping list.`;
       }
 
       case 'remove_shopping_item': {
-        const removed = db.removeShoppingItem(toolInput['item'] as string);
+        const removed = await db.removeShoppingItem(toolInput['item'] as string);
         return removed
           ? `Removed "${toolInput['item']}" from the shopping list.`
           : `Couldn't find "${toolInput['item']}" on the shopping list.`;
       }
 
       case 'get_todo_list': {
-        const todos = db.getTodos();
+        const todos = await db.getTodos();
         if (todos.length === 0) return 'To-do list is empty.';
         return todos.map((t) => `- ${t.task}${t.due_date ? ` (due: ${t.due_date})` : ''}`).join('\n');
       }
 
       case 'add_todo': {
-        db.addTodo(toolInput['task'] as string, userName, toolInput['due_date'] as string | undefined);
+        await db.addTodo(toolInput['task'] as string, userName, toolInput['due_date'] as string | undefined);
         return `Added "${toolInput['task']}" to the to-do list.`;
       }
 
       case 'complete_todo': {
-        const done = db.completeTodo(toolInput['task'] as string);
+        const done = await db.completeTodo(toolInput['task'] as string);
         return done
           ? `Marked "${toolInput['task']}" as complete.`
           : `Couldn't find "${toolInput['task']}" in the to-do list.`;
       }
 
       case 'add_reminder': {
-        db.addReminder(
+        await db.addReminder(
           toolInput['user_name'] as string,
           toolInput['message'] as string,
           new Date(toolInput['remind_at'] as string)
@@ -334,7 +334,7 @@ async function executeTool(
       }
 
       case 'add_birthday': {
-        db.addBirthday(
+        await db.addBirthday(
           toolInput['name'] as string,
           toolInput['date'] as string,
           (toolInput['relation'] as string) || '',
@@ -344,7 +344,7 @@ async function executeTool(
       }
 
       case 'get_birthdays': {
-        const birthdays = db.getBirthdays();
+        const birthdays = await db.getBirthdays();
         if (birthdays.length === 0) return 'No birthdays stored.';
         return birthdays.map((b) => `- ${b.name}: ${b.date}${b.relation ? ` (${b.relation})` : ''}`).join('\n');
       }
@@ -441,10 +441,10 @@ export async function generateResponse(
   _telegramUserId: number
 ): Promise<string> {
   // Store user message in conversation history
-  addConversationMessage('user', `${userName}: ${userMessage}`, userName);
+  await addConversationMessage('user', `${userName}: ${userMessage}`, userName);
 
   // Get recent conversation history
-  const history = getRecentConversation(20);
+  const history = await getRecentConversation(20);
 
   // Build messages array
   const messages: Anthropic.MessageParam[] = history.slice(0, -1).map((h) => ({
@@ -505,7 +505,7 @@ export async function generateResponse(
   const responseText = textBlock?.text || "Sorry, I couldn't think of a response just now!";
 
   // Store assistant response in conversation history
-  addConversationMessage('assistant', responseText);
+  await addConversationMessage('assistant', responseText);
 
   return responseText;
 }

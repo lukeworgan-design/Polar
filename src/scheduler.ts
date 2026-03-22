@@ -113,10 +113,10 @@ async function checkEventReminders(): Promise<void> {
 }
 
 async function checkPersonalReminders(): Promise<void> {
-  const pending = getPendingReminders();
+  const pending = await getPendingReminders();
 
   for (const reminder of pending) {
-    markReminderFired(reminder.id);
+    await markReminderFired(reminder.id);
 
     const userName = reminder.user_name;
     const message = `Hey ${userName}! 👋 ${reminder.message}`;
@@ -125,17 +125,16 @@ async function checkPersonalReminders(): Promise<void> {
 }
 
 async function checkBirthdayReminders(): Promise<void> {
-  const upcoming = getUpcomingBirthdays(14);
+  const upcoming = await getUpcomingBirthdays(14);
   const currentYear = new Date().getFullYear();
 
   for (const birthday of upcoming) {
     // Send reminder at 14 days and 2 days before
     if (birthday.days_until === 14 || birthday.days_until === 2 || birthday.days_until === 0) {
-      const reminderYear = `${currentYear}-${birthday.days_until}d`;
-      const alreadyFired = hasBirthdayReminderFired(birthday.id, parseInt(`${currentYear}${birthday.days_until}`));
+      const alreadyFired = await hasBirthdayReminderFired(birthday.id, parseInt(`${currentYear}${birthday.days_until}`));
 
       if (!alreadyFired) {
-        markBirthdayReminderFired(birthday.id, parseInt(`${currentYear}${birthday.days_until}`));
+        await markBirthdayReminderFired(birthday.id, parseInt(`${currentYear}${birthday.days_until}`));
         const message = await generateBirthdayReminder(birthday.name, birthday.relation, birthday.days_until);
         await sendToGroup(message);
       }
