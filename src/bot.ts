@@ -1,3 +1,4 @@
+import { createServer } from 'http';
 import { Telegraf, Context } from 'telegraf';
 import { Message } from 'telegraf/typings/core/types/typegram';
 import { config, getUserName } from './config';
@@ -211,9 +212,11 @@ async function main(): Promise<void> {
     });
     console.log(`Rose is running in webhook mode on port ${port} ✓`);
   } else {
-    // Local dev — fall back to long polling
+    // No domain yet — bind to PORT so Railway can generate a public URL,
+    // then fall back to long polling until next deploy.
+    createServer((req, res) => { res.writeHead(200); res.end('OK'); }).listen(port);
     await bot.launch();
-    console.log('Rose is running in polling mode (local) ✓');
+    console.log(`Rose is running in polling mode, HTTP server on port ${port} ✓`);
   }
 
   const botInfo = await bot.telegram.getMe();
