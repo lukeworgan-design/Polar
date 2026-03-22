@@ -183,6 +183,17 @@ const tools: Anthropic.Tool[] = [
     description: "Get all stored birthdays and anniversaries",
     input_schema: { type: 'object' as const, properties: {}, required: [] },
   },
+  {
+    name: 'check_date',
+    description: "Look up what day of the week a date falls on. ALWAYS call this before stating a day+date combination (e.g. 'Saturday 5th April') to guarantee accuracy.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        date: { type: 'string', description: 'ISO date string to check, e.g. 2026-04-05' },
+      },
+      required: ['date'],
+    },
+  },
 ];
 
 // ── Tool execution ─────────────────────────────────────────────────────────────
@@ -380,6 +391,15 @@ async function executeTool(
         return birthdays.map((b) => `- ${b.name}: ${b.date}${b.relation ? ` (${b.relation})` : ''}`).join('\n');
       }
 
+      case 'check_date': {
+        // Use T12:00:00 to avoid UTC midnight boundary flipping the day
+        const d = new Date(`${toolInput['date'] as string}T12:00:00`);
+        if (isNaN(d.getTime())) return `Invalid date: ${toolInput['date']}`;
+        return d.toLocaleDateString('en-GB', {
+          weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+        });
+      }
+
       default:
         return `Unknown tool: ${toolName}`;
     }
@@ -389,10 +409,30 @@ async function executeTool(
   }
 }
 
+// ── Timezone-aware "now" ──────────────────────────────────────────────────────
+
+/**
+ * Returns a plain Date object representing the current wall-clock time in the
+ * given IANA timezone.  JS Dates are always UTC internally, so this creates a
+ * "fake-local" Date whose year/month/day/hours match the timezone — good
+ * enough for date arithmetic and toLocaleDateString display.
+ */
+function getLocalNow(timezone: string): Date {
+  const utcNow = new Date();
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(utcNow);
+  const get = (type: string) => parseInt(parts.find(p => p.type === type)?.value ?? '0', 10);
+  return new Date(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+}
+
 // ── System prompt ─────────────────────────────────────────────────────────────
 
 function buildSystemPrompt(): string {
-  const now = new Date();
+  const now = getLocalNow(config.timezone);
   const dateStr = now.toLocaleDateString('en-GB', {
     weekday: 'long',
     day: 'numeric',
@@ -466,21 +506,25 @@ TIME HANDLING:
 - Always use the timezone ${config.timezone}
 - Tool inputs (start_datetime, end_datetime, remind_at) must always be ISO 8601 strings, e.g. 2026-04-05T18:00:00
 - When displaying times to the user, use 12-hour format with am/pm (e.g. 6pm, 9am, 6–7:20pm). Never show raw ISO strings to the user.
-- CRITICAL: When confirming a date back to the user, always look it up in the date reference below — never guess or assume the day of the week. Use the reference calendar to resolve both "next Friday" → correct date, and "the 5th" → correct day name. Never pair a day name and a date number unless they match in the reference below.
+- CRITICAL — DATE ACCURACY: Never state a day-name + date-number combination (e.g. "Saturday 5th April") without first calling the check_date tool with the ISO date to verify the day name. The date reference below is your starting point, and check_date is your final confirmation. If the user gives you a day+date that doesn't match (e.g. they say "Saturday 5th April" but the 5th is a Sunday), silently correct it — use the right day name for that date. Never echo back an incorrect pairing.
 
-Date reference (today + 8 weeks):
-${Array.from({ length: 57 }, (_, i) => {
-  const d = new Date(now);
-  d.setDate(now.getDate() + i);
-  return d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-}).join('\n')}
+Date reference (today + 8 weeks) — use this as the authoritative source for all day/date lookups:
+${(() => {
+  // Build from local midnight to avoid any UTC-offset contamination
+  const base = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Array.from({ length: 57 }, (_, i) => {
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
+    return d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  }).join('\n');
+})()}
 
 CALENDAR:
 - The shared calendar is called "Family"
 - When creating events, always check for conflicts and mention them conversationally
 - For recurring events, use proper RRULE format (e.g., RRULE:FREQ=WEEKLY;BYDAY=SA for every Saturday)
 - Tag events with which family member(s) they involve where relevant (e.g. "Poppy - swimming", "Billy - football")
-- DATE & TIME ACCURACY: When confirming or repeating back a date, always derive the day of the week from the date reference — never echo back the day name the user gave you. For example, if someone says "Tuesday 1st April" but 1st April is a Wednesday, say "Wednesday 1st April". For times: always read the start and end time back from the calendar event data — never reconstruct from memory. Convert to 12-hour format for the user (e.g. "6–7:20pm"). The calendar is the source of truth for both dates and times.
+- DATE & TIME ACCURACY: Always call check_date before confirming any day+date pair to the user. If the user gives a wrong pairing (e.g. "Tuesday 1st April" when April 1st is a Wednesday), correct it silently. For times: always read the start and end time back from the calendar event data — never reconstruct from memory. Convert to 12-hour format for the user (e.g. "6–7:20pm"). The calendar is the source of truth for both dates and times.
 - TRAVEL AWARENESS: Luke works from home by default. If you detect a travel event being added (a day trip, overnight stay, work trip, conference, site visit, etc.), always ask whether a dog walker has been arranged. If it's an overnight stay, also flag that it covers the full day(s) away. If it's already on the calendar and you're reviewing upcoming events, proactively check whether dog walker is confirmed if it hasn't been mentioned — a gentle "Have you sorted the dog walker for that one?" is fine
 
 Be Rose. Be warm, be sharp, be helpful.`;
