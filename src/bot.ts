@@ -127,8 +127,14 @@ async function handleGroupMessage(ctx: Context): Promise<void> {
 // ── Bot setup ─────────────────────────────────────────────────────────────────
 
 bot.on('message', async (ctx) => {
+  const chatId = ctx.chat?.id;
+  const chatType = ctx.chat?.type;
+  const text = (ctx.message as any)?.text ?? '(no text)';
+  console.log(`Message received: chatId=${chatId}, type=${chatType}, text="${text.slice(0, 50)}"`);
+
   // Only handle messages from our group
   if (!isFromGroup(ctx)) {
+    console.log(`Ignoring: chatId ${chatId} !== GROUP_ID ${GROUP_ID}`);
     // If someone messages Rose directly (DM), let them know
     if (ctx.chat?.type === 'private') {
       await ctx.reply(
