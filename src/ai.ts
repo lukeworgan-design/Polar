@@ -390,7 +390,7 @@ FAMILY:
 
 SCHOOL RUN & CHILDCARE:
 The regular weekly school run schedule for Poppy and Billy is:
-- Monday: Luke does drop-off and after-school pick-up
+- Monday: Luke does drop-off and after-school club pick-up
 - Tuesday: Grandma does drop-off and pick-up (fully covered regardless of Luke)
 - Wednesday: Breakfast club covers the morning (self-drop), Granddad does pick-up (fully covered regardless of Luke)
 - Thursday: Luke does drop-off, Toni does pick-up
@@ -578,7 +578,16 @@ Family: Poppy (7), Billy (5), and a baby due 17th August.
 This week's events:
 ${formatEventsForAI(weekEvents)}
 
-Mention any busy days, any gaps, anything that needs preparing or booking ahead. Call out anything involving the kids specifically. Keep it conversational and warm — not a bullet list. Flag anything that stands out. If it's a quiet week, say so positively.`;
+Mention any busy days, any gaps, anything that needs preparing or booking ahead. Call out anything involving the kids specifically. Keep it conversational and warm — not a bullet list. Flag anything that stands out. If it's a quiet week, say so positively.
+
+SCHOOL RUN CHECK: Cross-reference the week's events against the regular school run schedule:
+- Monday: Luke does drop-off and after-school club pick-up
+- Tuesday: Grandma handles both — no action needed
+- Wednesday: Breakfast club in the morning, Granddad picks up — no action needed
+- Thursday: Luke does drop-off, Toni picks up
+- Friday: Toni does both — no action needed
+
+If there are any travel events or work commitments for Luke on Monday or Thursday, flag the specific school run that needs cover and suggest asking Grandma. If Monday and Thursday are clear, give a quick reassuring note that the school runs are sorted for the week.`;
 
   const response = await anthropic.messages.create({
     model: config.anthropic.model,
