@@ -544,13 +544,22 @@ Be Rose. Be warm, be sharp, be helpful.`;
 
 // ── Main AI response function ─────────────────────────────────────────────────
 
+export interface ImageData {
+  base64: string;
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+}
+
 export async function generateResponse(
   userMessage: string,
   userName: string,
-  _telegramUserId: number
+  _telegramUserId: number,
+  imageData?: ImageData
 ): Promise<string> {
-  // Store user message in conversation history
-  await addConversationMessage('user', `${userName}: ${userMessage}`, userName);
+  // Store user message in conversation history (images stored as text placeholder)
+  const storedMessage = imageData
+    ? `${userName}: [sent a photo] ${userMessage}`.trim()
+    : `${userName}: ${userMessage}`;
+  await addConversationMessage('user', storedMessage, userName);
 
   // Get recent conversation history
   const history = await getRecentConversation(20);
@@ -561,11 +570,33 @@ export async function generateResponse(
     content: h.content,
   }));
 
-  // Add current message
-  messages.push({
-    role: 'user',
-    content: `${userName}: ${userMessage}`,
-  });
+  // Add current message — multimodal if an image was provided
+  if (imageData) {
+    const textPrompt = userMessage
+      || 'I\'ve sent you a photo — can you read what it says and let me know if there\'s anything worth adding to the calendar?';
+    messages.push({
+      role: 'user',
+      content: [
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: imageData.mediaType,
+            data: imageData.base64,
+          },
+        },
+        {
+          type: 'text',
+          text: `${userName}: ${textPrompt}`,
+        },
+      ],
+    });
+  } else {
+    messages.push({
+      role: 'user',
+      content: `${userName}: ${userMessage}`,
+    });
+  }
 
   let response = await anthropic.messages.create({
     model: config.anthropic.model,

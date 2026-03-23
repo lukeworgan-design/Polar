@@ -2,7 +2,7 @@ import { createServer } from 'http';
 import { Telegraf, Context } from 'telegraf';
 import { Message } from 'telegraf/typings/core/types/typegram';
 import { config, getUserName } from './config';
-import { generateResponse } from './ai';
+import { generateResponse, ImageData } from './ai';
 import { initScheduler } from './scheduler';
 
 const bot = new Telegraf(config.telegram.botToken);
@@ -106,6 +106,55 @@ async function handleGroupMessage(ctx: Context): Promise<void> {
   }
 }
 
+async function handlePhotoMessage(ctx: Context): Promise<void> {
+  const message = ctx.message as Message.PhotoMessage | undefined;
+  if (!message || !('photo' in message)) return;
+
+  const userId = message.from?.id;
+  if (!userId) return;
+
+  if (isRateLimited(userId)) return;
+  updateRateLimit(userId);
+
+  const userName = getUserName(userId);
+  const caption = message.caption?.trim() || '';
+
+  try {
+    await ctx.sendChatAction('typing');
+  } catch {
+    // ignore
+  }
+
+  try {
+    // Get the highest resolution version of the photo
+    const photos = message.photo;
+    const largest = photos[photos.length - 1];
+
+    const file = await bot.telegram.getFile(largest.file_id);
+    if (!file.file_path) {
+      await ctx.reply("I couldn't access that photo — try sending it again?");
+      return;
+    }
+
+    const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
+    const res = await fetch(fileUrl);
+    if (!res.ok) {
+      await ctx.reply("I had trouble downloading that photo. Try sending it again?");
+      return;
+    }
+
+    const buffer = await res.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString('base64');
+    const imageData: ImageData = { base64, mediaType: 'image/jpeg' };
+
+    const response = await generateResponse(caption, userName, userId, imageData);
+    await ctx.reply(response, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('Error handling photo message:', err);
+    await ctx.reply("Sorry, I had trouble reading that photo. Try sending it again?");
+  }
+}
+
 // ── Bot setup ─────────────────────────────────────────────────────────────────
 
 // Handle /start command (if someone adds Rose to the group)
@@ -168,6 +217,12 @@ bot.on('message', async (ctx) => {
         "Hey! I live in the family group chat — head over there and we can chat properly 😊"
       );
     }
+    return;
+  }
+
+  // Route photo messages to the photo handler
+  if ('photo' in (ctx.message ?? {})) {
+    await handlePhotoMessage(ctx);
     return;
   }
 
