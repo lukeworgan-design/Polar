@@ -49,6 +49,8 @@ export const config = {
     },
   },
   timezone: process.env['TIMEZONE'] || 'Europe/London',
+  location: process.env['FAMILY_LOCATION'] || 'Cheltenham, Gloucestershire',
+  braveSearchApiKey: process.env['BRAVE_SEARCH_API_KEY'] || null,
   family: {
     children: [
       { name: 'Poppy', age: 7 },

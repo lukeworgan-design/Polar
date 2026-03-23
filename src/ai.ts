@@ -454,6 +454,7 @@ Current date and time: ${dateStr} at ${timeStr} (${config.timezone})
 FAMILY:
 - Luke and Toni are the parents
 - Kids: ${children.map(c => `${c.name} (${c.age})`).join(', ')}
+- Based in ${config.location}
 - Baby due ${babyDueStr} — ${babyCountdown}
 - They have a dog — whenever Luke is away from home (day travel or overnight), dog walker coverage needs to be in place
 - Luke mainly works from home, but has occasional day trips and overnight stays for work
@@ -779,6 +780,78 @@ export async function generateBirthdayReminder(name: string, relation: string | 
 
   const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
   return textBlock?.text || `Just a heads up — it's ${name}'s birthday in ${daysUntil} days! 🎂`;
+}
+
+// ── Local events & holiday activities ────────────────────────────────────────
+
+export async function generateHolidayActivities(
+  holidayName: string,
+  startDate: Date,
+  endDate: Date
+): Promise<string> {
+  const { braveSearch, formatSearchResults } = await import('./search');
+
+  const startStr = startDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: config.timezone });
+  const endStr = endDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: config.timezone });
+  const monthYear = startDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: config.timezone });
+
+  const query = `family activities children ${config.location} ${monthYear}`;
+  const results = await braveSearch(query, 6);
+  const searchContext = formatSearchResults(results);
+
+  if (results.length === 0) return '';
+
+  const prompt = `${holidayName} starts in a few days (${startStr}–${endStr}). Toni will be at home with the kids in ${config.location}.
+
+Based on these search results for local things to do:
+
+${searchContext}
+
+Write a friendly, practical message suggesting 3–5 specific activities or places they could visit during the holidays. Be specific — use actual names and venues from the results where possible. Write like a PA sharing useful finds, not a robot making a list. Keep it warm and concise. Don't invent places or events not in the results.`;
+
+  const response = await anthropic.messages.create({
+    model: config.anthropic.model,
+    max_tokens: 600,
+    system: buildSystemPrompt(),
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
+  return textBlock?.text || '';
+}
+
+export async function generateWeekendEvents(): Promise<string> {
+  const { braveSearch, formatSearchResults } = await import('./search');
+
+  const now = getLocalNow(config.timezone);
+  const dayOfWeek = now.getDay();
+  const sat = new Date(now);
+  sat.setDate(now.getDate() + (6 - dayOfWeek));
+  const satStr = sat.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: config.timezone });
+
+  const query = `things to do ${config.location} this weekend family events`;
+  const results = await braveSearch(query, 6);
+  const searchContext = formatSearchResults(results);
+
+  if (results.length === 0) return '';
+
+  const prompt = `It's Wednesday and you're sharing what's happening this weekend (${satStr}) for Luke, Toni, and the kids in ${config.location}.
+
+Search results for local events:
+
+${searchContext}
+
+Write a short, friendly message suggesting 2–4 things on this weekend. Use specific event names and venues from the results. Sound like a PA who's done the legwork. Skip anything vague — only mention things with actual detail.`;
+
+  const response = await anthropic.messages.create({
+    model: config.anthropic.model,
+    max_tokens: 500,
+    system: buildSystemPrompt(),
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
+  return textBlock?.text || '';
 }
 
 // ── Message intent detection ──────────────────────────────────────────────────

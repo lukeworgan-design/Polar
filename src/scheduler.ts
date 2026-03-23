@@ -11,6 +11,8 @@ import {
   generateEventReminder,
   generateBirthdayReminder,
   generateWeekendCheckin,
+  generateHolidayActivities,
+  generateWeekendEvents,
 } from './ai';
 import {
   getPendingReminders,
@@ -93,6 +95,25 @@ export function initScheduler(sendFn: SendMessageFn): void {
     }
   }, { timezone: config.timezone });
 
+  // Upcoming school holiday activities — check daily at 9am
+  cron.schedule('0 9 * * *', async () => {
+    try {
+      await checkUpcomingHolidayActivities();
+    } catch (err) {
+      console.error('Error checking upcoming holiday activities:', err);
+    }
+  }, { timezone: config.timezone });
+
+  // Weekend events round-up — every Wednesday at 6pm
+  cron.schedule('0 18 * * 3', async () => {
+    try {
+      const message = await generateWeekendEvents();
+      if (message) await sendToGroup(message);
+    } catch (err) {
+      console.error('Error sending weekend events:', err);
+    }
+  }, { timezone: config.timezone });
+
   console.log('Scheduler initialised ✓');
 }
 
@@ -141,6 +162,42 @@ async function checkPersonalReminders(): Promise<void> {
     const userName = reminder.user_name;
     const message = `Hey ${userName}! 👋 ${reminder.message}`;
     await sendToGroup(message);
+  }
+}
+
+// Track which holiday activity messages we've already sent this process run
+const sentHolidayActivities = new Set<string>();
+
+const HOLIDAY_KEYWORDS = ['school holiday', 'half term', 'easter holiday', 'christmas holiday', 'summer holiday', 'inset day'];
+
+async function checkUpcomingHolidayActivities(): Promise<void> {
+  const now = new Date();
+
+  // Look for school holiday events starting 3–5 days from now
+  const windowStart = new Date(now);
+  windowStart.setDate(now.getDate() + 3);
+  const windowEnd = new Date(now);
+  windowEnd.setDate(now.getDate() + 5);
+
+  const events = await getEventsForPeriod(windowStart, windowEnd);
+
+  for (const event of events) {
+    const name = event.summary.toLowerCase();
+    if (!HOLIDAY_KEYWORDS.some(k => name.includes(k))) continue;
+    if (sentHolidayActivities.has(event.id)) continue;
+
+    sentHolidayActivities.add(event.id);
+
+    // Parse dates — all-day events come back as YYYY-MM-DD strings
+    const startDate = event.start.includes('T')
+      ? new Date(event.start)
+      : new Date(event.start + 'T12:00:00');
+    const endDate = event.end.includes('T')
+      ? new Date(event.end)
+      : new Date(event.end + 'T12:00:00');
+
+    const message = await generateHolidayActivities(event.summary, startDate, endDate);
+    if (message) await sendToGroup(message);
   }
 }
 
