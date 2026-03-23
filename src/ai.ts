@@ -19,6 +19,7 @@ import {
   formatEventsForAI,
   CalendarEvent,
 } from './calendar';
+import { getWeatherForecast, formatDayWeather, formatWeekWeather } from './weather';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -623,6 +624,7 @@ export async function generateResponse(
 export async function generateDailySummary(): Promise<string> {
   const todayEvents = await getTodaysEvents();
   const upcomingEvents = await getUpcomingEvents(3);
+  const weatherDays = await getWeatherForecast(2);
 
   const today = new Date();
   const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat
@@ -637,7 +639,11 @@ export async function generateDailySummary(): Promise<string> {
   };
   const todaySchoolRun = isWeekday ? schoolRunSchedule[dayOfWeek] : null;
 
-  const prompt = `Generate a punchy good morning message for Luke and Toni. Use short bulleted lines with emojis. Group items under bold topic headers where relevant (e.g. **🎒 Kids**, **📅 Today**, **👀 Coming up**). Keep the tone warm with light wit — like a witty friend who also happens to be extremely organised.
+  const weatherSection = weatherDays.length > 0
+    ? `Today's weather: ${formatDayWeather(weatherDays[0])}${weatherDays[1] ? `\nTomorrow's weather: ${formatDayWeather(weatherDays[1])}` : ''}`
+    : '';
+
+  const prompt = `Generate a punchy good morning message for Luke and Toni. Use short bulleted lines with emojis. Group items under bold topic headers where relevant (e.g. **🎒 Kids**, **📅 Today**, **👀 Coming up**, **🌤 Weather**). Keep the tone warm with light wit — like a witty friend who also happens to be extremely organised.
 
 Family: Poppy (7), Billy (5), and a baby due 17th August.
 
@@ -646,6 +652,8 @@ ${formatEventsForAI(todayEvents)}
 
 Upcoming events (next 3 days):
 ${formatEventsForAI(upcomingEvents)}
+
+${weatherSection ? `WEATHER:\n${weatherSection}\nInclude a brief **🌤 Weather** note — one line is enough. If it's going to rain, mention it so they can pack a coat or plan accordingly. If it's a nice day, make something of it.` : ''}
 
 ${todaySchoolRun ? `SCHOOL RUN TODAY: ${todaySchoolRun}. Include a **🚌 School run** section confirming who's doing what today. If it's all covered by Grandma/Granddad, a little reassurance goes a long way.` : ''}
 
@@ -732,10 +740,15 @@ Write it conversationally — not just "Reminder: X". If appropriate, suggest le
 export async function generateWeekendCheckin(day: 'saturday' | 'sunday'): Promise<string> {
   const todos = await getTodos();
   const todayEvents = await getTodaysEvents();
+  const weatherDays = await getWeatherForecast(day === 'saturday' ? 2 : 1);
 
   const todoText = todos.length > 0
     ? todos.map((t) => `- ${t.task}${t.due_date ? ` (due: ${t.due_date})` : ''}`).join('\n')
     : 'Nothing on the to-do list.';
+
+  const todayWeather = weatherDays.length > 0 ? `Weather today: ${formatDayWeather(weatherDays[0])}` : '';
+  const tomorrowWeather = day === 'saturday' && weatherDays.length > 1 ? `\nWeather tomorrow (Sunday): ${formatDayWeather(weatherDays[1])}` : '';
+  const weatherNote = todayWeather ? `\n\n${todayWeather}${tomorrowWeather}\nWeave in a natural weather mention — if it's nice outside, suggest making the most of it; if it's wet, lean into cosy indoor plans.` : '';
 
   const prompt = day === 'saturday'
     ? `It's Saturday morning. Generate a warm, motivating check-in message for Luke and Toni to kick off the weekend.
@@ -745,6 +758,7 @@ ${todoText}
 
 Today's events:
 ${formatEventsForAI(todayEvents)}
+${weatherNote}
 
 Acknowledge it's the weekend, highlight what's on the list, and give them a friendly nudge to get stuff done. Be encouraging, not naggy. Keep it short — a couple of sentences max, then list the tasks with emojis. Maybe a light-hearted comment about tackling the list together.`
     : `It's Sunday afternoon. Generate a friendly check-in message for Luke and Toni about where things stand before the new week.
@@ -754,6 +768,7 @@ ${todoText}
 
 Today's events:
 ${formatEventsForAI(todayEvents)}
+${weatherNote}
 
 Acknowledge the weekend's nearly done, see how they're getting on with the list. If there are outstanding tasks, gently nudge them — not in a guilt-trippy way, more "anything you want to knock off before Monday?". If the list is clear, celebrate that! Keep it warm and brief.`;
 
@@ -796,16 +811,32 @@ export async function generateHolidayActivities(
   const monthYear = startDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: config.timezone });
 
   const query = `family activities children ${config.location} ${monthYear}`;
-  const results = await braveSearch(query, 6);
+
+  // Fetch weather for the holiday period (up to 7 days)
+  const holidayLengthDays = Math.min(7, Math.ceil((endDate.getTime() - new Date().getTime()) / 86400000) + 1);
+  const [results, weatherDays] = await Promise.all([
+    braveSearch(query, 6),
+    getWeatherForecast(holidayLengthDays),
+  ]);
   const searchContext = formatSearchResults(results);
 
   if (results.length === 0) return '';
+
+  // Filter forecast to the holiday window
+  const startDateStr = startDate.toISOString().slice(0, 10);
+  const endDateStr = endDate.toISOString().slice(0, 10);
+  const holidayWeather = weatherDays.filter(d => d.date >= startDateStr && d.date <= endDateStr);
+  const weatherSection = holidayWeather.length > 0
+    ? `Weather forecast for the holiday:\n${formatWeekWeather(holidayWeather)}`
+    : '';
 
   const prompt = `${holidayName} starts in a few days (${startStr}–${endStr}). Toni will be at home with the kids in ${config.location}.
 
 Based on these search results for local things to do:
 
 ${searchContext}
+
+${weatherSection ? `${weatherSection}\n\nUse the forecast to help tailor suggestions — point them towards outdoor options on the good-weather days and indoor venues when it looks wet. Mention the forecast briefly so they can plan the week.` : ''}
 
 Write a friendly, practical message suggesting 3–5 specific activities or places they could visit during the holidays. Be specific — use actual names and venues from the results where possible. Write like a PA sharing useful finds, not a robot making a list. Keep it warm and concise. Don't invent places or events not in the results.`;
 
@@ -830,16 +861,31 @@ export async function generateWeekendEvents(): Promise<string> {
   const satStr = sat.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: config.timezone });
 
   const query = `things to do ${config.location} this weekend family events`;
-  const results = await braveSearch(query, 6);
+  const [results, weatherDays] = await Promise.all([
+    braveSearch(query, 6),
+    getWeatherForecast(7),
+  ]);
   const searchContext = formatSearchResults(results);
 
   if (results.length === 0) return '';
+
+  // Find Saturday and Sunday in the forecast
+  const satDate = sat.toISOString().slice(0, 10);
+  const sunDate = new Date(sat.getTime() + 86400000).toISOString().slice(0, 10);
+  const satWeather = weatherDays.find(d => d.date === satDate);
+  const sunWeather = weatherDays.find(d => d.date === sunDate);
+  const weatherSection = [
+    satWeather ? `Saturday: ${formatDayWeather(satWeather)}` : '',
+    sunWeather ? `Sunday: ${formatDayWeather(sunWeather)}` : '',
+  ].filter(Boolean).join('\n');
 
   const prompt = `It's Wednesday and you're sharing what's happening this weekend (${satStr}) for Luke, Toni, and the kids in ${config.location}.
 
 Search results for local events:
 
 ${searchContext}
+
+${weatherSection ? `Weekend weather forecast:\n${weatherSection}\n\nFactor the weather into your suggestions — if Saturday's dry and sunny, outdoor events make sense up top; if it's wet, lead with indoor options or note that something might need a raincoat.` : ''}
 
 Write a short, friendly message suggesting 2–4 things on this weekend. Use specific event names and venues from the results. Sound like a PA who's done the legwork. Skip anything vague — only mention things with actual detail.`;
 
