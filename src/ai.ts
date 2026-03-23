@@ -240,7 +240,7 @@ async function executeTool(
           return d.toDateString() === start.toDateString();
         });
         if (sameDay.length > 0) {
-          return `DUPLICATE BLOCKED: An event named "${sameDay[0]!.summary}" already exists on ${start.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}. No new event was created. If you meant to update it, use update_calendar_event instead.`;
+          return `DUPLICATE BLOCKED: An event named "${sameDay[0]!.summary}" already exists on ${start.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone })}. No new event was created. If you meant to update it, use update_calendar_event instead.`;
         }
 
         // Check for conflicts first
@@ -263,9 +263,9 @@ async function executeTool(
 
         const startDt = new Date(event.start);
         const endDt = new Date(event.end);
-        const dateStr2 = startDt.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
-        const startTime = startDt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
-        const endTime = endDt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+        const dateStr2 = startDt.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone });
+        const startTime = startDt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.timezone });
+        const endTime = endDt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.timezone });
         let result = `Created event: "${event.summary}" on ${dateStr2}, ${startTime}–${endTime}`;
         if (conflicts.length > 0) {
           result += `\n\nCONFLICT WARNING: There are already events at this time:\n${formatEventsForAI(conflicts)}`;
@@ -296,9 +296,9 @@ async function executeTool(
           const updated = await updateEvent(event.id, updates);
           const updStartDt = new Date(updated.start);
           const updEndDt = new Date(updated.end);
-          const updDate = updStartDt.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
-          const updStart = updStartDt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
-          const updEnd = updEndDt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+          const updDate = updStartDt.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone });
+          const updStart = updStartDt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.timezone });
+          const updEnd = updEndDt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.timezone });
           let result = `Updated "${updated.summary}" — now on ${updDate}, ${updStart}–${updEnd}`;
           if (conflicts.length > 0) {
             result += `\n\nCONFLICT WARNING:\n${formatEventsForAI(conflicts)}`;
@@ -309,9 +309,9 @@ async function executeTool(
         const updated = await updateEvent(event.id, updates);
         const updStartDt2 = new Date(updated.start);
         const updEndDt2 = new Date(updated.end);
-        const updDate2 = updStartDt2.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
-        const updStart2 = updStartDt2.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
-        const updEnd2 = updEndDt2.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+        const updDate2 = updStartDt2.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone });
+        const updStart2 = updStartDt2.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.timezone });
+        const updEnd2 = updEndDt2.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.timezone });
         return `Updated "${updated.summary}" — now on ${updDate2}, ${updStart2}–${updEnd2}`;
       }
 
@@ -323,7 +323,7 @@ async function executeTool(
         for (const ev of events) {
           await deleteEvent(ev.id);
           const dt = new Date(ev.start);
-          const label = dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+          const label = dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: config.timezone });
           deleted.push(`"${ev.summary}" on ${label}`);
         }
         return `Deleted ${deleted.length} event(s):\n${deleted.map(d => `- ${d}`).join('\n')}`;

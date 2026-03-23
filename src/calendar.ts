@@ -244,9 +244,9 @@ export function formatEventsForAI(events: CalendarEvent[]): string {
 
       let timeStr: string;
       if (isAllDayEvent) {
-        timeStr = start.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+        timeStr = start.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone });
       } else {
-        timeStr = `${start.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} at ${start.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })}–${end.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
+        timeStr = `${start.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone })} at ${start.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.timezone })}–${end.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.timezone })}`;
       }
 
       let str = `- ${e.summary} (${timeStr})`;
