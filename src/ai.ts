@@ -567,7 +567,7 @@ export async function generateResponse(
 
   let response = await anthropic.messages.create({
     model: config.anthropic.model,
-    max_tokens: 1024,
+    max_tokens: 4096,
     system: buildSystemPrompt(),
     tools,
     messages,
@@ -600,7 +600,7 @@ export async function generateResponse(
 
     response = await anthropic.messages.create({
       model: config.anthropic.model,
-      max_tokens: 1024,
+      max_tokens: 4096,
       system: buildSystemPrompt(),
       tools,
       messages,
