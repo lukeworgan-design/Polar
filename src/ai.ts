@@ -195,6 +195,17 @@ const tools: Anthropic.Tool[] = [
       required: ['date'],
     },
   },
+  {
+    name: 'web_search',
+    description: "Search the web for current information — use this for anything requiring up-to-date or local knowledge: businesses, opening hours, prices, news, events, venues, travel info, product recommendations, etc. Prefer this over guessing.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'The search query' },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 // ── Tool execution ─────────────────────────────────────────────────────────────
@@ -401,6 +412,12 @@ async function executeTool(
         });
       }
 
+      case 'web_search': {
+        const { braveSearch, formatSearchResults } = await import('./search');
+        const results = await braveSearch(toolInput['query'] as string, 6);
+        return formatSearchResults(results);
+      }
+
       default:
         return `Unknown tool: ${toolName}`;
     }
@@ -540,6 +557,11 @@ CALENDAR:
 - DATE & TIME ACCURACY: Always call check_date before confirming any day+date pair to the user. If the user gives a wrong pairing (e.g. "Tuesday 1st April" when April 1st is a Wednesday), correct it silently. For times: always read the start and end time back from the calendar event data — never reconstruct from memory. Convert to 12-hour format for the user (e.g. "6–7:20pm"). The calendar is the source of truth for both dates and times. CRITICAL: After creating an event, confirm the day name and time by reading them directly from the created event's data. Never echo back a day or time you inferred — always confirm from the actual event.
 - NO INVENTED COMMENTARY: Do not add observations, tips, or context that aren't grounded in actual data you have access to (e.g. traffic conditions, journey times, weather on a specific future date unless you've checked the forecast tool). Stick to what you know from the calendar, tools, or what the user has told you.
 - TRAVEL AWARENESS: Luke works from home by default. If you detect a travel event being added (a day trip, overnight stay, work trip, conference, site visit, etc.), always ask whether a dog walker has been arranged. If it's an overnight stay, also flag that it covers the full day(s) away. If it's already on the calendar and you're reviewing upcoming events, proactively check whether dog walker is confirmed if it hasn't been mentioned — a gentle "Have you sorted the dog walker for that one?" is fine
+
+WEB SEARCH:
+- You have a web_search tool — use it freely whenever current or local information would help: finding a restaurant, checking opening times, looking up a service, researching a product, getting local event details, etc.
+- Don't tell the user you "can't browse the web" — you can. Search first, then answer with real results.
+- Summarise findings conversationally; don't dump raw lists of URLs.
 
 Be Rose. Be warm, be sharp, be helpful.`;
 }
