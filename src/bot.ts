@@ -4,6 +4,7 @@ import { Message } from 'telegraf/typings/core/types/typegram';
 import { config, getUserName } from './config';
 import { generateResponse, ImageData } from './ai';
 import { initScheduler } from './scheduler';
+import { transcribeAudio } from './transcribe';
 
 const bot = new Telegraf(config.telegram.botToken);
 const GROUP_ID = parseInt(config.telegram.groupId, 10);
@@ -155,6 +156,57 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
   }
 }
 
+async function handleVoiceMessage(ctx: Context): Promise<void> {
+  const message = ctx.message as Message.VoiceMessage | undefined;
+  if (!message || !('voice' in message)) return;
+
+  const userId = message.from?.id;
+  if (!userId) return;
+
+  if (isRateLimited(userId)) return;
+  updateRateLimit(userId);
+
+  const userName = getUserName(userId);
+
+  try {
+    await ctx.sendChatAction('typing');
+  } catch {
+    // ignore
+  }
+
+  try {
+    const file = await bot.telegram.getFile(message.voice.file_id);
+    if (!file.file_path) {
+      await ctx.reply("I couldn't access that voice note — try again?");
+      return;
+    }
+
+    const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
+    const res = await fetch(fileUrl);
+    if (!res.ok) {
+      await ctx.reply("I had trouble downloading that voice note. Try again?");
+      return;
+    }
+
+    const buffer = await res.arrayBuffer();
+    const transcript = await transcribeAudio(buffer);
+
+    if (!transcript) {
+      await ctx.reply("I couldn't make out what you said — could you try again?");
+      return;
+    }
+
+    // Echo back what was heard so the family can see it in the chat
+    await ctx.reply(`🎙 _"${transcript}"_`, { parse_mode: 'Markdown' });
+
+    const response = await generateResponse(transcript, userName, userId);
+    await ctx.reply(response, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('Error handling voice message:', err);
+    await ctx.reply("Sorry, I had trouble with that voice note. Try typing it instead?");
+  }
+}
+
 // ── Bot setup ─────────────────────────────────────────────────────────────────
 
 // Handle /start command (if someone adds Rose to the group)
@@ -223,6 +275,12 @@ bot.on('message', async (ctx) => {
   // Route photo messages to the photo handler
   if ('photo' in (ctx.message ?? {})) {
     await handlePhotoMessage(ctx);
+    return;
+  }
+
+  // Route voice messages to the voice handler
+  if ('voice' in (ctx.message ?? {})) {
+    await handleVoiceMessage(ctx);
     return;
   }
 
