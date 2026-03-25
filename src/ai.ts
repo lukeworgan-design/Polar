@@ -809,9 +809,31 @@ Write it conversationally — not just "Reminder: X". If appropriate, suggest le
 }
 
 export async function generateWeekendCheckin(day: 'saturday' | 'sunday'): Promise<string> {
-  const todos = await getTodos();
-  const todayEvents = await getTodaysEvents();
-  const weatherDays = await getWeatherForecast(day === 'saturday' ? 2 : 1);
+  const { braveSearch, formatSearchResults } = await import('./search');
+
+  const now = getLocalNow(config.timezone);
+  const dateStr = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone });
+  const monthYear = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: config.timezone });
+  const dayName = day === 'saturday' ? 'Saturday' : 'Sunday';
+
+  const [todos, todayEvents, weatherDays, results1, results2] = await Promise.all([
+    getTodos(),
+    getTodaysEvents(),
+    getWeatherForecast(day === 'saturday' ? 2 : 1),
+    braveSearch(`events ${config.location} ${dayName} ${dateStr}`, 5),
+    braveSearch(`what's on ${config.location} ${monthYear}`, 4),
+  ]);
+
+  // Deduplicate by URL
+  const seen = new Set<string>();
+  const eventResults = [...results1, ...results2].filter(r => {
+    if (seen.has(r.url)) return false;
+    seen.add(r.url);
+    return true;
+  });
+  const searchContext = eventResults.length > 0
+    ? formatSearchResults(eventResults)
+    : 'No local event results found.';
 
   const todoText = todos.length > 0
     ? todos.map((t) => `- ${t.task}${t.due_date ? ` (due: ${t.due_date})` : ''}`).join('\n')
@@ -819,33 +841,48 @@ export async function generateWeekendCheckin(day: 'saturday' | 'sunday'): Promis
 
   const todayWeather = weatherDays.length > 0 ? `Weather today: ${formatDayWeather(weatherDays[0])}` : '';
   const tomorrowWeather = day === 'saturday' && weatherDays.length > 1 ? `\nWeather tomorrow (Sunday): ${formatDayWeather(weatherDays[1])}` : '';
-  const weatherNote = todayWeather ? `\n\n${todayWeather}${tomorrowWeather}\nWeave in a natural weather mention — if it's nice outside, suggest making the most of it; if it's wet, lean into cosy indoor plans.` : '';
+  const weatherNote = todayWeather ? `\n\n${todayWeather}${tomorrowWeather}` : '';
 
   const prompt = day === 'saturday'
-    ? `It's Saturday morning. Generate a warm, motivating check-in message for Luke and Toni to kick off the weekend.
+    ? `It's Saturday morning. Generate a warm check-in message for Luke and Toni.
 
 Current to-do list:
 ${todoText}
 
-Today's events:
+Today's calendar:
 ${formatEventsForAI(todayEvents)}
 ${weatherNote}
 
-Acknowledge it's the weekend, highlight what's on the list, and give them a friendly nudge to get stuff done. Be encouraging, not naggy. Keep it short — a couple of sentences max, then list the tasks with emojis. Maybe a light-hearted comment about tackling the list together.`
+Local events search results for today (${dateStr}):
+${searchContext}
+
+RULES FOR THIS MESSAGE:
+- Lead with the to-do list — acknowledge it's the weekend and nudge them warmly to get things done. Keep this part short.
+- If the search results contain specific events happening TODAY with actual names, times, or venues, mention 1–2 of the best ones as a "something happening locally today if you need a break" aside.
+- ONLY mention events that appear in the search results with clear specifics. Do NOT fall back to generic suggestions like "visit the museum" or "head to the park" — if there's nothing specific in the results, skip the local events section entirely.
+- Weave in the weather naturally.
+- Keep the whole message short and warm.`
     : `It's Sunday afternoon. Generate a friendly check-in message for Luke and Toni about where things stand before the new week.
 
 Outstanding to-do list:
 ${todoText}
 
-Today's events:
+Today's calendar:
 ${formatEventsForAI(todayEvents)}
 ${weatherNote}
 
-Acknowledge the weekend's nearly done, see how they're getting on with the list. If there are outstanding tasks, gently nudge them — not in a guilt-trippy way, more "anything you want to knock off before Monday?". If the list is clear, celebrate that! Keep it warm and brief.`;
+Local events search results for today (${dateStr}):
+${searchContext}
+
+RULES FOR THIS MESSAGE:
+- Focus on the to-do list — anything left to knock off before Monday? Keep it warm, not guilt-trippy.
+- If there are specific events in the search results happening THIS AFTERNOON/EVENING, you can mention one briefly.
+- ONLY mention events that appear in the search results with clear specifics. Do NOT suggest generic days out or permanent attractions. If nothing specific is found, skip the local events section.
+- Keep it brief and warm.`;
 
   const response = await anthropic.messages.create({
     model: config.anthropic.model,
-    max_tokens: 400,
+    max_tokens: 450,
     system: buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });
@@ -931,11 +968,21 @@ export async function generateWeekendEvents(): Promise<string> {
   sat.setDate(now.getDate() + (6 - dayOfWeek));
   const satStr = sat.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: config.timezone });
 
-  const query = `things to do ${config.location} this weekend family events`;
-  const [results, weatherDays] = await Promise.all([
-    braveSearch(query, 6),
+  const query1 = `events ${config.location} weekend ${satStr}`;
+  const query2 = `what's on ${config.location} this weekend family`;
+  const [results1, results2, weatherDays] = await Promise.all([
+    braveSearch(query1, 5),
+    braveSearch(query2, 4),
     getWeatherForecast(7),
   ]);
+
+  // Deduplicate by URL
+  const seenUrls = new Set<string>();
+  const results = [...results1, ...results2].filter(r => {
+    if (seenUrls.has(r.url)) return false;
+    seenUrls.add(r.url);
+    return true;
+  });
   const searchContext = formatSearchResults(results);
 
   if (results.length === 0) return '';
@@ -950,15 +997,19 @@ export async function generateWeekendEvents(): Promise<string> {
     sunWeather ? `Sunday: ${formatDayWeather(sunWeather)}` : '',
   ].filter(Boolean).join('\n');
 
-  const prompt = `It's Wednesday and you're sharing what's happening this weekend (${satStr}) for Luke, Toni, and the kids in ${config.location}.
+  const prompt = `It's Wednesday. You're letting Luke and Toni know what's actually happening this coming weekend (${satStr}) in ${config.location}.
 
 Search results for local events:
 
 ${searchContext}
 
-${weatherSection ? `Weekend weather forecast:\n${weatherSection}\n\nFactor the weather into your suggestions — if Saturday's dry and sunny, outdoor events make sense up top; if it's wet, lead with indoor options or note that something might need a raincoat.` : ''}
+${weatherSection ? `Weekend weather forecast:\n${weatherSection}\n\nFactor the weather into your suggestions — if Saturday's dry, outdoor events first; if it's wet, lead with indoor ones or flag that they'll need to wrap up.` : ''}
 
-Write a short, friendly message suggesting 2–4 things on this weekend. Use specific event names and venues from the results. Sound like a PA who's done the legwork. Skip anything vague — only mention things with actual detail.`;
+RULES:
+- Only mention events that appear in the search results with a specific name, date/time, or venue. Do NOT invent, generalise, or suggest permanent attractions (museums, parks, etc.) unless a specific event is happening there this weekend with actual details.
+- If the results are thin or vague, be honest: "Not loads on this weekend — might be a quiet one" is better than padding with generic days out.
+- Aim for 2–4 specific things. Sound like a PA who's actually done the research, not a search engine summary.
+- Keep it short and warm.`;
 
   const response = await anthropic.messages.create({
     model: config.anthropic.model,
