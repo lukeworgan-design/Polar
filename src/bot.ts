@@ -221,6 +221,25 @@ bot.command('start', async (ctx) => {
   );
 });
 
+// Handle /weekend command — manual trigger for the weekend events round-up
+bot.command('weekend', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+
+  try {
+    await ctx.sendChatAction('typing');
+  } catch {
+    // ignore
+  }
+
+  const { generateWeekendEvents } = await import('./ai');
+  const message = await generateWeekendEvents();
+  if (message) {
+    await ctx.reply(message, { parse_mode: 'Markdown' });
+  } else {
+    await ctx.reply("I couldn't find anything specific on this weekend — might be worth a manual search!");
+  }
+});
+
 // Handle /help command
 bot.command('help', async (ctx) => {
   if (!isFromGroup(ctx)) return;
@@ -236,6 +255,8 @@ bot.command('help', async (ctx) => {
 ⏰ *Reminders* — "Remind me to call the dentist on Monday morning"
 
 🎂 *Birthdays* — "Add Mum's birthday on March 15th" / "Whose birthday is coming up?"
+
+🗓 */weekend* — What's actually on locally this weekend (searches for real events)
 
 Just chat naturally — I'll figure out what you need! 😊`;
 
