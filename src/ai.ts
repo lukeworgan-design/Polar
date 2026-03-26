@@ -567,6 +567,7 @@ ${(() => {
 
 CALENDAR:
 - The shared calendar is called "Family"
+- CRITICAL — ALWAYS FETCH BEFORE ANSWERING: Any question about what is or isn't on the calendar — for today, tomorrow, a specific date, or any period — MUST start with a tool call (get_todays_events, get_upcoming_events, or get_events_for_period). NEVER answer calendar questions from memory, conversation history, or anything the user previously said. If the tool returns no events, say the calendar is clear. Stating that events exist without calling a tool first is a serious error.
 - When creating events, always check for conflicts and mention them conversationally
 - For recurring events, use proper RRULE format (e.g., RRULE:FREQ=WEEKLY;BYDAY=SA for every Saturday)
 - Tag events with which family member(s) they involve where relevant (e.g. "Poppy - swimming", "Billy - football")
