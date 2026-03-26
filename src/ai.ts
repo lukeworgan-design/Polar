@@ -241,8 +241,8 @@ async function executeTool(
       }
 
       case 'create_calendar_event': {
-        const start = new Date(toolInput['start_datetime'] as string);
-        const end = new Date(toolInput['end_datetime'] as string);
+        const start = parseInTimezone(toolInput['start_datetime'] as string, config.timezone);
+        const end = parseInTimezone(toolInput['end_datetime'] as string, config.timezone);
         const summary = toolInput['summary'] as string;
 
         // Duplicate guard: check if an event with this exact summary already exists on the same day
@@ -296,10 +296,10 @@ async function executeTool(
         if (toolInput['description']) updates.description = toolInput['description'] as string;
         if (toolInput['location']) updates.location = toolInput['location'] as string;
         if (toolInput['start_datetime']) {
-          updates.start = new Date(toolInput['start_datetime'] as string);
+          updates.start = parseInTimezone(toolInput['start_datetime'] as string, config.timezone);
         }
         if (toolInput['end_datetime']) {
-          updates.end = new Date(toolInput['end_datetime'] as string);
+          updates.end = parseInTimezone(toolInput['end_datetime'] as string, config.timezone);
         }
 
         // Check conflicts if moving time
@@ -381,9 +381,9 @@ async function executeTool(
         await db.addReminder(
           toolInput['user_name'] as string,
           toolInput['message'] as string,
-          new Date(toolInput['remind_at'] as string)
+          parseInTimezone(toolInput['remind_at'] as string, config.timezone)
         );
-        const remindDate = new Date(toolInput['remind_at'] as string);
+        const remindDate = parseInTimezone(toolInput['remind_at'] as string, config.timezone);
         return `Reminder set for ${toolInput['user_name']} at ${remindDate.toLocaleString('en-GB')}: "${toolInput['message']}"`;
       }
 
@@ -445,6 +445,31 @@ function getLocalNow(timezone: string): Date {
   }).formatToParts(utcNow);
   const get = (type: string) => parseInt(parts.find(p => p.type === type)?.value ?? '0', 10);
   return new Date(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+}
+
+/**
+ * Parse a naive ISO datetime string (e.g. "2026-04-05T09:00:00" with no offset)
+ * as local time in the given IANA timezone, returning a proper UTC Date.
+ *
+ * Without this, new Date("2026-04-05T09:00:00") on a UTC server = 9am UTC,
+ * which Google Calendar displays as 10am BST — 1 hour wrong after DST change.
+ */
+function parseInTimezone(datetimeStr: string, timezone: string): Date {
+  // If the string already has an offset (+HH:mm / Z), parse it as-is
+  if (/[Z+\-]\d*$/.test(datetimeStr.slice(10))) {
+    return new Date(datetimeStr);
+  }
+  // Parse as UTC to get a usable Date, then measure the timezone offset at that moment
+  const asUtc = new Date(datetimeStr + 'Z');
+  const localStr = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).format(asUtc).replace(' ', 'T');
+  // offsetMs = how far UTC is ahead of local (positive in BST: UTC+1 means local is 1h ahead)
+  const offsetMs = asUtc.getTime() - new Date(localStr + 'Z').getTime();
+  return new Date(asUtc.getTime() + offsetMs);
 }
 
 // ── System prompt ─────────────────────────────────────────────────────────────
