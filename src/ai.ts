@@ -630,6 +630,20 @@ export async function generateResponse(
   // Get recent conversation history
   const history = await getRecentConversation(20);
 
+  // Pre-fetch real calendar data to inject as ground truth.
+  // This prevents Rose from using conversation history as a substitute
+  // for actually checking the calendar — which causes hallucinated confirmations.
+  const [upcomingEvents, todayEventsForContext] = await Promise.all([
+    getUpcomingEvents(14),
+    getTodaysEvents(),
+  ]);
+  const calendarGroundTruth = [
+    `[CALENDAR GROUND TRUTH — fetched right now, authoritative]:`,
+    `Today's events: ${todayEventsForContext.length === 0 ? 'none' : formatEventsForAI(todayEventsForContext)}`,
+    `Upcoming (next 14 days): ${upcomingEvents.length === 0 ? 'none' : formatEventsForAI(upcomingEvents)}`,
+    `Use this data when answering any calendar question. Do NOT rely on conversation history for calendar facts.`,
+  ].join('\n');
+
   // Build messages array
   const messages: Anthropic.MessageParam[] = history.slice(0, -1).map((h) => ({
     role: h.role as 'user' | 'assistant',
@@ -653,14 +667,14 @@ export async function generateResponse(
         },
         {
           type: 'text',
-          text: `${userName}: ${textPrompt}`,
+          text: `${calendarGroundTruth}\n\n${userName}: ${textPrompt}`,
         },
       ],
     });
   } else {
     messages.push({
       role: 'user',
-      content: `${userName}: ${userMessage}`,
+      content: `${calendarGroundTruth}\n\n${userName}: ${userMessage}`,
     });
   }
 
