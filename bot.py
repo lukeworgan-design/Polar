@@ -1225,10 +1225,12 @@ def format_full_summary() -> str:
             "date,steps,calories_total,active_calories,active_time_seconds"
         ).order("date", desc=True).limit(3).execute()
         if act.data:
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             lines.append(f"👟 *Activity*")
             for a in act.data:
                 active_min = round((a.get("active_time_seconds") or 0) / 60)
-                lines.append(f"  · {a['date']} · 👣 {a.get('steps','?')} · 🔥 {a.get('calories_total','?')}kcal · ⏱ {active_min}min")
+                partial    = " _(partial sync — data still building)_" if a["date"] == today_str else ""
+                lines.append(f"  · {a['date']} · 👣 {a.get('steps','?')} · 🔥 {a.get('calories_total','?')}kcal · ⏱ {active_min}min{partial}")
             lines.append("")
     except: pass
 
