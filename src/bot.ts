@@ -221,6 +221,49 @@ bot.command('start', async (ctx) => {
   );
 });
 
+// Handle /meals command — show this week's meal plan
+bot.command('meals', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+
+  try {
+    await ctx.sendChatAction('typing');
+  } catch {
+    // ignore
+  }
+
+  const now = new Date();
+  const startDate = now.toISOString().slice(0, 10);
+  const end = new Date(now);
+  end.setDate(now.getDate() + 13);
+  const endDate = end.toISOString().slice(0, 10);
+
+  const { getMealPlan } = await import('./db');
+  const meals = await getMealPlan(startDate, endDate);
+
+  if (meals.length === 0) {
+    await ctx.reply("Nothing planned yet — tell me what you're having and I'll add it! 🍽");
+    return;
+  }
+
+  // Group by date
+  const byDay = new Map<string, typeof meals>();
+  for (const m of meals) {
+    if (!byDay.has(m.date)) byDay.set(m.date, []);
+    byDay.get(m.date)!.push(m);
+  }
+
+  const mealEmoji: Record<string, string> = { breakfast: '🥣', lunch: '🥗', dinner: '🍽' };
+  const lines: string[] = ['*Meal plan — next two weeks:*\n'];
+  for (const [date, entries] of byDay) {
+    const d = new Date(date + 'T12:00:00');
+    const dayLabel = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+    const mealLines = entries.map((e) => `  ${mealEmoji[e.meal_type] ?? '🍽'} ${e.meal_type}: ${e.meal}`).join('\n');
+    lines.push(`*${dayLabel}*\n${mealLines}`);
+  }
+
+  await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+});
+
 // Handle /weekend command — manual trigger for the weekend events round-up
 bot.command('weekend', async (ctx) => {
   if (!isFromGroup(ctx)) return;
@@ -255,6 +298,8 @@ bot.command('help', async (ctx) => {
 ⏰ *Reminders* — "Remind me to call the dentist on Monday morning"
 
 🎂 *Birthdays* — "Add Mum's birthday on March 15th" / "Whose birthday is coming up?"
+
+🍽 */meals* — View the meal plan for the next two weeks
 
 🗓 */weekend* — What's actually on locally this weekend (searches for real events)
 

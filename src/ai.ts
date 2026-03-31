@@ -6,6 +6,10 @@ import {
   getShoppingList,
   getTodos,
   getBirthdays,
+  getMealPlan,
+  setMeal,
+  clearMeal,
+  MealType,
 } from './db';
 import {
   getEventsForPeriod,
@@ -193,6 +197,43 @@ const tools: Anthropic.Tool[] = [
         date: { type: 'string', description: 'ISO date string to check, e.g. 2026-04-05' },
       },
       required: ['date'],
+    },
+  },
+  {
+    name: 'get_meal_plan',
+    description: "Get the meal plan for a date range",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        start_date: { type: 'string', description: 'Start date YYYY-MM-DD' },
+        end_date: { type: 'string', description: 'End date YYYY-MM-DD' },
+      },
+      required: ['start_date', 'end_date'],
+    },
+  },
+  {
+    name: 'set_meal',
+    description: "Set a meal for a specific date and meal type (breakfast, lunch, or dinner)",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        date: { type: 'string', description: 'Date YYYY-MM-DD' },
+        meal_type: { type: 'string', enum: ['breakfast', 'lunch', 'dinner'], description: 'Meal type' },
+        meal: { type: 'string', description: 'What the meal is' },
+      },
+      required: ['date', 'meal_type', 'meal'],
+    },
+  },
+  {
+    name: 'clear_meal',
+    description: "Remove a meal from the plan for a specific date and meal type",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        date: { type: 'string', description: 'Date YYYY-MM-DD' },
+        meal_type: { type: 'string', enum: ['breakfast', 'lunch', 'dinner'], description: 'Meal type' },
+      },
+      required: ['date', 'meal_type'],
     },
   },
   {
@@ -403,6 +444,35 @@ async function executeTool(
         return birthdays.map((b) => `- ${b.name}: ${b.date}${b.relation ? ` (${b.relation})` : ''}`).join('\n');
       }
 
+      case 'get_meal_plan': {
+        const meals = await getMealPlan(
+          toolInput['start_date'] as string,
+          toolInput['end_date'] as string
+        );
+        if (meals.length === 0) return 'No meals planned for that period.';
+        return meals.map((m) => `${m.date} ${m.meal_type}: ${m.meal}`).join('\n');
+      }
+
+      case 'set_meal': {
+        await setMeal(
+          toolInput['date'] as string,
+          toolInput['meal_type'] as MealType,
+          toolInput['meal'] as string,
+          userName
+        );
+        return `Set ${toolInput['meal_type']} on ${toolInput['date']} to "${toolInput['meal']}".`;
+      }
+
+      case 'clear_meal': {
+        const removed = await clearMeal(
+          toolInput['date'] as string,
+          toolInput['meal_type'] as MealType
+        );
+        return removed
+          ? `Cleared ${toolInput['meal_type']} on ${toolInput['date']}.`
+          : `No ${toolInput['meal_type']} found on ${toolInput['date']}.`;
+      }
+
       case 'check_date': {
         // Use T12:00:00 to avoid UTC midnight boundary flipping the day
         const d = new Date(`${toolInput['date'] as string}T12:00:00`);
@@ -546,12 +616,19 @@ GROUP CHAT BEHAVIOUR:
 - If there's a disagreement about what's on when, you're the tie-breaker: "According to the calendar it's the 14th — Luke added it on Monday"
 
 TOOLS:
-You have tools to read and write the Family Google Calendar, manage a shopping list, to-do list, reminders, and birthdays. Use them whenever the user's request involves these. When you use a tool, integrate the result naturally into your response — don't just dump raw data.
+You have tools to read and write the Family Google Calendar, manage a shopping list, to-do list, reminders, birthdays, and meal plan. Use them whenever the user's request involves these. When you use a tool, integrate the result naturally into your response — don't just dump raw data.
 
 TASK & LIST HANDLING:
 - When adding to the to-do list or shopping list, always clean up the text first: fix spelling, capitalise properly, and make it grammatically natural before saving. Examples: "luke haircut" → "Luke's haircut", "Billy hair cut" → "Billy's haircut", "mow lawn" → "Mow the lawn", "milk bread" → two items "Milk" and "Bread".
 - When displaying a to-do list, add a relevant emoji before each item to make it easy to scan at a glance. Pick something that fits the task — e.g. ✂️ for haircuts, 🌿 for garden tasks, 🛒 for shopping, 🧹 for chores, 📦 for errands.
 - When displaying the shopping list, use 🛒 or a fitting food/item emoji per line.
+
+MEAL PLAN:
+- You manage a two-week rolling meal plan covering breakfast, lunch, and dinner.
+- When someone sets a meal (e.g. "Monday dinner is spaghetti bolognese"), call set_meal with the correct date, meal_type, and meal name. Clean up the meal name before saving.
+- When asked what's for dinner / what's the plan this week, call get_meal_plan for the relevant date range and display it grouped by day, one day per line, with a fitting food emoji. Only show meal types that have entries — skip empty slots unless the user asks.
+- "What's for dinner tonight/this week?" → fetch and display. "We're having X on Tuesday" → set_meal. "Clear Wednesday lunch" → clear_meal.
+- When displaying the plan, format like: "Mon 30 Mar — 🍝 Spaghetti Bolognese". Group by day, skip days with nothing planned.
 
 ASDA SHOPPING:
 - If someone says "Any Asda shopping?", "Asda list", "doing the Asda shop/order", or similar — fetch the shopping list and present it grouped by supermarket aisle so it's easy to walk round the store. Use these sections (only include sections that have items):

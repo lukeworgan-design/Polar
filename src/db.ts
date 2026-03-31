@@ -134,6 +134,47 @@ export async function markBirthdayReminderFired(birthdayId: number, year: number
   await db.from('fired_birthday_reminders').upsert({ birthday_id: birthdayId, year }, { onConflict: 'birthday_id,year', ignoreDuplicates: true });
 }
 
+// ── Meal Plan ─────────────────────────────────────────────────────────────────
+
+export type MealType = 'breakfast' | 'lunch' | 'dinner';
+
+export interface MealEntry {
+  id: number;
+  date: string;        // YYYY-MM-DD
+  meal_type: MealType;
+  meal: string;
+  added_by: string | null;
+}
+
+export async function setMeal(date: string, mealType: MealType, meal: string, addedBy: string): Promise<void> {
+  await db.from('meal_plan').upsert(
+    { date, meal_type: mealType, meal, added_by: addedBy },
+    { onConflict: 'date,meal_type' }
+  );
+}
+
+export async function getMealPlan(startDate: string, endDate: string): Promise<MealEntry[]> {
+  const { data } = await db
+    .from('meal_plan')
+    .select('id, date, meal_type, meal, added_by')
+    .gte('date', startDate)
+    .lte('date', endDate)
+    .order('date', { ascending: true })
+    .order('meal_type', { ascending: true });
+  return (data ?? []) as MealEntry[];
+}
+
+export async function clearMeal(date: string, mealType: MealType): Promise<boolean> {
+  const { data } = await db
+    .from('meal_plan')
+    .select('id')
+    .eq('date', date)
+    .eq('meal_type', mealType);
+  if (!data || data.length === 0) return false;
+  await db.from('meal_plan').delete().in('id', data.map((r) => r.id));
+  return true;
+}
+
 // ── Conversation Context ──────────────────────────────────────────────────────
 
 export async function addConversationMessage(role: string, content: string, userName?: string): Promise<void> {
