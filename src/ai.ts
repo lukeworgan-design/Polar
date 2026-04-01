@@ -810,9 +810,15 @@ export async function generateResponse(
 // ── Proactive message generation ──────────────────────────────────────────────
 
 export async function generateDailySummary(): Promise<string> {
-  const todayEvents = await getTodaysEvents();
-  const upcomingEvents = await getUpcomingEvents(3);
-  const weatherDays = await getWeatherForecast(2);
+  const now = getLocalNow(config.timezone);
+  const todayStr = now.toISOString().slice(0, 10);
+
+  const [todayEvents, upcomingEvents, weatherDays, todayMeals] = await Promise.all([
+    getTodaysEvents(),
+    getUpcomingEvents(3),
+    getWeatherForecast(2),
+    getMealPlan(todayStr, todayStr),
+  ]);
 
   const today = new Date();
   const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat
@@ -831,7 +837,11 @@ export async function generateDailySummary(): Promise<string> {
     ? `Today's weather: ${formatDayWeather(weatherDays[0])}${weatherDays[1] ? `\nTomorrow's weather: ${formatDayWeather(weatherDays[1])}` : ''}`
     : '';
 
-  const prompt = `Generate a punchy good morning message for Luke and Toni. Use short bulleted lines with emojis. Group items under bold topic headers where relevant (e.g. **🎒 Kids**, **📅 Today**, **👀 Coming up**, **🌤 Weather**). Keep the tone warm with light wit — like a witty friend who also happens to be extremely organised.
+  const mealSection = todayMeals.length > 0
+    ? `Today's meals:\n${todayMeals.map(m => `- ${m.meal_type}: ${m.meal}`).join('\n')}`
+    : '';
+
+  const prompt = `Generate a punchy good morning message for Luke and Toni. Use short bulleted lines with emojis. Group items under bold topic headers where relevant (e.g. **🎒 Kids**, **📅 Today**, **👀 Coming up**, **🌤 Weather**, **🍽 Food**). Keep the tone warm with light wit — like a witty friend who also happens to be extremely organised.
 
 Family: Poppy (7), Billy (5), and a baby due 17th August.
 
@@ -844,6 +854,8 @@ ${formatEventsForAI(upcomingEvents)}
 ${weatherSection ? `WEATHER:\n${weatherSection}\nInclude a brief **🌤 Weather** note — one line is enough. If it's going to rain, mention it so they can pack a coat or plan accordingly. If it's a nice day, make something of it.` : ''}
 
 ${todaySchoolRun ? `SCHOOL RUN TODAY: ${todaySchoolRun}. Include a **🚌 School run** section confirming who's doing what today. If it's all covered by Grandma/Granddad, a little reassurance goes a long way.` : ''}
+
+${mealSection ? `MEALS: ${mealSection}\nInclude a **🍽 Food** section with today's planned meals. Keep it to one line per meal. If only dinner is set, just mention dinner.` : ''}
 
 Rules:
 - Start with a varied one-liner greeting (no "Good morning!" every day)
