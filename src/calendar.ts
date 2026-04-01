@@ -2,30 +2,38 @@ import { google, calendar_v3 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 import { config } from './config';
 
-let oauth2Client: OAuth2Client | null = null;
+let authClient: OAuth2Client | InstanceType<typeof google.auth.GoogleAuth> | null = null;
 let calendarId: string | null = null;
 
-function getOAuth2Client(): OAuth2Client {
-  if (oauth2Client) return oauth2Client;
+async function getAuthClient(): Promise<OAuth2Client | InstanceType<typeof google.auth.GoogleAuth>> {
+  if (authClient) return authClient;
 
-  const credentials = JSON.parse(config.google.credentialsJson);
-  const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web;
-
-  oauth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
-
-  if (config.google.tokenJson) {
-    const token = JSON.parse(config.google.tokenJson);
-    oauth2Client.setCredentials(token);
-  } else {
-    throw new Error('GOOGLE_TOKEN_JSON is not set. Run npm run auth first.');
+  // Prefer service account — never expires, no token refresh needed
+  if (config.google.serviceAccountJson) {
+    const credentials = JSON.parse(config.google.serviceAccountJson);
+    authClient = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ['https://www.googleapis.com/auth/calendar'],
+    });
+    return authClient;
   }
 
-  return oauth2Client;
+  // Fall back to OAuth2 (legacy)
+  const credentials = JSON.parse(config.google.credentialsJson);
+  const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web;
+  const client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
+  if (config.google.tokenJson) {
+    client.setCredentials(JSON.parse(config.google.tokenJson));
+  } else {
+    throw new Error('Neither GOOGLE_SERVICE_ACCOUNT_JSON nor GOOGLE_TOKEN_JSON is set.');
+  }
+  authClient = client;
+  return authClient;
 }
 
 async function getCalendarClient(): Promise<calendar_v3.Calendar> {
-  const auth = getOAuth2Client();
-  return google.calendar({ version: 'v3', auth });
+  const auth = await getAuthClient();
+  return google.calendar({ version: 'v3', auth: auth as any });
 }
 
 async function getFamilyCalendarId(): Promise<string> {

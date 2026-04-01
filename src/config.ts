@@ -34,8 +34,9 @@ export const config = {
     model: 'claude-sonnet-4-20250514',
   },
   google: {
-    credentialsJson: requireEnv('GOOGLE_CREDENTIALS_JSON'),
+    credentialsJson: process.env['GOOGLE_CREDENTIALS_JSON'] || '{}',
     tokenJson: process.env['GOOGLE_TOKEN_JSON'] || null,
+    serviceAccountJson: process.env['GOOGLE_SERVICE_ACCOUNT_JSON'] || null,
     calendarName: 'Family',
   },
   users: {
