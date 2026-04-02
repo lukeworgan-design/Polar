@@ -39,16 +39,25 @@ async function getCalendarClient(): Promise<calendar_v3.Calendar> {
 async function getFamilyCalendarId(): Promise<string> {
   if (calendarId) return calendarId;
 
+  // If the calendar ID is set explicitly, use it directly (required for service accounts
+  // since shared calendars don't auto-appear in calendarList.list())
+  if (config.google.calendarId) {
+    calendarId = config.google.calendarId;
+    console.log(`Using explicit calendar ID: ${calendarId}`);
+    return calendarId;
+  }
+
   const cal = await getCalendarClient();
   const res = await cal.calendarList.list();
   const calendars = res.data.items || [];
+
+  console.log('Available calendars:', calendars.map(c => `${c.summary} (${c.id})`).join(', '));
 
   const family = calendars.find(
     (c) => c.summary?.toLowerCase() === config.google.calendarName.toLowerCase()
   );
 
   if (!family || !family.id) {
-    // Fall back to primary if no "Family" calendar found
     console.warn(`No "${config.google.calendarName}" calendar found; using primary`);
     calendarId = 'primary';
   } else {

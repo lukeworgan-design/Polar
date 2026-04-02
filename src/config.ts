@@ -37,6 +37,7 @@ export const config = {
     credentialsJson: process.env['GOOGLE_CREDENTIALS_JSON'] || '{}',
     tokenJson: process.env['GOOGLE_TOKEN_JSON'] || null,
     serviceAccountJson: process.env['GOOGLE_SERVICE_ACCOUNT_JSON'] || null,
+    calendarId: process.env['GOOGLE_CALENDAR_ID'] || null,
     calendarName: 'Family',
   },
   users: {
