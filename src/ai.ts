@@ -710,16 +710,22 @@ export async function generateResponse(
   // Pre-fetch real calendar data to inject as ground truth.
   // This prevents Rose from using conversation history as a substitute
   // for actually checking the calendar — which causes hallucinated confirmations.
-  const [upcomingEvents, todayEventsForContext] = await Promise.all([
-    getUpcomingEvents(14),
-    getTodaysEvents(),
-  ]);
-  const calendarGroundTruth = [
-    `[CALENDAR GROUND TRUTH — fetched right now, authoritative]:`,
-    `Today's events: ${todayEventsForContext.length === 0 ? 'none' : formatEventsForAI(todayEventsForContext)}`,
-    `Upcoming (next 14 days): ${upcomingEvents.length === 0 ? 'none' : formatEventsForAI(upcomingEvents)}`,
-    `Use this data when answering any calendar question. Do NOT rely on conversation history for calendar facts.`,
-  ].join('\n');
+  let calendarGroundTruth: string;
+  try {
+    const [upcomingEvents, todayEventsForContext] = await Promise.all([
+      getUpcomingEvents(14),
+      getTodaysEvents(),
+    ]);
+    calendarGroundTruth = [
+      `[CALENDAR GROUND TRUTH — fetched right now, authoritative]:`,
+      `Today's events: ${todayEventsForContext.length === 0 ? 'none' : formatEventsForAI(todayEventsForContext)}`,
+      `Upcoming (next 14 days): ${upcomingEvents.length === 0 ? 'none' : formatEventsForAI(upcomingEvents)}`,
+      `Use this data when answering any calendar question. Do NOT rely on conversation history for calendar facts.`,
+    ].join('\n');
+  } catch (err) {
+    console.error('Failed to pre-fetch calendar ground truth:', err);
+    calendarGroundTruth = `[CALENDAR GROUND TRUTH — unavailable due to error: ${err instanceof Error ? err.message : String(err)}. Use your calendar tools to fetch live data instead.]`;
+  }
 
   // Build messages array
   const messages: Anthropic.MessageParam[] = history.slice(0, -1).map((h) => ({
@@ -819,12 +825,20 @@ export async function generateDailySummary(): Promise<string> {
   const now = getLocalNow(config.timezone);
   const todayStr = now.toISOString().slice(0, 10);
 
-  const [todayEvents, upcomingEvents, weatherDays, todayMeals] = await Promise.all([
-    getTodaysEvents(),
-    getUpcomingEvents(3),
+  const [calendarResult, weatherDays, todayMeals] = await Promise.all([
+    Promise.all([getTodaysEvents(), getUpcomingEvents(3)]).catch((err) => {
+      console.error('Calendar fetch failed in daily summary:', err);
+      return null;
+    }),
     getWeatherForecast(2),
     getMealPlan(todayStr, todayStr),
   ]);
+
+  const todayEvents = calendarResult?.[0] ?? [];
+  const upcomingEvents = calendarResult?.[1] ?? [];
+  const calendarWarning = calendarResult === null
+    ? '\n⚠️ Calendar unavailable — Rose could not connect to Google Calendar this morning.'
+    : '';
 
   const today = new Date();
   const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat
@@ -869,7 +883,8 @@ Rules:
 - Group related items under bold emoji headers
 - If nothing's on, say so with a bit of cheer
 - Keep it tight — no waffle
-- Vary the tone and emojis day to day so it doesn't feel like a template`;
+- Vary the tone and emojis day to day so it doesn't feel like a template
+${calendarWarning}`;
 
   const response = await anthropic.messages.create({
     model: config.anthropic.model,
