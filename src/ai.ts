@@ -772,11 +772,17 @@ export async function generateResponse(
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
     for (const toolUse of toolUseBlocks) {
-      const result = await executeTool(
-        toolUse.name,
-        toolUse.input as Record<string, unknown>,
-        userName
-      );
+      let result: string;
+      try {
+        result = await executeTool(
+          toolUse.name,
+          toolUse.input as Record<string, unknown>,
+          userName
+        );
+      } catch (err) {
+        console.error(`Tool "${toolUse.name}" failed:`, err);
+        result = `ERROR: "${toolUse.name}" failed — ${err instanceof Error ? err.message : String(err)}. Tell the user this action did not complete and they should try again.`;
+      }
       toolResults.push({
         type: 'tool_result',
         tool_use_id: toolUse.id,
