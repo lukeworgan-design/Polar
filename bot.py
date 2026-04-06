@@ -762,8 +762,24 @@ def sync_new_polar_exercises() -> list:
         for ex in exercises:
             ex_id = str(ex.get("id", ""))
             if not ex_id or ex.get("sport", "") not in ALLOWED_SPORTS: continue
-            existing = supabase.table("polar_exercises").select("polar_exercise_id").eq("polar_exercise_id", ex_id).limit(1).execute()
-            if existing.data: continue
+            existing = supabase.table("polar_exercises").select("polar_exercise_id,distance_meters").eq("polar_exercise_id", ex_id).limit(1).execute()
+            if existing.data:
+                # Re-fetch splits if significantly incomplete (e.g. synced mid-run)
+                ex_dist_m   = sf((existing.data[0] or {}).get("distance_meters")) or 0
+                expected    = int(ex_dist_m / 1000)
+                if expected >= 5:
+                    split_count = supabase.table("polar_km_splits").select("id", count="exact").eq("exercise_id", ex_id).execute()
+                    actual      = split_count.count or 0
+                    if actual < max(5, expected // 2):
+                        log.info(f"Exercise {ex_id}: only {actual}/{expected} splits — re-fetching FIT")
+                        supabase.table("polar_km_splits").delete().eq("exercise_id", ex_id).execute()
+                        detail_r2 = requests.get(f"{POLAR_BASE}/exercises/{ex_id}?zones=true", headers=polar_headers())
+                        if detail_r2.ok:
+                            ex_data2   = detail_r2.json()
+                            split_rows = fetch_fit_and_parse(ex_id, ex_data2.get("start_time", "")[:10], ex_dist_m)
+                            if split_rows:
+                                supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
+                continue
             detail_r = requests.get(f"{POLAR_BASE}/exercises/{ex_id}?zones=true", headers=polar_headers())
             if not detail_r.ok: continue
             ex_data    = detail_r.json()
@@ -1525,6 +1541,7 @@ def handle_message(message):
             "🌙 /evening — evening debrief now\n"
             "🏃 /runs — last 10 runs _(or /runs 30)_\n"
             "📈 /splits — km splits for last run\n"
+            "🔁 /resync — re-fetch FIT splits for last run\n"
             "💤 /recovery — sleep & HRV\n"
             "📦 /load — weekly training load\n"
             "🔥 /cardio — cardio load trend\n"
@@ -1605,6 +1622,36 @@ def handle_message(message):
             splits  = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", ex["polar_exercise_id"]).order("lap_number").execute()
             header  = f"{fmt_date(ex['date'])} — {(ex.get('distance_meters') or 0)/1000:.1f}km {ex.get('sport','')}"
             bot.reply_to(message, format_splits_table(splits.data, header), parse_mode="Markdown")
+        except Exception as e: bot.reply_to(message, f"Error: {e}")
+        return
+
+    if lower.startswith("/resync"):
+        try:
+            parts   = user_text.split()
+            # Default to latest run; optionally accept exercise_id as arg
+            if len(parts) > 1:
+                ex_id = parts[1]
+                ex_row = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,sport").eq("polar_exercise_id", ex_id).limit(1).execute()
+                ex = ex_row.data[0] if ex_row.data else None
+            else:
+                runs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,sport").order("date", desc=True).limit(1).execute()
+                ex = runs.data[0] if runs.data else None
+            if not ex:
+                bot.reply_to(message, "No exercise found to resync."); return
+            ex_id   = ex["polar_exercise_id"]
+            dist_m  = sf(ex.get("distance_meters"))
+            bot.reply_to(message, f"🔄 Resyncing splits for {fmt_date(ex['date'])} ({(dist_m or 0)/1000:.1f}km)...")
+            # Delete existing splits
+            supabase.table("polar_km_splits").delete().eq("exercise_id", ex_id).execute()
+            # Re-fetch FIT and parse
+            split_rows = fetch_fit_and_parse(ex_id, ex["date"][:10], dist_m)
+            if split_rows:
+                supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
+                splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", ex_id).order("lap_number").execute()
+                header = f"{fmt_date(ex['date'])} — {(dist_m or 0)/1000:.1f}km {ex.get('sport','')}"
+                bot.send_message(chat_id, f"✅ {len(split_rows)} splits saved\n\n" + format_splits_table(splits.data, header), parse_mode="Markdown")
+            else:
+                bot.send_message(chat_id, "⚠️ No splits found in FIT file — watch may not be set to auto-lap every km.")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
