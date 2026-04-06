@@ -579,6 +579,9 @@ def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict
     if sleep_data:
         scores = [s.get("sleep_score") or 0 for s in sleep_data]
         avg_score = sum(scores) / len(scores) if scores else 0
+        # Compute HR average across nights that have data
+        hr_vals = [v for v in [(hr_by_date or {}).get(s["date"][:10]) for s in sleep_data] if v]
+        hr_avg  = sum(hr_vals) / len(hr_vals) if hr_vals else None
         lines.append(f"😴 *Sleep — 7 nights*  _(avg {avg_score:.0f}/100)_\n")
         for s in sleep_data:
             total_s = s.get("total_sleep_seconds") or 0
@@ -594,7 +597,12 @@ def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict
             deep_str = fmt_dur(deep_s)
             sg     = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
             min_hr = (hr_by_date or {}).get(s["date"][:10])
-            hr_str = f"  ❤️{min_hr}" if min_hr else ""
+            if min_hr and hr_avg:
+                diff   = min_hr - hr_avg
+                trend  = " ↑" if diff > 2 else " ↓" if diff < -2 else ""
+            else:
+                trend  = ""
+            hr_str = f"  ❤️{min_hr}{trend}" if min_hr else ""
             lines.append(f"{sg} *{fmt_date(s['date'])}*  {hrs}h{mins:02d}  {score:.0f}{hr_str}\n   💚{rem_str}  💜{deep_str}")
     return "\n".join(lines)
 
