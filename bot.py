@@ -374,9 +374,9 @@ def check_and_push_alerts():
         elif dtm <= 14:
             msg = f"🎯 *{dtm} DAYS TO LONDON*\nTaper in full effect. Resist adding miles — trust the plan."
         elif dtm == 21:
-            msg = "🎯 *3 WEEKS TO LONDON*\nLast big effort window. One more quality long run if readiness allows, then taper. Target: 4:58/km."
+            msg = "🎯 *3 WEEKS TO LONDON*\nLast big effort window. One more quality long run if readiness allows, then taper. Target: 5:41/km."
         else:
-            msg = f"🎯 *{dtm} DAYS TO LONDON*\nSub 3:30 target: 4:58/km. Keep building aerobic base. Threshold work is key."
+            msg = f"🎯 *{dtm} DAYS TO LONDON*\nSub 4:00 target: 5:41/km. Keep building aerobic base. Threshold work is key."
         alerts.append(msg)
 
     for alert in alerts:
@@ -619,7 +619,7 @@ def format_sleepwise_dashboard(sw_data: list) -> str:
     return "\n".join(lines)
 
 def format_goals(goals: list) -> str:
-    if not goals: return "No goals set. Add one with:\n`goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`"
+    if not goals: return "No goals set. Add one with:\n`goal: London Marathon, 27 Apr 2026, 42.2km, sub 4:00`"
     lines = ["🎯 *Goals & Target Races*\n"]
     for g in goals:
         days_to = ""
@@ -1147,7 +1147,7 @@ ATHLETE PROFILE:
 - Aerobic threshold: 149bpm | Anaerobic threshold: 178bpm | FTP: 272W
 - Watch: Polar Grit X2
 
-PRIMARY GOAL: London Marathon, 27 April 2026 — sub 3:30 (4:58/km)
+PRIMARY GOAL: London Marathon, 27 April 2026 — sub 4:00 (5:41/km)
 SECONDARY GOAL: Ultra marathons (ongoing)
 
 DATA ACCESS — 8 live streams: polar_exercises, polar_sleep, polar_hrv, polar_continuous_hr, polar_cardio_load, polar_sleepwise, polar_daily_activity, wellness_checkins
@@ -1197,7 +1197,7 @@ def extract_and_save_note(reply: str, user_text: str):
 
 def format_full_summary() -> str:
     lines = [f"📊 *Full Summary — {datetime.now(timezone.utc).strftime('%-d %b %Y')}*",
-             f"🎯 *London: {days_to_marathon()}d away* — sub 3:30 @ 4:58/km\n"]
+             f"🎯 *London: {days_to_marathon()}d away* — sub 4:00 @ 5:41/km\n"]
 
     # ── Training ──
     try:
@@ -1439,7 +1439,7 @@ def send_post_run_debrief(exercise_id: str):
         prompt = f"""Elite running coach. Luke just finished a run. 3 short paragraphs (max 280 tokens).
 
 ATHLETE: Luke Worgan, 37yo, 167cm, 78kg, VO2max 55, max HR 198, aerobic threshold 149bpm, anaerobic threshold 178bpm
-LONDON MARATHON: {days_to_marathon()} days away — target sub 3:30 (4:58/km)
+LONDON MARATHON: {days_to_marathon()} days away — target sub 4:00 (5:41/km)
 GOALS:\n{goals_text}
 
 TODAY'S RUN:
@@ -1506,7 +1506,7 @@ def send_evening_debrief():
             checkin_context = f"\nLast check-in ({last_checkin['date']}): fatigue {last_checkin.get('fatigue_score','?')}/10, mood {last_checkin.get('mood_score','?')}/10" if last_checkin else ""
             prompt = f"""Elite running coach. Evening data summary — short and scannable. Use emojis to lead each section so it's easy to read on mobile.
 
-ATHLETE: Luke Worgan | LONDON MARATHON: {days_to_marathon()} days away — target sub 3:30
+ATHLETE: Luke Worgan | LONDON MARATHON: {days_to_marathon()} days away — target sub 4:00 (5:41/km)
 GOALS:\n{goals_text}
 
 TODAY: Steps {steps} | Active {active_min}min
@@ -1614,7 +1614,7 @@ def handle_message(message):
             "🗑 /clear — clear conversation\n\n"
             "✏️ *Log data*\n"
             "`save run: <Polar stats>`\n"
-            "`goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`\n"
+            "`goal: London Marathon, 27 Apr 2026, 42.2km, sub 4:00`\n"
             "`checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10`\n\n"
             "💬 _Or just ask me anything_"
         ), parse_mode="Markdown")
