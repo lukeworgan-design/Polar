@@ -573,7 +573,7 @@ def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict
         br_str  = f" · 🫁{br:.1f}" if br else ""
         status  = recharge_emoji(h.get('recharge_status', ''))
         lines.append(f"🔋 *Recharge* · {fmt_date(h['date'])}  {status}")
-        lines.append(f"ANS {ans} · HRV {hrv_avg}ms · RR {rmssd}ms{br_str}\n")
+        lines.append(f"ANS {ans} · HRV {hrv_avg}ms{br_str}\n")
 
     # ── Sleep ──
     if sleep_data:
@@ -587,12 +587,15 @@ def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict
             mins    = (total_s % 3600) // 60
             rem_s   = s.get("rem_seconds") or 0
             deep_s  = s.get("deep_sleep_seconds") or 0
-            rem_str  = f"{rem_s // 3600}h{(rem_s % 3600) // 60:02d}"
-            deep_str = f"{deep_s // 3600}h{(deep_s % 3600) // 60:02d}"
+            def fmt_dur(secs):
+                h, m = divmod(secs // 60, 60)
+                return f"{h}h{m:02d}" if h else f"{m}m"
+            rem_str  = fmt_dur(rem_s)
+            deep_str = fmt_dur(deep_s)
             sg     = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
             min_hr = (hr_by_date or {}).get(s["date"][:10])
             hr_str = f"  ❤️{min_hr}" if min_hr else ""
-            lines.append(f"{sg} *{fmt_date(s['date'])}*  {hrs}h{mins:02d}  {score:.0f}{hr_str}\n   🟢{rem_str}  🟣{deep_str}")
+            lines.append(f"{sg} *{fmt_date(s['date'])}*  {hrs}h{mins:02d}  {score:.0f}{hr_str}\n   💚{rem_str}  💜{deep_str}")
     return "\n".join(lines)
 
 def format_hr_dashboard(hr_data: list) -> str:
