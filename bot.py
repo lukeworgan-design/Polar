@@ -569,9 +569,11 @@ def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict
         ans     = h.get('ans_charge')  or '—'
         hrv_avg = h.get('hrv_avg')     or '—'
         rmssd   = h.get('hrv_rmssd')   or '—'
+        br      = h.get('breathing_rate')
+        br_str  = f" · 🫁{br:.1f}" if br else ""
         status  = recharge_emoji(h.get('recharge_status', ''))
         lines.append(f"🔋 *Recharge* · {fmt_date(h['date'])}  {status}")
-        lines.append(f"ANS {ans} · HRV {hrv_avg} · RMSSD {rmssd}\n")
+        lines.append(f"ANS {ans} · HRV {hrv_avg}ms · RR {rmssd}ms{br_str}\n")
 
     # ── Sleep ──
     if sleep_data:
@@ -916,6 +918,7 @@ def sync_nightly_recharge() -> int:
                 "ans_charge":      sf(h.get("ans_charge")),
                 "sleep_charge":    si(h.get("ans_charge_status")),
                 "recharge_status": _recharge_status_label(h.get("nightly_recharge_status")),
+                "breathing_rate":  sf(h.get("breathing_rate_avg") or h.get("mean_nightly_breathing_rate") or h.get("breathing_rate")),
                 "raw_json":        json.dumps(h),
             }, on_conflict="date").execute()
             count += 1
@@ -1738,7 +1741,7 @@ def handle_message(message):
     if lower == "/recovery":
         try:
             sleep  = supabase.table("polar_sleep").select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds,avg_hrv").order("date", desc=True).limit(7).execute()
-            hrv    = supabase.table("polar_hrv").select("date,recharge_status,ans_charge,sleep_charge,hrv_avg,hrv_rmssd").order("date", desc=True).limit(1).execute()
+            hrv    = supabase.table("polar_hrv").select("date,recharge_status,ans_charge,sleep_charge,hrv_avg,hrv_rmssd,breathing_rate").order("date", desc=True).limit(1).execute()
             hr_raw = supabase.table("polar_continuous_hr").select("date,min_hr").order("date", desc=True).limit(7).execute()
             hr_by_date = {r["date"]: r["min_hr"] for r in (hr_raw.data or [])}
             bot.reply_to(message, format_recovery_dashboard(sleep.data, hrv.data, hr_by_date), parse_mode="Markdown")
