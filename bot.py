@@ -590,7 +590,7 @@ def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict
             sg     = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
             min_hr = (hr_by_date or {}).get(s["date"][:10])
             hr_str = f"  ❤️{min_hr}" if min_hr else ""
-            lines.append(f"{sg} *{fmt_date(s['date'])}*  {hrs}h{mins:02d}  {score:.0f}  💜{rem_str}  🔵{deep_str}{hr_str}")
+            lines.append(f"{sg} *{fmt_date(s['date'])}*  {hrs}h{mins:02d}  {score:.0f}{hr_str}\n   💜{rem_str}  🔵{deep_str}")
     return "\n".join(lines)
 
 def format_hr_dashboard(hr_data: list) -> str:
