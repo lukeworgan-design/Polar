@@ -560,7 +560,7 @@ def format_splits_table(splits: list, header: str) -> str:
         lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad}`")
     return "\n".join(lines)
 
-def format_recovery_dashboard(sleep_data: list, hrv_data: list) -> str:
+def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict = None) -> str:
     lines = ["💤 *Recovery*\n"]
 
     # ── Recharge ──
@@ -587,8 +587,10 @@ def format_recovery_dashboard(sleep_data: list, hrv_data: list) -> str:
             deep_s  = s.get("deep_sleep_seconds") or 0
             rem_str  = f"{rem_s // 3600}h{(rem_s % 3600) // 60:02d}"
             deep_str = f"{deep_s // 3600}h{(deep_s % 3600) // 60:02d}"
-            sg = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
-            lines.append(f"{sg} *{fmt_date(s['date'])}*  {hrs}h{mins:02d}  {score:.0f}pts  💜{rem_str}  🔵{deep_str}")
+            sg     = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
+            min_hr = (hr_by_date or {}).get(s["date"][:10])
+            hr_str = f"  ❤️{min_hr}" if min_hr else ""
+            lines.append(f"{sg} *{fmt_date(s['date'])}*  {hrs}h{mins:02d}  {score:.0f}  💜{rem_str}  🔵{deep_str}{hr_str}")
     return "\n".join(lines)
 
 def format_hr_dashboard(hr_data: list) -> str:
@@ -1735,9 +1737,11 @@ def handle_message(message):
 
     if lower == "/recovery":
         try:
-            sleep = supabase.table("polar_sleep").select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds,avg_hrv").order("date", desc=True).limit(7).execute()
-            hrv   = supabase.table("polar_hrv").select("date,recharge_status,ans_charge,sleep_charge,hrv_avg,hrv_rmssd").order("date", desc=True).limit(1).execute()
-            bot.reply_to(message, format_recovery_dashboard(sleep.data, hrv.data), parse_mode="Markdown")
+            sleep  = supabase.table("polar_sleep").select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds,avg_hrv").order("date", desc=True).limit(7).execute()
+            hrv    = supabase.table("polar_hrv").select("date,recharge_status,ans_charge,sleep_charge,hrv_avg,hrv_rmssd").order("date", desc=True).limit(1).execute()
+            hr_raw = supabase.table("polar_continuous_hr").select("date,min_hr").order("date", desc=True).limit(7).execute()
+            hr_by_date = {r["date"]: r["min_hr"] for r in (hr_raw.data or [])}
+            bot.reply_to(message, format_recovery_dashboard(sleep.data, hrv.data, hr_by_date), parse_mode="Markdown")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
