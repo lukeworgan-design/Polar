@@ -562,26 +562,33 @@ def format_splits_table(splits: list, header: str) -> str:
 
 def format_recovery_dashboard(sleep_data: list, hrv_data: list) -> str:
     lines = ["💤 *Recovery*\n"]
+
+    # ── Recharge ──
     if hrv_data:
-        h = hrv_data[0]
-        hrv_avg  = h.get('hrv_avg')  or '—'
-        hrv_rms  = h.get('hrv_rmssd') or '—'
-        ans      = h.get('ans_charge') or '—'
-        lines.append(f"{recharge_emoji(h.get('recharge_status',''))} *Recharge {h['date']}*\nANS {ans} · HRV {hrv_avg} · RMSSD {hrv_rms}\n")
+        h       = hrv_data[0]
+        ans     = h.get('ans_charge')  or '—'
+        hrv_avg = h.get('hrv_avg')     or '—'
+        rmssd   = h.get('hrv_rmssd')   or '—'
+        status  = recharge_emoji(h.get('recharge_status', ''))
+        lines.append(f"🔋 *Recharge* · {fmt_date(h['date'])}  {status}")
+        lines.append(f"ANS {ans} · HRV {hrv_avg} · RMSSD {rmssd}\n")
+
+    # ── Sleep ──
     if sleep_data:
-        lines.append("😴 *Sleep — last 7 nights*\n")
+        scores = [s.get("sleep_score") or 0 for s in sleep_data]
+        avg_score = sum(scores) / len(scores) if scores else 0
+        lines.append(f"😴 *Sleep — 7 nights*  _(avg {avg_score:.0f}/100)_\n")
         for s in sleep_data:
             total_s = s.get("total_sleep_seconds") or 0
             score   = s.get("sleep_score") or 0
             hrs     = total_s // 3600
             mins    = (total_s % 3600) // 60
-            rem_m   = (s.get("rem_seconds") or 0) // 60
-            deep_m  = (s.get("deep_sleep_seconds") or 0) // 60
-            hrv_val = s.get("avg_hrv") or '—'
-            filled  = int(score / 10)
-            bar     = "█" * filled + "░" * (10 - filled)
-            sg      = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
-            lines.append(f"{sg} *{s['date']}*  {hrs}h{mins:02d}m  Score {score:.0f}  HRV {hrv_val}\n{bar}  REM {rem_m}m · Deep {deep_m}m")
+            rem_s   = s.get("rem_seconds") or 0
+            deep_s  = s.get("deep_sleep_seconds") or 0
+            rem_str  = f"{rem_s // 3600}h{(rem_s % 3600) // 60:02d}"
+            deep_str = f"{deep_s // 3600}h{(deep_s % 3600) // 60:02d}"
+            sg = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
+            lines.append(f"{sg} *{fmt_date(s['date'])}*  {hrs}h{mins:02d}  {score:.0f}pts  💜{rem_str}  🔵{deep_str}")
     return "\n".join(lines)
 
 def format_hr_dashboard(hr_data: list) -> str:
