@@ -582,8 +582,8 @@ def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict
         # Compute HR average across nights that have data
         hr_vals = [v for v in [(hr_by_date or {}).get(s["date"][:10]) for s in sleep_data] if v]
         hr_avg  = sum(hr_vals) / len(hr_vals) if hr_vals else None
-        hr_avg_str = f" · ❤️{hr_avg:.0f} avg" if hr_avg else ""
-        lines.append(f"😴 *Sleep — 7 nights*  _(avg {avg_score:.0f}/100{hr_avg_str})_\n")
+        hr_avg_str = f" · ❤️{hr_avg:.0f}" if hr_avg else ""
+        lines.append(f"😴 *7 nights*  _(score {avg_score:.0f}{hr_avg_str})_\n")
         for s in sleep_data:
             total_s = s.get("total_sleep_seconds") or 0
             score   = s.get("sleep_score") or 0
