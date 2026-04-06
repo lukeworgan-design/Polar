@@ -421,40 +421,102 @@ def format_status_dashboard() -> str:
     return "\n".join(lines)
 # ── FIT FILE PARSING ───────────────────────────────────────────────────────
 
+def _build_splits_from_laps(fitfile, exercise_id: str, session_date: str, expected_laps) -> list:
+    """Parse km splits from FIT 'lap' messages."""
+    split_rows = []
+    lap_num    = 0
+    for record in fitfile.get_messages("lap"):
+        data = {d.name: d.value for d in record}
+        if expected_laps is not None and lap_num >= expected_laps:
+            continue
+        lap_dur         = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
+        dist_m          = sf(data.get("total_distance"))
+        avg_speed       = sf(data.get("avg_speed") or data.get("enhanced_avg_speed"))
+        pace_s          = (1000 / avg_speed) if (avg_speed and avg_speed > 0) else (lap_dur / (dist_m / 1000) if (lap_dur and dist_m and dist_m > 0) else None)
+        cadence_raw     = sf(data.get("avg_running_cadence") or data.get("avg_cadence"))
+        cadence_max_raw = sf(data.get("max_running_cadence") or data.get("max_cadence"))
+        split_rows.append({
+            "exercise_id": exercise_id, "session_date": session_date,
+            "lap_number": lap_num, "km_number": lap_num + 1,
+            "duration_seconds": lap_dur, "split_time_seconds": sf(data.get("total_elapsed_time")),
+            "distance_m": dist_m, "pace_min_per_km": sf(pace_s / 60) if pace_s else None,
+            "pace_display": seconds_to_pace(pace_s) if pace_s else "N/A",
+            "hr_avg": si(data.get("avg_heart_rate")), "hr_max": si(data.get("max_heart_rate")),
+            "power_avg": si(data.get("avg_power")), "power_max": si(data.get("max_power")),
+            "cadence_avg": si(cadence_raw * 2) if cadence_raw else None,
+            "cadence_max": si(cadence_max_raw * 2) if cadence_max_raw else None,
+            "ascent_m": None, "descent_m": None,
+        })
+        lap_num += 1
+    return split_rows
+
+
+def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> list:
+    """Aggregate per-second FIT 'record' messages into 1km splits."""
+    buckets: dict[int, dict] = {}  # km_index -> accumulated data
+    prev_dist = 0.0
+    for record in fitfile.get_messages("record"):
+        data      = {d.name: d.value for d in record}
+        dist_m    = sf(data.get("distance"))
+        if dist_m is None:
+            continue
+        km_idx    = int(dist_m / 1000)   # 0-based bucket
+        speed     = sf(data.get("speed") or data.get("enhanced_speed"))
+        hr        = si(data.get("heart_rate"))
+        power     = si(data.get("power"))
+        cad_raw   = sf(data.get("running_cadence") or data.get("cadence"))
+        cad       = si(cad_raw * 2) if cad_raw else None
+        if km_idx not in buckets:
+            buckets[km_idx] = {"speeds": [], "hrs": [], "hr_max": None, "powers": [], "cads": [], "start_dist": prev_dist, "count": 0}
+        b = buckets[km_idx]
+        b["count"]  += 1
+        if speed:  b["speeds"].append(speed)
+        if hr:
+            b["hrs"].append(hr)
+            if b["hr_max"] is None or hr > b["hr_max"]: b["hr_max"] = hr
+        if power:  b["powers"].append(power)
+        if cad:    b["cads"].append(cad)
+        prev_dist = dist_m
+
+    split_rows = []
+    for km_idx in sorted(buckets.keys()):
+        b         = buckets[km_idx]
+        km_number = km_idx + 1
+        avg_speed = (sum(b["speeds"]) / len(b["speeds"])) if b["speeds"] else None
+        pace_s    = (1000 / avg_speed) if (avg_speed and avg_speed > 0) else None
+        lap_dur   = sf(pace_s) if pace_s else None   # approx 1km duration
+        split_rows.append({
+            "exercise_id": exercise_id, "session_date": session_date,
+            "lap_number": km_idx, "km_number": km_number,
+            "duration_seconds": lap_dur, "split_time_seconds": None,
+            "distance_m": 1000.0, "pace_min_per_km": sf(pace_s / 60) if pace_s else None,
+            "pace_display": seconds_to_pace(pace_s) if pace_s else "N/A",
+            "hr_avg": si(sum(b["hrs"]) / len(b["hrs"])) if b["hrs"] else None,
+            "hr_max": b["hr_max"],
+            "power_avg": si(sum(b["powers"]) / len(b["powers"])) if b["powers"] else None,
+            "power_max": None,
+            "cadence_avg": si(sum(b["cads"]) / len(b["cads"])) if b["cads"] else None,
+            "cadence_max": None, "ascent_m": None, "descent_m": None,
+        })
+    return split_rows
+
+
 def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_distance_m: float = None) -> list:
     if not fitparse: return []
     try:
         fitfile       = fitparse.FitFile(io.BytesIO(fit_bytes))
-        split_rows    = []
-        lap_num       = 0
         expected_laps = int((total_distance_m or 0) / 1000) if total_distance_m else None
-        for record in fitfile.get_messages("lap"):
-            data = {d.name: d.value for d in record}
-            if expected_laps is not None and lap_num >= expected_laps: continue
-            lap_dur   = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
-            dist_m    = sf(data.get("total_distance"))
-            pace_s    = None
-            avg_speed = sf(data.get("avg_speed") or data.get("enhanced_avg_speed"))
-            if avg_speed and avg_speed > 0: pace_s = 1000 / avg_speed
-            elif lap_dur and dist_m and dist_m > 0: pace_s = lap_dur / (dist_m / 1000)
-            hr_avg          = si(data.get("avg_heart_rate"))
-            hr_max          = si(data.get("max_heart_rate"))
-            power_avg       = si(data.get("avg_power"))
-            power_max       = si(data.get("max_power"))
-            cadence_raw     = sf(data.get("avg_running_cadence") or data.get("avg_cadence"))
-            cadence_max_raw = sf(data.get("max_running_cadence") or data.get("max_cadence"))
-            cadence_avg     = si(cadence_raw * 2)     if cadence_raw     else None
-            cadence_max     = si(cadence_max_raw * 2) if cadence_max_raw else None
-            split_rows.append({
-                "exercise_id": exercise_id, "session_date": session_date,
-                "lap_number": lap_num, "km_number": lap_num + 1,
-                "duration_seconds": lap_dur, "split_time_seconds": sf(data.get("total_elapsed_time")),
-                "distance_m": dist_m, "pace_min_per_km": sf(pace_s / 60) if pace_s else None,
-                "pace_display": seconds_to_pace(pace_s) if pace_s else "N/A",
-                "hr_avg": hr_avg, "hr_max": hr_max, "power_avg": power_avg, "power_max": power_max,
-                "cadence_avg": cadence_avg, "cadence_max": cadence_max, "ascent_m": None, "descent_m": None,
-            })
-            lap_num += 1
+
+        # Try lap messages first
+        split_rows = _build_splits_from_laps(fitfile, exercise_id, session_date, expected_laps)
+
+        # Fall back to per-second records if laps are missing or sparse
+        if expected_laps and len(split_rows) < max(5, expected_laps // 2):
+            log.info(f"FIT {exercise_id}: only {len(split_rows)} lap msgs for {expected_laps}km — falling back to record aggregation")
+            record_splits = _build_splits_from_records(fitfile, exercise_id, session_date)
+            if len(record_splits) > len(split_rows):
+                return record_splits
+
         return split_rows
     except Exception as e:
         log.error(f"FIT parse error {exercise_id}: {e}")
