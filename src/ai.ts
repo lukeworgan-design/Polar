@@ -928,7 +928,10 @@ export async function generateWeeklySummary(): Promise<string> {
 
   const weekEvents = await getEventsForPeriod(nextMonday, nextSunday);
 
-  const prompt = `Generate a friendly weekly overview message for Luke and Toni for the coming week (${nextMonday.toLocaleDateString('en-GB')} to ${nextSunday.toLocaleDateString('en-GB')}).
+  const fmtDate = (d: Date) => d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone });
+  const prompt = `Generate a friendly weekly overview message for Luke and Toni for the coming week (${fmtDate(nextMonday)} to ${fmtDate(nextSunday)}).
+
+IMPORTANT: The day names in the event list and date range above are pre-computed and correct. Use them exactly as given.
 
 Family: Poppy (7), Billy (5), and a baby due 17th August.
 
@@ -958,14 +961,38 @@ If there are any travel events or work commitments for Luke on Monday or Thursda
 }
 
 export async function generateEventReminder(event: CalendarEvent, hoursUntil: number): Promise<string> {
+  // Pre-compute the day name and formatted time in TypeScript so Claude never needs to infer them.
+  const eventDate = new Date(event.start.includes('T') ? event.start : `${event.start}T12:00:00`);
+  const precomputedDate = eventDate.toLocaleDateString('en-GB', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone,
+  });
+  const precomputedTime = event.start.includes('T')
+    ? eventDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.timezone })
+    : 'all day';
+
+  // Pre-compute school run context for the event date so Claude can't get it wrong
+  const eventDow = eventDate.getDay(); // 0=Sun…6=Sat
+  const schoolRunNotes: Record<number, string> = {
+    1: 'It\'s a Monday — Luke does drop-off and after-school club pick-up (flag if this conflicts)',
+    2: 'It\'s a Tuesday — Grandma covers drop-off and pick-up, no action needed',
+    3: 'It\'s a Wednesday — Breakfast club + Granddad pick-up, no action needed',
+    4: 'It\'s a Thursday — Luke does drop-off, Toni does pick-up',
+    5: 'It\'s a Friday — Toni does both, no action needed',
+  };
+  const schoolRunNote = schoolRunNotes[eventDow] ?? null;
+
   const prompt = `Generate a friendly reminder about this upcoming event for Luke and Toni:
 
 Event: ${event.summary}
-Start: ${new Date(event.start).toLocaleString('en-GB', { hour12: false })}
+Date: ${precomputedDate}
+Time: ${precomputedTime}
 ${event.location ? `Location: ${event.location}` : ''}
 Hours until event: ${hoursUntil}
 
-Write it conversationally — not just "Reminder: X". If appropriate, suggest leaving early, what to prepare, etc. Keep it brief and natural.`;
+IMPORTANT: The date, day name, and time above are pre-computed and correct. Use them exactly as given. Do NOT restate or recalculate the day of the week.
+${schoolRunNote ? `School run context: ${schoolRunNote}` : ''}
+
+Write it conversationally — not just "Reminder: X". Flag dog walker if it's an overnight trip. Reference school run context only if it's a weekday school-time event. Keep it brief and natural. No invented travel tips or traffic commentary.`;
 
   const response = await anthropic.messages.create({
     model: config.anthropic.model,
