@@ -853,6 +853,24 @@ export async function generateDailySummary(): Promise<string> {
   };
   const todaySchoolRun = isWeekday ? schoolRunSchedule[dayOfWeek] : null;
 
+  // PE schedule: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
+  const peSchedule: Record<number, string[]> = {
+    1: ['Poppy'],           // Monday
+    3: ['Billy'],           // Wednesday
+    5: ['Poppy', 'Billy'],  // Friday
+  };
+  const tomorrowDow = (dayOfWeek + 1) % 7;
+  const todayPE = peSchedule[dayOfWeek] ?? [];
+  const tomorrowPE = peSchedule[tomorrowDow] ?? [];
+  const peAlerts: string[] = [];
+  if (todayPE.length > 0) {
+    peAlerts.push(`${todayPE.join(' and ')} ${todayPE.length === 1 ? 'has' : 'have'} PE today — make sure kit is on them!`);
+  }
+  if (tomorrowPE.length > 0) {
+    peAlerts.push(`${tomorrowPE.join(' and ')} ${tomorrowPE.length === 1 ? 'has' : 'have'} PE tomorrow — pack kit tonight.`);
+  }
+  const peSection = peAlerts.length > 0 ? peAlerts.join(' ') : null;
+
   const weatherSection = weatherDays.length > 0
     ? `Today's weather: ${formatDayWeather(weatherDays[0])}${weatherDays[1] ? `\nTomorrow's weather: ${formatDayWeather(weatherDays[1])}` : ''}`
     : '';
@@ -876,6 +894,8 @@ ${weatherSection ? `WEATHER:\n${weatherSection}\nInclude a brief **🌤 Weather*
 ${todaySchoolRun ? `SCHOOL RUN TODAY: ${todaySchoolRun}. Include a **🚌 School run** section confirming who's doing what today. If it's all covered by Grandma/Granddad, a little reassurance goes a long way.` : ''}
 
 ${mealSection ? `MEALS: ${mealSection}\nInclude a **🍽 Food** section with today's planned meals. Keep it to one line per meal. If only dinner is set, just mention dinner.` : ''}
+
+${peSection ? `PE KIT ALERT: ${peSection}\nInclude this under the **🎒 Kids** section. Use exactly the day names given (today/tomorrow) — do not guess or invent.` : ''}
 
 Rules:
 - Start with a varied one-liner greeting (no "Good morning!" every day)
