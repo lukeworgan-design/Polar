@@ -675,7 +675,7 @@ CALENDAR:
 - Tag events with which family member(s) they involve where relevant (e.g. "Poppy - swimming", "Billy - football")
 - DATE & TIME ACCURACY: Always call check_date before confirming any day+date pair to the user. If the user gives a wrong pairing (e.g. "Tuesday 1st April" when April 1st is a Wednesday), correct it silently. For times: always read the start and end time back from the calendar event data — never reconstruct from memory. Convert to 12-hour format for the user (e.g. "6–7:20pm"). The calendar is the source of truth for both dates and times. CRITICAL: After creating an event, confirm the day name and time by reading them directly from the created event's data. Never echo back a day or time you inferred — always confirm from the actual event.
 - NO INVENTED COMMENTARY: Do not add observations, tips, or context that aren't grounded in actual data you have access to (e.g. traffic conditions, journey times, weather on a specific future date unless you've checked the forecast tool). Stick to what you know from the calendar, tools, or what the user has told you.
-- TRAVEL AWARENESS: Luke works from home by default. If you detect a travel event being added (a day trip, overnight stay, work trip, conference, site visit, etc.), always ask whether a dog walker has been arranged. If it's an overnight stay, also flag that it covers the full day(s) away. If it's already on the calendar and you're reviewing upcoming events, proactively check whether dog walker is confirmed if it hasn't been mentioned — a gentle "Have you sorted the dog walker for that one?" is fine
+- TRAVEL AWARENESS: Luke works from home by default. If you detect a travel event being added (a day trip, overnight stay, work trip, conference, site visit, etc.), always ask whether a dog walker has been arranged. If they confirm the dog walker is sorted, immediately create a calendar event titled "Dog walker ✓" (or "Dog walker ✓ - [trip name]" if helpful) as an all-day event on the travel date(s) — this is how the dog walker confirmation is tracked so you can look it up later. If a travel event already exists on the calendar, look for a "Dog walker ✓" event on the same date(s) before asking: if one exists, the dog walker is sorted — don't ask again. If no such event exists, a gentle "Have you sorted the dog walker for that one?" is fine.
 
 WEB SEARCH:
 - You have a web_search tool — use it freely whenever current or local information would help: finding a restaurant, checking opening times, looking up a service, researching a product, getting local event details, etc.
@@ -981,6 +981,19 @@ export async function generateEventReminder(event: CalendarEvent, hoursUntil: nu
   };
   const schoolRunNote = schoolRunNotes[eventDow] ?? null;
 
+  // Check if a dog walker event already exists on the travel date(s)
+  const dayStart = new Date(eventDate);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(eventDate);
+  dayEnd.setHours(23, 59, 59, 999);
+  let dogWalkerConfirmed = false;
+  try {
+    const sameDay = await getEventsForPeriod(dayStart, dayEnd);
+    dogWalkerConfirmed = sameDay.some(e => e.summary.toLowerCase().includes('dog walker'));
+  } catch {
+    // If the calendar check fails, fall through and let Claude decide
+  }
+
   const prompt = `Generate a friendly reminder about this upcoming event for Luke and Toni:
 
 Event: ${event.summary}
@@ -988,11 +1001,12 @@ Date: ${precomputedDate}
 Time: ${precomputedTime}
 ${event.location ? `Location: ${event.location}` : ''}
 Hours until event: ${hoursUntil}
+Dog walker sorted: ${dogWalkerConfirmed ? 'YES — there is already a "Dog walker ✓" event on the calendar for this date. Do NOT ask about the dog walker.' : 'Unknown — if this looks like an overnight or away trip, ask whether the dog walker is sorted.'}
 
 IMPORTANT: The date, day name, and time above are pre-computed and correct. Use them exactly as given. Do NOT restate or recalculate the day of the week.
 ${schoolRunNote ? `School run context: ${schoolRunNote}` : ''}
 
-Write it conversationally — not just "Reminder: X". Flag dog walker if it's an overnight trip. Reference school run context only if it's a weekday school-time event. Keep it brief and natural. No invented travel tips or traffic commentary.`;
+Write it conversationally — not just "Reminder: X". Reference school run context only if it's a weekday school-time event. Keep it brief and natural. No invented travel tips or traffic commentary.`;
 
   const response = await anthropic.messages.create({
     model: config.anthropic.model,
