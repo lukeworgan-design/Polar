@@ -31,7 +31,7 @@ export const config = {
   },
   anthropic: {
     apiKey: requireEnv('ANTHROPIC_API_KEY'),
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
   },
   google: {
     credentialsJson: process.env['GOOGLE_CREDENTIALS_JSON'] || '{}',
