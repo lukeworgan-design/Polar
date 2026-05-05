@@ -1,6 +1,6 @@
 """
-bot.py - Polar Running Coach Telegram Bot v8.2
-Athlete: Luke Worgan | Goal: London Marathon 27 Apr 2026 + Ultra marathons
+bot.py - Polar Ultra Running Coach Telegram Bot v8.3
+Athlete: Luke Worgan | Goal: Cotswold Way Ultra 100km 13 Jun 2026
 Watch: Polar Grit X2 | Deployed: Railway.app
 """
 
@@ -45,7 +45,7 @@ RESTING_HR_BASELINE = 47
 AEROBIC_THRESHOLD   = 149
 ANAEROBIC_THRESHOLD = 178
 MAX_HR              = 198
-MARATHON_DATE       = datetime(2026, 4, 27).date()
+MARATHON_DATE       = datetime(2026, 6, 13).date()  # Cotswold Way Ultra
 
 debriefed_today:    set = set()
 alerts_fired_today: set = set()
@@ -286,19 +286,22 @@ def recommend_session(readiness: dict) -> str:
     score = readiness["score"]
     dtm   = days_to_marathon()
     ratio = readiness["raw_data"].get("load_ratio", 1.0)
-    if 0 < dtm <= 14:
-        if score >= 7: return f"TAPER ({dtm}d to London): 6-8km easy @ 5:30-6:00/km, HR <{AEROBIC_THRESHOLD}bpm. Strides only."
-        else:          return f"TAPER ({dtm}d to London): 20-30min very easy jog @ 6:00+/km. Keep legs moving only."
-    if 15 <= dtm <= 56:
-        if score >= 8:   return f"PEAK ({dtm}d to London): 10km w/ 5km @ marathon pace (4:58/km), HR {AEROBIC_THRESHOLD}-{ANAEROBIC_THRESHOLD}bpm."
-        elif score >= 6: return f"PEAK ({dtm}d to London): Steady aerobic 12-16km @ 5:20-5:45/km, HR <{AEROBIC_THRESHOLD}bpm."
-        else:            return f"PEAK ({dtm}d to London): Recovery run 8km easy @ 6:00+/km, HR <140bpm."
-    if score >= 8:   return f"BUILD ({dtm}d to London): 6x1km @ 4:45/km w/ 90s rest, or 18-22km long run @ 5:20/km."
+    if 0 < dtm <= 7:
+        if score >= 7: return f"TAPER ({dtm}d to Cotswold): 20-30min easy jog, no hills. Keep legs ticking."
+        else:          return f"TAPER ({dtm}d to Cotswold): Rest or 20min walk only. Arrive fresh."
+    if 8 <= dtm <= 14:
+        if score >= 7: return f"TAPER ({dtm}d to Cotswold): Easy 6-8km trail @ conversational pace, HR <{AEROBIC_THRESHOLD}bpm."
+        else:          return f"TAPER ({dtm}d to Cotswold): 20-30min very easy, walk the hills. Recovery focus."
+    if 15 <= dtm <= 21:
+        if score >= 8:   return f"PEAK ({dtm}d to Cotswold): Long trail run 18-22km, walk every hill, fuel every 20min."
+        elif score >= 6: return f"PEAK ({dtm}d to Cotswold): Trail 14-16km easy, hills walked, HR <{AEROBIC_THRESHOLD}bpm."
+        else:            return f"PEAK ({dtm}d to Cotswold): Easy 8km flat, HR <140bpm. Recovery priority."
+    if score >= 8:   return f"BUILD ({dtm}d to Cotswold): Long trail run 14-18km @ easy effort, walk uphills, practice fueling."
     elif score >= 6:
-        if ratio > 1.1: return f"BUILD ({dtm}d to London): Load building — steady 14-16km @ 5:30/km. No intensity."
-        return f"BUILD ({dtm}d to London): 14km @ 5:20-5:40/km, HR <{AEROBIC_THRESHOLD}bpm."
-    elif score >= 4: return f"BUILD ({dtm}d to London): Easy 8-10km @ 6:00/km, HR <140bpm."
-    else:            return f"REST ({dtm}d to London): Readiness {score}/10 — walk, stretch, roll only."
+        if ratio > 1.1: return f"BUILD ({dtm}d to Cotswold): Load building — hill steady 8-10km, conversational effort only."
+        return f"BUILD ({dtm}d to Cotswold): Easy trail 10-12km @ HR <{AEROBIC_THRESHOLD}bpm, walk hills."
+    elif score >= 4: return f"BUILD ({dtm}d to Cotswold): Easy 5-8km @ conversational pace, HR <140bpm."
+    else:            return f"REST ({dtm}d to Cotswold): Readiness {score}/10 — walk, stretch, roll only."
 
 
 def check_and_push_alerts():
@@ -316,7 +319,7 @@ def check_and_push_alerts():
                 recent = supabase.table("polar_exercises").select("date").gte("date", five_days_ago).limit(1).execute()
                 if not recent.data:
                     alerts_fired_today.add("detraining_alert")
-                    alerts.append(f"⬇️ *DETRAINING RISK*\nNo runs in 5+ days. Load ratio: {float(ratio):.2f}\n{days_to_marathon()} days to London — even 20 mins easy maintains fitness.")
+                    alerts.append(f"⬇️ *DETRAINING RISK*\nNo runs in 5+ days. Load ratio: {float(ratio):.2f}\n{days_to_marathon()} days to Cotswold Way — even 20 mins easy maintains fitness.")
     except Exception as e:
         log.error(f"Alert check cardio load: {e}")
 
@@ -368,15 +371,15 @@ def check_and_push_alerts():
     if dtm in milestones and milestone_key not in alerts_fired_today:
         alerts_fired_today.add(milestone_key)
         if dtm == 1:
-            msg = "🎯 *TOMORROW IS RACE DAY*\nLondon Marathon is tomorrow. 10 min shakeout max.\nKit laid out. Nutrition ready. Sleep early. You've done the work."
+            msg = "🎯 *TOMORROW IS RACE DAY*\nCotswold Way 100km tomorrow. Easy 10 min shakeout max.\nKit ready. Poles packed. Fuel sorted. Sleep early. Trust the training."
         elif dtm <= 7:
-            msg = f"🎯 *{dtm} DAYS TO LONDON*\nFinal taper week. Short and easy from here. Trust the fitness — it's banked."
+            msg = f"🎯 *{dtm} DAYS TO COTSWOLD WAY*\nFinal taper. Short and easy only. Legs should feel fresh — that's the goal."
         elif dtm <= 14:
-            msg = f"🎯 *{dtm} DAYS TO LONDON*\nTaper in full effect. Resist adding miles — trust the plan."
+            msg = f"🎯 *{dtm} DAYS TO COTSWOLD WAY*\nTaper in full effect. Resist adding miles. Arrive at the start line fresh."
         elif dtm == 21:
-            msg = "🎯 *3 WEEKS TO LONDON*\nLast big effort window. One more quality long run if readiness allows, then taper. Target: 5:41/km."
+            msg = "🎯 *3 WEEKS TO COTSWOLD WAY*\nLast long run window. Max 22km this weekend, then taper begins. Walk the hills. Practice fueling."
         else:
-            msg = f"🎯 *{dtm} DAYS TO LONDON*\nSub 4:00 target: 5:41/km. Keep building aerobic base. Threshold work is key."
+            msg = f"🎯 *{dtm} DAYS TO COTSWOLD WAY*\nBuild phase — consistency over volume. Keep long runs easy, walk every hill in training."
         alerts.append(msg)
 
     for alert in alerts:
@@ -415,7 +418,7 @@ def format_status_dashboard() -> str:
         f"{cl_emoji} 🔥 Load ratio {ratio} · {status_str} · {cl_score}/10 _(30%)_",
         f"{hr_emoji} ❤️ Resting HR {avg_rhr}bpm · {hr_score}/10 _(20%)_",
         f"{hrv_emoji} 📉 HRV {hrv_this} vs {hrv_last}wk · {hrv_score}/10 _(20%)_",
-        "", f"🎯 *London: {dtm}d away*",
+        "", f"🎯 *Cotswold Way: {dtm}d away*",
         f"💡 _{session}_",
     ]
     return "\n".join(lines)
@@ -642,7 +645,7 @@ def format_sleepwise_dashboard(sw_data: list) -> str:
     return "\n".join(lines)
 
 def format_goals(goals: list) -> str:
-    if not goals: return "No goals set. Add one with:\n`goal: London Marathon, 27 Apr 2026, 42.2km, sub 4:00`"
+    if not goals: return "No goals set. Add one with:\n`goal: Cotswold Way Ultra, 13 Jun 2026, 100km, finish`"
     lines = ["🎯 *Goals & Target Races*\n"]
     for g in goals:
         days_to = ""
@@ -690,7 +693,7 @@ def save_goal(text: str) -> str:
     try:
         text  = re.sub(r"^(goal|race|target)\s*[:：]\s*", "", text.strip(), flags=re.IGNORECASE)
         parts = [p.strip() for p in text.split(",")]
-        if len(parts) < 2: return "Format: `goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`"
+        if len(parts) < 2: return "Format: `goal: Cotswold Way Ultra, 13 Jun 2026, 100km, finish`"
         race_name = parts[0]; race_date = None; distance_km = None; target_time = None; notes = None
         for p in parts[1:]:
             date_match = re.search(r"(\d{1,2}\s+\w+\s+\d{4}|\d{4}-\d{2}-\d{2})", p)
@@ -1163,28 +1166,46 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
         return "Training data temporarily unavailable."
 
 
-BASE_SYSTEM = """You are an elite running coach and sports scientist for Luke Worgan.
+BASE_SYSTEM = """You are an elite ultra running coach and sports scientist for Luke Worgan.
 
 ATHLETE PROFILE:
 - DOB: 1989-03-03 (age 37) | Height: 167cm | Weight: 78kg
 - VO2max: 55 | Max HR: 198bpm | Resting HR: 47bpm
 - Aerobic threshold: 149bpm | Anaerobic threshold: 178bpm | FTP: 272W
 - Watch: Polar Grit X2
+- Recent: London Marathon 27 Apr 2026 completed — now in ultra build
 
-PRIMARY GOAL: London Marathon, 27 April 2026 — sub 4:00 (5:41/km)
-SECONDARY GOAL: Ultra marathons (ongoing)
+PRIMARY GOAL: Cotswold Way Ultra 100km | 13 June 2026 | ~2250m elevation gain
+TERRAIN: Rolling trail, non-technical but continuously undulating
+RACE STRATEGY: Completion focus — no time target. Start conservative, walk ALL hills early, fuel every 20–30 mins from the gun, treat aid stations as checkpoints not rest stops.
+
+TRAINING PLAN (6-week block):
+PHASE 1 (weeks 1–2): Recovery & reactivation — easy aerobic only, zero fatigue accumulation
+PHASE 2 (weeks 3–5): Controlled build — extend long run (10→22km), introduce hill steady runs, maintain low load
+PHASE 3 (week 6): Taper — cut volume 40–60%, keep frequency, arrive fresh
+
+WEEKLY STRUCTURE: Tue easy 5–8km · Thu hill steady 8–10km · Sat long trail run · Sun optional walk 60–90min
+
+KEY SESSIONS:
+- Long run (Sat): conversational pace, HR low aerobic, hills included, practice fueling every 20–30 min
+- Hill steady (Thu): 8–10km rolling, continuous effort, relaxed uphill + controlled downhill
+- Easy aerobic (Tue): 5–8km pure recovery, no pace targets
+- Walk (Sun): 60–90min family walk — time on feet, zero intensity
 
 DATA ACCESS — 8 live streams: polar_exercises, polar_sleep, polar_hrv, polar_continuous_hr, polar_cardio_load, polar_sleepwise, polar_daily_activity, wellness_checkins
 
 CARDIO LOAD: ratio 0.8-1.1 = MAINTAINING | 1.1-1.3 = PRODUCTIVE | >1.3 = OVERREACHING | <0.8 = DETRAINING
 SLEEPWISE: grade 8+ = strong | 5-8 = moderate | <5 = weak — easy day only
 RESTING HR: elevation >5bpm for 3 days = systemic fatigue signal
-CADENCE TARGET: 170-180spm for marathon efficiency
 
-COACHING RULES:
+ULTRA COACHING RULES:
+1. If it feels easy early, Luke is doing it right — never push before halfway
+2. No training run should leave Luke fatigued the next day
+3. Long run is for practice (fueling, pacing, poles), not fitness gain
+4. Hills are effort-based — never chase pace uphill, walk when HR rises
+5. Consistency > volume > intensity — always
 - Always reference Luke's actual numbers, never generic advice
-- Flag overreaching immediately and specifically
-- Connect every recommendation to London Marathon timeline ({days_to_marathon} days away)
+- Flag overreaching immediately — post-marathon fatigue is real and hidden
 - Be direct — Luke wants honesty, not encouragement
 - Use min/km for pace, bpm for HR, watts for power
 
@@ -1221,7 +1242,7 @@ def extract_and_save_note(reply: str, user_text: str):
 
 def format_full_summary() -> str:
     lines = [f"📊 *Full Summary — {datetime.now(timezone.utc).strftime('%-d %b %Y')}*",
-             f"🎯 *London: {days_to_marathon()}d away* — sub 4:00 @ 5:41/km\n"]
+             f"🎯 *Cotswold Way 100km: {days_to_marathon()}d away*\n"]
 
     # ── Training ──
     try:
@@ -1413,7 +1434,7 @@ def send_morning_briefing():
         response = claude.messages.create(
             model="claude-sonnet-4-6", max_tokens=600,
             system=build_system_prompt(),
-            messages=[{"role": "user", "content": f"""{briefing_type}. London Marathon is {days_to_marathon()} days away.{run_context}{sw_context}{load_context} Algorithmic readiness: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
+            messages=[{"role": "user", "content": f"""{briefing_type}. Cotswold Way Ultra 100km is {days_to_marathon()} days away.{run_context}{sw_context}{load_context} Algorithmic readiness: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
 
 Structure your reply with clear emoji-led sections so it's easy to scan on mobile:
 
@@ -1463,7 +1484,7 @@ def send_post_run_debrief(exercise_id: str):
         prompt = f"""Elite running coach. Luke just finished a run. 3 short paragraphs (max 280 tokens).
 
 ATHLETE: Luke Worgan, 37yo, 167cm, 78kg, VO2max 55, max HR 198, aerobic threshold 149bpm, anaerobic threshold 178bpm
-LONDON MARATHON: {days_to_marathon()} days away — target sub 4:00 (5:41/km)
+COTSWOLD WAY ULTRA: {days_to_marathon()} days away — 100km completion focus
 GOALS:\n{goals_text}
 
 TODAY'S RUN:
@@ -1530,7 +1551,7 @@ def send_evening_debrief():
             checkin_context = f"\nLast check-in ({last_checkin['date']}): fatigue {last_checkin.get('fatigue_score','?')}/10, mood {last_checkin.get('mood_score','?')}/10" if last_checkin else ""
             prompt = f"""Elite running coach. Evening data summary — short and scannable. Use emojis to lead each section so it's easy to read on mobile.
 
-ATHLETE: Luke Worgan | LONDON MARATHON: {days_to_marathon()} days away — target sub 4:00 (5:41/km)
+ATHLETE: Luke Worgan | COTSWOLD WAY ULTRA: {days_to_marathon()} days away — 100km completion focus
 GOALS:\n{goals_text}
 
 TODAY: Steps {steps} | Active {active_min}min
@@ -1549,11 +1570,11 @@ End with: NOTE: evening debrief | <10-word summary>"""
         else:
             prompt = f"""Elite running coach. Evening — data still syncing. Keep it short and emoji-led.
 
-WEEK: {round(weekly_km,1)}km | {len(week_runs)} runs | LONDON: {days_to_marathon()} days
+WEEK: {round(weekly_km,1)}km | {len(week_runs)} runs | COTSWOLD WAY: {days_to_marathon()} days
 {cl_text}\n{sw_text}
 
 📊 DATA STATUS — note data is still syncing, share what's available
-🌙 TONIGHT — one specific sleep/recovery tip for marathon prep
+🌙 TONIGHT — one specific sleep/recovery tip for ultra prep
 {f"Nudge Luke to log check-in: fatigue, sleep, mood out of 10." if not checkin_today else ""}
 End with: NOTE: evening debrief | data pending"""
         response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
@@ -1638,7 +1659,7 @@ def handle_message(message):
             "🗑 /clear — clear conversation\n\n"
             "✏️ *Log data*\n"
             "`save run: <Polar stats>`\n"
-            "`goal: London Marathon, 27 Apr 2026, 42.2km, sub 4:00`\n"
+            "`goal: Cotswold Way Ultra, 13 Jun 2026, 100km, finish`\n"
             "`checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10`\n\n"
             "💬 _Or just ask me anything_"
         ), parse_mode="Markdown")
