@@ -593,9 +593,9 @@ def format_run_list(runs: list) -> str:
 
 def format_splits_table(splits: list, header: str) -> str:
     if not splits: return "No splits found."
-    has_ascent = any(s.get("ascent_m") for s in splits)
-    if has_ascent:
-        lines = [f"📊 *{header}*\n", "`KM  │ Pace     │ HR      │  Power │ Cad │  ↑`", "`────┼──────────┼─────────┼────────┼─────┼───`"]
+    has_elev = any(s.get("ascent_m") or s.get("descent_m") for s in splits)
+    if has_elev:
+        lines = [f"📊 *{header}*\n", "`KM  │ Pace     │ HR      │  Power │ Cad │ ↑↓`", "`────┼──────────┼─────────┼────────┼─────┼────`"]
     else:
         lines = [f"📊 *{header}*\n", "`KM  │ Pace     │ HR      │  Power │ Cad`", "`────┼──────────┼─────────┼────────┼────`"]
     for s in splits:
@@ -604,9 +604,11 @@ def format_splits_table(splits: list, header: str) -> str:
         hr    = f"{s.get('hr_avg','?')}/{s.get('hr_max','?')}".ljust(7)
         power = str(s.get("power_avg") or "?").rjust(4) + "W"
         cad   = str(s.get("cadence_avg") or "?").rjust(3)
-        if has_ascent:
-            asc = (str(int(s.get("ascent_m"))) + "m") if s.get("ascent_m") else "  —"
-            lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad} │ {asc:>3}`")
+        if has_elev:
+            asc  = str(int(s["ascent_m"]))  if s.get("ascent_m")  else "—"
+            des  = str(int(s["descent_m"])) if s.get("descent_m") else "—"
+            elev = f"{asc}/{des}"
+            lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad} │ {elev:>4}`")
         else:
             lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad}`")
     return "\n".join(lines)
