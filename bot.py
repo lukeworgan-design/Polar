@@ -862,6 +862,9 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
         power_obj   = ex_data.get("power", {}) or {}
         avg_cadence = si(cadence_obj.get("avg") or ex_data.get("avg_cadence"))
         max_cadence = si(cadence_obj.get("max") or ex_data.get("max_cadence"))
+        # Polar API returns single-leg cadence (strides/min) — double it
+        if avg_cadence and avg_cadence < 100: avg_cadence = avg_cadence * 2
+        if max_cadence and max_cadence < 100: max_cadence = max_cadence * 2
         avg_power   = si(power_obj.get("avg")   or ex_data.get("avg_power"))
         max_power   = si(power_obj.get("max")   or ex_data.get("max_power"))
         if avg_cadence is None and split_rows:
