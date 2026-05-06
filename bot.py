@@ -850,8 +850,8 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
             "avg_heart_rate": si(hr.get("average")), "max_heart_rate": si(hr.get("maximum")),
             "avg_cadence": avg_cadence, "max_cadence": max_cadence, "avg_power": avg_power, "max_power": max_power,
             "training_load": cardio_load, "muscle_load": muscle_load,
-            "ascent": sf(ex_data.get("total_ascent") or ex_data.get("ascent")),
-            "descent": sf(ex_data.get("total_descent") or ex_data.get("descent")),
+            "ascent": round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or None,
+            "descent": round(sum(s["descent_m"] for s in split_rows if s.get("descent_m")), 1) or None,
             "hr_zones": json.dumps(hr_zones_parsed), "raw_json": json.dumps(ex_data), "source": "polar",
         }, on_conflict="polar_exercise_id").execute()
         if split_rows:
@@ -1815,6 +1815,10 @@ def handle_message(message):
             split_rows = fetch_fit_and_parse(ex_id, ex["date"][:10], dist_m)
             if split_rows:
                 supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
+                # Write total ascent/descent back to polar_exercises
+                total_asc = round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or None
+                total_des = round(sum(s["descent_m"] for s in split_rows if s.get("descent_m")), 1) or None
+                supabase.table("polar_exercises").update({"ascent": total_asc, "descent": total_des}).eq("polar_exercise_id", ex_id).execute()
                 splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m").eq("exercise_id", ex_id).order("lap_number").execute()
                 header = f"{fmt_date(ex['date'])} — {(dist_m or 0)/1000:.1f}km {ex.get('sport','')}"
                 bot.send_message(chat_id, f"✅ {len(split_rows)} splits saved\n\n" + format_splits_table(splits.data, header), parse_mode="Markdown")
