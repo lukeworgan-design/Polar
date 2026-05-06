@@ -688,7 +688,7 @@ def format_new_run_notification(ex: dict, exercise_id: str, splits_count: int) -
         pace_s  = dur_s / dist_km if dist_km else 0
         lines   = [f"{sport_emoji(sport)} *New {sport.replace('_',' ').title()} Synced!*\n", f"📅 {fmt_date(ex.get('start_time') or ex.get('date',''))}  •  {dist_km:.2f}km  •  {int(dur_s//60)}min", f"💨 {seconds_to_pace(pace_s)}  ❤️ {avg_hr}/{max_hr}bpm", f"🔥 Load {load}", f"📊 {splits_count} km splits saved"]
         if splits_count > 0:
-            split_data = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,power_avg,cadence_avg").eq("exercise_id", exercise_id).order("lap_number").limit(5).execute()
+            split_data = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m").eq("exercise_id", exercise_id).order("lap_number").limit(5).execute()
             if split_data.data:
                 lines.append("\n*First splits:*")
                 lines.append("`KM  │ Pace     │  HR │ Power │ Cad`")
@@ -1115,7 +1115,7 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
                 parts.append(f"  {r['date'][:10]} | {r.get('sport','?')}{src} | {dist_km:.1f}km | {int(dur_s//60)}min | Pace: {seconds_to_pace(pace_s)} | HR: {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')} | Power: {r.get('avg_power','?')}W | Cadence: {r.get('avg_cadence','?')}spm | Load: {r.get('training_load','?')} | Ascent: {r.get('ascent','?')}m")
             latest = get_latest_run_with_splits()
             if latest:
-                splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", latest["polar_exercise_id"]).order("lap_number").execute()
+                splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m").eq("exercise_id", latest["polar_exercise_id"]).order("lap_number").execute()
                 if splits.data:
                     parts.append(f"\n=== KM SPLITS: {latest['date'][:10]} ({(latest.get('distance_meters') or 0)/1000:.1f}km) ===")
                     for s in splits.data:
@@ -1478,7 +1478,7 @@ def send_post_run_debrief(exercise_id: str):
         run_resp = supabase.table("polar_exercises").select("*").eq("polar_exercise_id", exercise_id).limit(1).execute()
         if not run_resp.data: return
         run         = run_resp.data[0]
-        splits      = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", exercise_id).order("lap_number").execute().data or []
+        splits      = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m").eq("exercise_id", exercise_id).order("lap_number").execute().data or []
         sleep_rows  = supabase.table("polar_sleep").select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds").order("date", desc=True).limit(3).execute().data or []
         hrv_resp    = supabase.table("polar_hrv").select("date,hrv_avg,ans_charge,recharge_status").order("date", desc=True).limit(1).execute()
         hrv         = hrv_resp.data[0] if hrv_resp.data else {}
@@ -1766,7 +1766,7 @@ def handle_message(message):
         try:
             ex = get_latest_run_with_splits()
             if not ex: bot.reply_to(message, "No runs with splits found."); return
-            splits  = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", ex["polar_exercise_id"]).order("lap_number").execute()
+            splits  = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m").eq("exercise_id", ex["polar_exercise_id"]).order("lap_number").execute()
             header  = f"{fmt_date(ex['date'])} — {(ex.get('distance_meters') or 0)/1000:.1f}km {ex.get('sport','')}"
             bot.reply_to(message, format_splits_table(splits.data, header), parse_mode="Markdown")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
@@ -1794,7 +1794,7 @@ def handle_message(message):
             split_rows = fetch_fit_and_parse(ex_id, ex["date"][:10], dist_m)
             if split_rows:
                 supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
-                splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", ex_id).order("lap_number").execute()
+                splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m").eq("exercise_id", ex_id).order("lap_number").execute()
                 header = f"{fmt_date(ex['date'])} — {(dist_m or 0)/1000:.1f}km {ex.get('sport','')}"
                 bot.send_message(chat_id, f"✅ {len(split_rows)} splits saved\n\n" + format_splits_table(splits.data, header), parse_mode="Markdown")
             else:
