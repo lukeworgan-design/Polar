@@ -1729,6 +1729,28 @@ def handle_message(message):
         if parts: bot.send_message(chat_id, "✅ Synced: " + "  •  ".join(parts))
         return
 
+    if lower == "/fitdebug":
+        try:
+            runs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters").order("date", desc=True).limit(1).execute()
+            if not runs.data: bot.reply_to(message, "No exercises found."); return
+            ex     = runs.data[0]
+            ex_id  = ex["polar_exercise_id"]
+            r      = requests.get(f"{POLAR_BASE}/exercises/{ex_id}/fit", headers={"Authorization": f"Bearer {POLAR_ACCESS_TOKEN}", "Accept": "application/octet-stream"})
+            if not r.ok: bot.reply_to(message, f"FIT fetch failed: {r.status_code}"); return
+            fitfile = fitparse.FitFile(io.BytesIO(r.content))
+            fields  = set()
+            sample  = {}
+            for record in fitfile.get_messages("record"):
+                for d in record:
+                    fields.add(d.name)
+                    if d.name not in sample and d.value is not None:
+                        sample[d.name] = d.value
+                break
+            alt_fields = {k: v for k, v in sample.items() if "alt" in k.lower() or "elev" in k.lower()}
+            bot.reply_to(message, f"📦 FIT record fields:\n`{'`, `'.join(sorted(fields))}`\n\n🏔 Altitude fields: `{alt_fields}`")
+        except Exception as e: bot.reply_to(message, f"Error: {e}")
+        return
+
     if lower == "/briefing":
         bot.reply_to(message, "⏳ Generating briefing...")
         threading.Thread(target=send_morning_briefing, daemon=True).start()
