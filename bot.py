@@ -470,7 +470,8 @@ def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> 
         power     = si(data.get("power"))
         cad_raw   = sf(data.get("running_cadence") or data.get("cadence"))
         cad       = si(cad_raw * 2) if cad_raw else None
-        alt       = sf(data.get("altitude") or data.get("enhanced_altitude"))
+        raw_alt   = data.get("enhanced_altitude") if data.get("enhanced_altitude") is not None else data.get("altitude")
+        alt       = sf(raw_alt)
         if km_idx not in buckets:
             buckets[km_idx] = {"speeds": [], "hrs": [], "hr_max": None, "powers": [], "cads": [], "ascent": 0.0, "descent": 0.0, "count": 0}
         b = buckets[km_idx]
@@ -1737,17 +1738,17 @@ def handle_message(message):
             ex_id  = ex["polar_exercise_id"]
             r      = requests.get(f"{POLAR_BASE}/exercises/{ex_id}/fit", headers={"Authorization": f"Bearer {POLAR_ACCESS_TOKEN}", "Accept": "application/octet-stream"})
             if not r.ok: bot.reply_to(message, f"FIT fetch failed: {r.status_code}"); return
-            fitfile = fitparse.FitFile(io.BytesIO(r.content))
-            fields  = set()
-            sample  = {}
-            for record in fitfile.get_messages("record"):
-                for d in record:
-                    fields.add(d.name)
-                    if d.name not in sample and d.value is not None:
-                        sample[d.name] = d.value
-                break
-            alt_fields = {k: v for k, v in sample.items() if "alt" in k.lower() or "elev" in k.lower()}
-            bot.reply_to(message, f"📦 FIT record fields:\n`{'`, `'.join(sorted(fields))}`\n\n🏔 Altitude fields: `{alt_fields}`")
+            fitfile    = fitparse.FitFile(io.BytesIO(r.content))
+            fields     = set()
+            alt_sample = []
+            ealt_sample = []
+            for i, record in enumerate(fitfile.get_messages("record")):
+                data = {d.name: d.value for d in record}
+                fields.update(data.keys())
+                if data.get("altitude") is not None:     alt_sample.append(data["altitude"])
+                if data.get("enhanced_altitude") is not None: ealt_sample.append(data["enhanced_altitude"])
+                if i > 200: break
+            bot.reply_to(message, f"📦 FIT fields: `{'`, `'.join(sorted(fields))}`\n\n🏔 altitude samples (first 5): `{alt_sample[:5]}`\n🏔 enhanced_altitude samples (first 5): `{ealt_sample[:5]}`")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
