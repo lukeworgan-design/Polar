@@ -1828,7 +1828,7 @@ def handle_message(message):
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
-    if lower.startswith("/resync"):
+    if lower.startswith("/resync") and lower != "/resyncall":
         try:
             parts = user_text.split()
             ex    = None
