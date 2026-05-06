@@ -1752,7 +1752,15 @@ def handle_message(message):
                 if data.get("altitude") is not None:     alt_sample.append(data["altitude"])
                 if data.get("enhanced_altitude") is not None: ealt_sample.append(data["enhanced_altitude"])
                 if i > 200: break
-            bot.reply_to(message, f"📦 FIT fields: `{'`, `'.join(sorted(fields))}`\n\n🏔 altitude samples (first 5): `{alt_sample[:5]}`\n🏔 enhanced_altitude samples (first 5): `{ealt_sample[:5]}`")
+            lap_fields = set()
+            lap_sample = {}
+            for record in fitfile.get_messages("lap"):
+                for d in record:
+                    lap_fields.add(d.name)
+                    if d.name not in lap_sample and d.value is not None:
+                        lap_sample[d.name] = d.value
+                break
+            bot.reply_to(message, f"📦 Record fields: `{'`, `'.join(sorted(fields))}`\n\n🏔 altitude (first 5): `{alt_sample[:5]}`\n\n📐 Lap fields: `{'`, `'.join(sorted(lap_fields))}`\n\n⛰ Lap sample: `{lap_sample}`")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
