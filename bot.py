@@ -1699,7 +1699,8 @@ def handle_message(message):
             "🌙 /evening — evening debrief now\n"
             "🏃 /runs — last 10 runs _(or /runs 30)_\n"
             "📈 /splits — km splits for last run\n"
-            "🔁 /resync — re-fetch FIT splits for last run\n"
+            "🔁 /resync — re-fetch FIT splits for last run _(or /resync 2026-04-26)_\n"
+            "🔁 /resyncall — backfill splits & ascent for all runs\n"
             "💤 /recovery — sleep & HRV\n"
             "📦 /load — weekly training load\n"
             "🔥 /cardio — cardio load trend\n"
@@ -1873,6 +1874,37 @@ def handle_message(message):
             runs  = supabase.table("polar_exercises").select("date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load,ascent,source").order("date", desc=True).limit(limit).execute()
             bot.reply_to(message, format_run_list(runs.data), parse_mode="Markdown")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
+        return
+
+    if lower == "/resyncall":
+        def do_resync_all():
+            try:
+                runs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,sport").order("date", desc=True).limit(200).execute()
+                if not runs.data: bot.send_message(chat_id, "No exercises found."); return
+                bot.send_message(chat_id, f"🔄 Resyncing {len(runs.data)} runs — this may take a minute...")
+                ok = 0; fail = 0
+                for ex in runs.data:
+                    try:
+                        ex_id  = ex["polar_exercise_id"]
+                        dist_m = sf(ex.get("distance_meters"))
+                        split_rows = fetch_fit_and_parse(ex_id, ex["date"][:10], dist_m)
+                        if split_rows:
+                            supabase.table("polar_km_splits").delete().eq("exercise_id", ex_id).execute()
+                            supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
+                            total_asc = round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or None
+                            total_des = round(sum(s["descent_m"] for s in split_rows if s.get("descent_m")), 1) or None
+                            supabase.table("polar_exercises").update({"ascent": total_asc, "descent": total_des}).eq("polar_exercise_id", ex_id).execute()
+                            ok += 1
+                        else:
+                            fail += 1
+                    except Exception as e:
+                        log.error(f"resyncall {ex.get('polar_exercise_id')}: {e}")
+                        fail += 1
+                bot.send_message(chat_id, f"✅ Resync complete: {ok} updated, {fail} skipped")
+            except Exception as e:
+                bot.send_message(chat_id, f"⚠️ Resync error: {e}")
+        bot.reply_to(message, "🔄 Starting full resync in background...")
+        threading.Thread(target=do_resync_all, daemon=True).start()
         return
 
     if lower == "/recovery":
