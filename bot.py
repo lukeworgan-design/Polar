@@ -448,7 +448,8 @@ def _build_splits_from_laps(fitfile, exercise_id: str, session_date: str, expect
             "power_avg": si(data.get("avg_power")), "power_max": si(data.get("max_power")),
             "cadence_avg": si(cadence_raw * 2) if cadence_raw else None,
             "cadence_max": si(cadence_max_raw * 2) if cadence_max_raw else None,
-            "ascent_m": None, "descent_m": None,
+            "ascent_m":  sf(data.get("total_ascent")),
+            "descent_m": sf(data.get("total_descent")),
         })
         lap_num += 1
     return split_rows
