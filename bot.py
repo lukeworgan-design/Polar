@@ -515,6 +515,26 @@ def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> 
     return split_rows
 
 
+def _ascent_by_km_from_records(fitfile) -> dict:
+    """Returns {km_idx: (ascent_m, descent_m)} computed from record altitude data."""
+    buckets  = {}
+    prev_alt = None
+    for record in fitfile.get_messages("record"):
+        data     = {d.name: d.value for d in record}
+        dist_m   = sf(data.get("distance"))
+        if dist_m is None: continue
+        km_idx   = int(dist_m / 1000)
+        raw_alt  = data.get("enhanced_altitude") if data.get("enhanced_altitude") is not None else data.get("altitude")
+        alt      = sf(raw_alt)
+        if km_idx not in buckets: buckets[km_idx] = [0.0, 0.0]
+        if alt is not None and prev_alt is not None:
+            diff = alt - prev_alt
+            if diff > 0:   buckets[km_idx][0] += diff
+            elif diff < 0: buckets[km_idx][1] += abs(diff)
+        prev_alt = alt
+    return {k: (round(v[0], 1) or None, round(v[1], 1) or None) for k, v in buckets.items()}
+
+
 def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_distance_m: float = None) -> list:
     if not fitparse: return []
     try:
@@ -530,6 +550,13 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
             record_splits = _build_splits_from_records(fitfile, exercise_id, session_date)
             if len(record_splits) > len(split_rows):
                 return record_splits
+
+        # Always enrich with altitude from record messages (lap messages have no elevation)
+        ascent_map = _ascent_by_km_from_records(fitfile)
+        for s in split_rows:
+            km_idx = s["lap_number"]
+            if km_idx in ascent_map:
+                s["ascent_m"], s["descent_m"] = ascent_map[km_idx]
 
         return split_rows
     except Exception as e:
