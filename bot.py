@@ -1774,11 +1774,15 @@ def handle_message(message):
 
     if lower.startswith("/resync"):
         try:
-            parts   = user_text.split()
-            # Default to latest run; optionally accept exercise_id as arg
+            parts = user_text.split()
+            ex    = None
             if len(parts) > 1:
-                ex_id = parts[1]
-                ex_row = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,sport").eq("polar_exercise_id", ex_id).limit(1).execute()
+                arg = parts[1]
+                # Accept date (2026-04-26) or exercise_id
+                if re.match(r"\d{4}-\d{2}-\d{2}", arg):
+                    ex_row = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,sport").gte("date", arg).lt("date", arg + "T23:59:59").order("date", desc=True).limit(1).execute()
+                else:
+                    ex_row = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,sport").eq("polar_exercise_id", arg).limit(1).execute()
                 ex = ex_row.data[0] if ex_row.data else None
             else:
                 runs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,sport").order("date", desc=True).limit(1).execute()
