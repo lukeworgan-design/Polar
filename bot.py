@@ -458,19 +458,21 @@ def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> 
     """Aggregate per-second FIT 'record' messages into 1km splits."""
     buckets: dict[int, dict] = {}  # km_index -> accumulated data
     prev_dist = 0.0
+    prev_alt  = None
     for record in fitfile.get_messages("record"):
         data      = {d.name: d.value for d in record}
         dist_m    = sf(data.get("distance"))
         if dist_m is None:
             continue
-        km_idx    = int(dist_m / 1000)   # 0-based bucket
+        km_idx    = int(dist_m / 1000)
         speed     = sf(data.get("speed") or data.get("enhanced_speed"))
         hr        = si(data.get("heart_rate"))
         power     = si(data.get("power"))
         cad_raw   = sf(data.get("running_cadence") or data.get("cadence"))
         cad       = si(cad_raw * 2) if cad_raw else None
+        alt       = sf(data.get("altitude") or data.get("enhanced_altitude"))
         if km_idx not in buckets:
-            buckets[km_idx] = {"speeds": [], "hrs": [], "hr_max": None, "powers": [], "cads": [], "start_dist": prev_dist, "count": 0}
+            buckets[km_idx] = {"speeds": [], "hrs": [], "hr_max": None, "powers": [], "cads": [], "ascent": 0.0, "descent": 0.0, "count": 0}
         b = buckets[km_idx]
         b["count"]  += 1
         if speed:  b["speeds"].append(speed)
@@ -479,6 +481,11 @@ def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> 
             if b["hr_max"] is None or hr > b["hr_max"]: b["hr_max"] = hr
         if power:  b["powers"].append(power)
         if cad:    b["cads"].append(cad)
+        if alt is not None and prev_alt is not None:
+            diff = alt - prev_alt
+            if diff > 0:   b["ascent"]  += diff
+            elif diff < 0: b["descent"] += abs(diff)
+        prev_alt  = alt
         prev_dist = dist_m
 
     split_rows = []
@@ -487,7 +494,7 @@ def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> 
         km_number = km_idx + 1
         avg_speed = (sum(b["speeds"]) / len(b["speeds"])) if b["speeds"] else None
         pace_s    = (1000 / avg_speed) if (avg_speed and avg_speed > 0) else None
-        lap_dur   = sf(pace_s) if pace_s else None   # approx 1km duration
+        lap_dur   = sf(pace_s) if pace_s else None
         split_rows.append({
             "exercise_id": exercise_id, "session_date": session_date,
             "lap_number": km_idx, "km_number": km_number,
@@ -499,7 +506,9 @@ def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> 
             "power_avg": si(sum(b["powers"]) / len(b["powers"])) if b["powers"] else None,
             "power_max": None,
             "cadence_avg": si(sum(b["cads"]) / len(b["cads"])) if b["cads"] else None,
-            "cadence_max": None, "ascent_m": None, "descent_m": None,
+            "cadence_max": None,
+            "ascent_m":  round(b["ascent"], 1)  if b["ascent"]  else None,
+            "descent_m": round(b["descent"], 1) if b["descent"] else None,
         })
     return split_rows
 
@@ -553,14 +562,22 @@ def format_run_list(runs: list) -> str:
 
 def format_splits_table(splits: list, header: str) -> str:
     if not splits: return "No splits found."
-    lines = [f"📊 *{header}*\n", "`KM  │ Pace     │ HR      │  Power │ Cad`", "`────┼──────────┼─────────┼────────┼────`"]
+    has_ascent = any(s.get("ascent_m") for s in splits)
+    if has_ascent:
+        lines = [f"📊 *{header}*\n", "`KM  │ Pace     │ HR      │  Power │ Cad │  ↑`", "`────┼──────────┼─────────┼────────┼─────┼───`"]
+    else:
+        lines = [f"📊 *{header}*\n", "`KM  │ Pace     │ HR      │  Power │ Cad`", "`────┼──────────┼─────────┼────────┼────`"]
     for s in splits:
         km    = str(s.get("km_number", "?")).rjust(2)
         pace  = (s.get("pace_display") or "N/A").ljust(8)
         hr    = f"{s.get('hr_avg','?')}/{s.get('hr_max','?')}".ljust(7)
         power = str(s.get("power_avg") or "?").rjust(4) + "W"
         cad   = str(s.get("cadence_avg") or "?").rjust(3)
-        lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad}`")
+        if has_ascent:
+            asc = str(int(s.get("ascent_m") or 0)) + "m"
+            lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad} │ {asc:>3}`")
+        else:
+            lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad}`")
     return "\n".join(lines)
 
 def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict = None) -> str:
