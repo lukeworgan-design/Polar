@@ -850,7 +850,8 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
             "avg_heart_rate": si(hr.get("average")), "max_heart_rate": si(hr.get("maximum")),
             "avg_cadence": avg_cadence, "max_cadence": max_cadence, "avg_power": avg_power, "max_power": max_power,
             "training_load": cardio_load, "muscle_load": muscle_load,
-            "ascent": sf(ex_data.get("ascent")), "descent": sf(ex_data.get("descent")),
+            "ascent": sf(ex_data.get("total_ascent") or ex_data.get("ascent")),
+            "descent": sf(ex_data.get("total_descent") or ex_data.get("descent")),
             "hr_zones": json.dumps(hr_zones_parsed), "raw_json": json.dumps(ex_data), "source": "polar",
         }, on_conflict="polar_exercise_id").execute()
         if split_rows:
@@ -1751,6 +1752,20 @@ def handle_message(message):
                 if data.get("enhanced_altitude") is not None: ealt_sample.append(data["enhanced_altitude"])
                 if i > 200: break
             bot.reply_to(message, f"📦 FIT fields: `{'`, `'.join(sorted(fields))}`\n\n🏔 altitude samples (first 5): `{alt_sample[:5]}`\n🏔 enhanced_altitude samples (first 5): `{ealt_sample[:5]}`")
+        except Exception as e: bot.reply_to(message, f"Error: {e}")
+        return
+
+    if lower == "/exdebug":
+        try:
+            runs = supabase.table("polar_exercises").select("polar_exercise_id,date").order("date", desc=True).limit(1).execute()
+            if not runs.data: bot.reply_to(message, "No exercises."); return
+            ex_id = runs.data[0]["polar_exercise_id"]
+            r = requests.get(f"{POLAR_BASE}/exercises/{ex_id}?zones=true", headers=polar_headers())
+            if not r.ok: bot.reply_to(message, f"API error: {r.status_code}"); return
+            data = r.json()
+            keys = sorted(data.keys())
+            asc_keys = {k: data[k] for k in keys if "asc" in k.lower() or "desc" in k.lower() or "elev" in k.lower() or "climb" in k.lower()}
+            bot.reply_to(message, f"📦 Exercise keys:\n`{'`, `'.join(keys)}`\n\n⛰ Elevation-related:\n`{asc_keys}`")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
