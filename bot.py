@@ -558,7 +558,9 @@ def format_run_list(runs: list) -> str:
         source   = " ✏️" if r.get("source") == "manual" else ""
         pwr_str  = f"{r.get('avg_power')}W" if r.get("avg_power") else "?"
         cad_str  = f"{r.get('avg_cadence')}spm" if r.get("avg_cadence") else "?"
-        lines.append(f"{sport_emoji(r.get('sport',''))} *{fmt_date(r['date'])}*{source}  •  {dist_km:.1f}km  •  {int(dur_s//60)}min\n   💨 {seconds_to_pace(pace_s)}  ❤️ {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')}  ⚡ {pwr_str}  👟 {cad_str}{load_str}")
+        asc      = r.get("ascent")
+        asc_str  = f"  ⛰{int(asc)}m" if asc else ""
+        lines.append(f"{sport_emoji(r.get('sport',''))} *{fmt_date(r['date'])}*{source}  •  {dist_km:.1f}km  •  {int(dur_s//60)}min{asc_str}\n   💨 {seconds_to_pace(pace_s)}  ❤️ {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')}  ⚡ {pwr_str}  👟 {cad_str}{load_str}")
     return "\n".join(lines)
 
 def format_splits_table(splits: list, header: str) -> str:
@@ -1810,7 +1812,7 @@ def handle_message(message):
         try:
             parts = user_text.split()
             limit = min(int(parts[1]) if len(parts) > 1 else 10, 100)
-            runs  = supabase.table("polar_exercises").select("date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load,source").order("date", desc=True).limit(limit).execute()
+            runs  = supabase.table("polar_exercises").select("date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load,ascent,source").order("date", desc=True).limit(limit).execute()
             bot.reply_to(message, format_run_list(runs.data), parse_mode="Markdown")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
