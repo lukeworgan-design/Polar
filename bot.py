@@ -605,7 +605,7 @@ def format_splits_table(splits: list, header: str) -> str:
         power = str(s.get("power_avg") or "?").rjust(4) + "W"
         cad   = str(s.get("cadence_avg") or "?").rjust(3)
         if has_ascent:
-            asc = str(int(s.get("ascent_m") or 0)) + "m"
+            asc = (str(int(s.get("ascent_m"))) + "m") if s.get("ascent_m") else "  —"
             lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad} │ {asc:>3}`")
         else:
             lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad}`")
@@ -1856,9 +1856,9 @@ def handle_message(message):
                 total_des = round(sum(s["descent_m"] for s in split_rows if s.get("descent_m")), 1) or None
                 supabase.table("polar_exercises").update({"ascent": total_asc, "descent": total_des}).eq("polar_exercise_id", ex_id).execute()
                 splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m").eq("exercise_id", ex_id).order("lap_number").execute()
-                header    = f"{fmt_date(ex['date'])} — {(dist_m or 0)/1000:.1f}km {ex.get('sport','')}"
-                asc_debug = " · ".join([f"km{s['km_number']}={s.get('ascent_m')}m" for s in splits.data])
-                bot.send_message(chat_id, f"✅ {len(split_rows)} splits saved  ⛰{total_asc}m\n_{asc_debug}_\n\n" + format_splits_table(splits.data, header), parse_mode="Markdown")
+                header  = f"{fmt_date(ex['date'])} — {(dist_m or 0)/1000:.1f}km {ex.get('sport','')}"
+                asc_str = f"  ⛰{total_asc}m" if total_asc else ""
+                bot.send_message(chat_id, f"✅ {len(split_rows)} splits saved{asc_str}\n\n" + format_splits_table(splits.data, header), parse_mode="Markdown")
             else:
                 bot.send_message(chat_id, "⚠️ No splits found in FIT file — watch may not be set to auto-lap every km.")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
