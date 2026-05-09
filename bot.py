@@ -1485,10 +1485,12 @@ def send_morning_briefing():
 📅 WEEK AHEAD — day-by-day plan for remaining sessions this week. One line per day.
 ⚑ FLAG — one watch point from recent data."""
 
+        today_dow = datetime.now().strftime("%A")
+        today_date_str = datetime.now().strftime("%-d %b %Y")
         response = claude.messages.create(
             model="claude-sonnet-4-6", max_tokens=600,
             system=build_system_prompt(),
-            messages=[{"role": "user", "content": f"""{briefing_type}. Cotswold Way Ultra 100km is {days_to_marathon()} days away.{run_context}{sw_context}{load_context} Algorithmic readiness: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
+            messages=[{"role": "user", "content": f"""{briefing_type}. Today is {today_dow} {today_date_str}. Cotswold Way Ultra 100km is {days_to_marathon()} days away.{run_context}{sw_context}{load_context} Readiness score: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
 
 Structure your reply with clear emoji-led sections so it's easy to scan on mobile:
 
