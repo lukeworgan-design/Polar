@@ -1019,6 +1019,73 @@ Write it conversationally — not just "Reminder: X". Reference school run conte
   return textBlock?.text || `Heads up — ${event.summary} is in ${hoursUntil} hours!`;
 }
 
+export async function generateFridayCheckin(): Promise<string> {
+  const { braveSearch, formatSearchResults } = await import('./search');
+
+  const now = getLocalNow(config.timezone);
+  const todayStr = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone });
+  const monthYear = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: config.timezone });
+
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const tomorrowStr = tomorrow.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone });
+  const tomorrowStart = new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 0, 0, 0);
+  const tomorrowEnd = new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 23, 59, 59);
+
+  const [todayEvents, saturdayEvents, weatherDays, results1, results2] = await Promise.all([
+    getTodaysEvents(),
+    getEventsForPeriod(tomorrowStart, tomorrowEnd),
+    getWeatherForecast(2),
+    braveSearch(`things to do ${config.location} this Friday evening ${todayStr}`, 5),
+    braveSearch(`events ${config.location} this weekend ${monthYear}`, 5),
+  ]);
+
+  const seen = new Set<string>();
+  const allResults = [...results1, ...results2].filter(r => {
+    if (seen.has(r.url)) return false;
+    seen.add(r.url);
+    return true;
+  });
+  const searchContext = allResults.length > 0 ? formatSearchResults(allResults) : 'No local event results found.';
+
+  const todayWeather = weatherDays.length > 0 ? formatDayWeather(weatherDays[0]) : '';
+  const satWeather = weatherDays.length > 1 ? formatDayWeather(weatherDays[1]) : '';
+
+  const prompt = `It's Friday at 3pm — school's out! Generate a short, energetic check-in for Luke and Toni about what's on locally this afternoon/evening and tomorrow (Saturday).
+
+Today (Friday): ${todayStr}
+Tomorrow (Saturday): ${tomorrowStr}
+
+Friday afternoon calendar:
+${formatEventsForAI(todayEvents) || 'Nothing in the calendar this afternoon'}
+
+Saturday calendar:
+${formatEventsForAI(saturdayEvents) || 'Nothing in the calendar'}
+
+Local events from web search:
+${searchContext}
+
+Weekend weather:
+${todayWeather ? `Friday: ${todayWeather}` : ''}
+${satWeather ? `Saturday: ${satWeather}` : ''}
+
+RULES:
+- Open with energy — "School's out!" or similar
+- Pick 2–3 specific local events from the search results if they have real specifics (name, time, venue). If nothing specific, skip and say so briefly.
+- Mention Saturday calendar events if there are any
+- Weave in weather naturally
+- Short and punchy — WhatsApp energy, not a newsletter`;
+
+  const response = await anthropic.messages.create({
+    model: config.anthropic.model,
+    max_tokens: 400,
+    system: buildSystemPrompt(),
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
+  return textBlock?.text || "School's out — have a great weekend! 🎉";
+}
+
 export async function generateWeekendCheckin(day: 'saturday' | 'sunday'): Promise<string> {
   const { braveSearch, formatSearchResults } = await import('./search');
 

@@ -11,6 +11,7 @@ import {
   generateEventReminder,
   generateBirthdayReminder,
   generateWeekendCheckin,
+  generateFridayCheckin,
   generateHolidayActivities,
   generateWeekendEvents,
 } from './ai';
@@ -64,6 +65,16 @@ export function initScheduler(sendFn: SendMessageFn): void {
       await checkPersonalReminders();
     } catch (err) {
       console.error('Error checking personal reminders:', err);
+    }
+  }, { timezone: config.timezone });
+
+  // Friday 3pm check-in — school's out, what's on locally this afternoon/weekend
+  cron.schedule('0 15 * * 5', async () => {
+    try {
+      const message = await generateFridayCheckin();
+      await sendToGroup(message);
+    } catch (err) {
+      console.error('Error sending Friday check-in:', err);
     }
   }, { timezone: config.timezone });
 
