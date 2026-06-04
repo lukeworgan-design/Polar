@@ -2,7 +2,7 @@ import { createServer } from 'http';
 import { Telegraf, Context } from 'telegraf';
 import { Message } from 'telegraf/typings/core/types/typegram';
 import { config, getUserName } from './config';
-import { generateResponse, shouldRoseRespond, ImageData } from './ai';
+import { generateResponse, ImageData } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
 
@@ -81,20 +81,6 @@ async function handleGroupMessage(ctx: Context): Promise<void> {
 
   const mentioned = isDirectlyMentioned(text, botUsername);
   const userName = getUserName(userId);
-
-  // When Rose isn't directly addressed, only chime in if proactive replies are
-  // enabled AND the message looks like something she can actually help with —
-  // otherwise she'd reply to every bit of back-and-forth between Luke and Toni.
-  if (!mentioned) {
-    if (!config.proactiveReplies) return;
-    try {
-      const relevant = await shouldRoseRespond(text, false);
-      if (!relevant) return;
-    } catch (err) {
-      console.error('shouldRoseRespond failed:', err);
-      return;
-    }
-  }
 
   updateRateLimit(userId);
 

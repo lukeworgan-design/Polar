@@ -65,10 +65,6 @@ export const config = {
     },
   },
   timezone: process.env['TIMEZONE'] || 'Europe/London',
-  // When true, Rose will use an LLM check to decide whether to chime in on
-  // messages that don't directly mention her. Off by default (costs an extra
-  // API call per group message).
-  proactiveReplies: process.env['ROSE_PROACTIVE'] === 'true',
   location: process.env['FAMILY_LOCATION'] || 'Cheltenham, Gloucestershire',
   braveSearchApiKey: process.env['BRAVE_SEARCH_API_KEY'] || null,
   openaiApiKey: process.env['OPENAI_API_KEY'] || null,
