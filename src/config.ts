@@ -79,10 +79,10 @@ export const config = {
     babyDue: process.env['BABY_DUE_DATE'] || '2026-08-17',
   },
   // Bin collection — Cheltenham BC alternates general/recycling fortnightly on Thursdays.
-  // Set BIN_REFERENCE_DATE to any known Thursday collection date (YYYY-MM-DD) and
+  // Set BIN_REFERENCE_DATE to any known Friday collection date (YYYY-MM-DD) and
   // BIN_REFERENCE_TYPE to the bin that went out that day ('general' or 'recycling').
   bin: {
-    referenceDate: process.env['BIN_REFERENCE_DATE'] || '2026-06-04',
+    referenceDate: process.env['BIN_REFERENCE_DATE'] || '2026-06-05',
     referenceType: (process.env['BIN_REFERENCE_TYPE'] || 'general') as 'general' | 'recycling',
   },
 };

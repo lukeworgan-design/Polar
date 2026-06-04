@@ -303,10 +303,10 @@ bot.command('pregnancy', async (ctx) => {
 // Handle /bin command — manual trigger for the Wednesday bin reminder
 bot.command('bin', async (ctx) => {
   if (!isFromGroup(ctx)) return;
-  const { getThursdayBinType } = await import('./scheduler');
-  const binType = getThursdayBinType();
+  const { getFridayBinType } = await import('./scheduler');
+  const binType = getFridayBinType();
   if (binType === 'general') {
-    await ctx.reply('🗑️ Bin reminder: black bin (general waste) goes out tomorrow morning. Don\'t forget to put it out tonight!');
+    await ctx.reply('🗑️ Bin reminder: green bin (general waste) goes out tomorrow morning. Don\'t forget to put it out tonight!');
   } else {
     await ctx.reply('♻️ Bin reminder: blue bin (recycling) goes out tomorrow morning. Don\'t forget to put it out tonight!');
   }

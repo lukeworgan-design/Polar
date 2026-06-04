@@ -128,8 +128,8 @@ export function initScheduler(sendFn: SendMessageFn): void {
     }
   }, { timezone: config.timezone });
 
-  // Bin day reminder — every Wednesday at 7pm (collection is Thursday morning)
-  cron.schedule('0 19 * * 3', async () => {
+  // Bin day reminder — every Thursday at 7pm (collection is Friday morning)
+  cron.schedule('0 19 * * 4', async () => {
     try {
       await sendBinReminder();
     } catch (err) {
@@ -231,17 +231,17 @@ async function checkUpcomingHolidayActivities(): Promise<void> {
   }
 }
 
-/** Returns which bin type is due on the next Thursday from now. */
-export function getThursdayBinType(): 'general' | 'recycling' {
+/** Returns which bin type is due on the next Friday from now. */
+export function getFridayBinType(): 'general' | 'recycling' {
   const now = new Date();
-  const dayOfWeek = now.getDay(); // 0=Sun … 3=Wed … 6=Sat
-  const daysUntilThursday = (4 - dayOfWeek + 7) % 7 || 7;
-  const nextThursday = new Date(now);
-  nextThursday.setHours(12, 0, 0, 0);
-  nextThursday.setDate(now.getDate() + daysUntilThursday);
+  const dayOfWeek = now.getDay(); // 0=Sun … 4=Thu … 5=Fri
+  const daysUntilFriday = (5 - dayOfWeek + 7) % 7 || 7;
+  const nextFriday = new Date(now);
+  nextFriday.setHours(12, 0, 0, 0);
+  nextFriday.setDate(now.getDate() + daysUntilFriday);
 
   const refDate = new Date(config.bin.referenceDate + 'T12:00:00');
-  const diffDays = Math.round((nextThursday.getTime() - refDate.getTime()) / (1000 * 60 * 60 * 24));
+  const diffDays = Math.round((nextFriday.getTime() - refDate.getTime()) / (1000 * 60 * 60 * 24));
   const diffWeeks = Math.round(diffDays / 7);
 
   const sameAsRef = diffWeeks % 2 === 0;
@@ -250,9 +250,9 @@ export function getThursdayBinType(): 'general' | 'recycling' {
 }
 
 async function sendBinReminder(): Promise<void> {
-  const binType = getThursdayBinType();
+  const binType = getFridayBinType();
   if (binType === 'general') {
-    await sendToGroup('🗑️ Bin reminder: black bin (general waste) goes out tomorrow morning. Don\'t forget to put it out tonight!');
+    await sendToGroup('🗑️ Bin reminder: green bin (general waste) goes out tomorrow morning. Don\'t forget to put it out tonight!');
   } else {
     await sendToGroup('♻️ Bin reminder: blue bin (recycling) goes out tomorrow morning. Don\'t forget to put it out tonight!');
   }
