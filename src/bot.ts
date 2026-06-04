@@ -283,6 +283,21 @@ bot.command('weekend', async (ctx) => {
   }
 });
 
+// Handle /friday command — manual trigger for the Friday school's-out check-in
+bot.command('friday', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+
+  try {
+    await ctx.sendChatAction('typing');
+  } catch {
+    // ignore
+  }
+
+  const { generateFridayCheckin } = await import('./ai');
+  const message = await generateFridayCheckin();
+  await ctx.reply(message, { parse_mode: 'Markdown' });
+});
+
 // Handle /help command
 bot.command('help', async (ctx) => {
   if (!isFromGroup(ctx)) return;
@@ -302,6 +317,7 @@ bot.command('help', async (ctx) => {
 🍽 */meals* — View the meal plan for the next two weeks
 
 🗓 */weekend* — What's actually on locally this weekend (searches for real events)
+🏫 */friday* — Friday school's-out check-in with local events and weather
 
 Just chat naturally — I'll figure out what you need! 😊`;
 
