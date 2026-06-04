@@ -14,6 +14,7 @@ import {
   generateFridayCheckin,
   generateHolidayActivities,
   generateWeekendEvents,
+  generatePregnancyUpdate,
 } from './ai';
 import {
   getPendingReminders,
@@ -127,6 +128,25 @@ export function initScheduler(sendFn: SendMessageFn): void {
     }
   }, { timezone: config.timezone });
 
+  // Bin day reminder — every Wednesday at 7pm (collection is Thursday morning)
+  cron.schedule('0 19 * * 3', async () => {
+    try {
+      await sendBinReminder();
+    } catch (err) {
+      console.error('Error sending bin reminder:', err);
+    }
+  }, { timezone: config.timezone });
+
+  // Weekly pregnancy update — every Monday at 8am
+  cron.schedule('0 8 * * 1', async () => {
+    try {
+      const message = await generatePregnancyUpdate();
+      if (message) await sendToGroup(message);
+    } catch (err) {
+      console.error('Error sending pregnancy update:', err);
+    }
+  }, { timezone: config.timezone });
+
   console.log('Scheduler initialised ✓');
 }
 
@@ -208,6 +228,33 @@ async function checkUpcomingHolidayActivities(): Promise<void> {
 
     const message = await generateHolidayActivities(event.summary, startDate, endDate);
     if (message) await sendToGroup(message);
+  }
+}
+
+/** Returns which bin type is due on the next Thursday from now. */
+export function getThursdayBinType(): 'general' | 'recycling' {
+  const now = new Date();
+  const dayOfWeek = now.getDay(); // 0=Sun … 3=Wed … 6=Sat
+  const daysUntilThursday = (4 - dayOfWeek + 7) % 7 || 7;
+  const nextThursday = new Date(now);
+  nextThursday.setHours(12, 0, 0, 0);
+  nextThursday.setDate(now.getDate() + daysUntilThursday);
+
+  const refDate = new Date(config.bin.referenceDate + 'T12:00:00');
+  const diffDays = Math.round((nextThursday.getTime() - refDate.getTime()) / (1000 * 60 * 60 * 24));
+  const diffWeeks = Math.round(diffDays / 7);
+
+  const sameAsRef = diffWeeks % 2 === 0;
+  if (sameAsRef) return config.bin.referenceType;
+  return config.bin.referenceType === 'general' ? 'recycling' : 'general';
+}
+
+async function sendBinReminder(): Promise<void> {
+  const binType = getThursdayBinType();
+  if (binType === 'general') {
+    await sendToGroup('🗑️ Bin reminder: black bin (general waste) goes out tomorrow morning. Don\'t forget to put it out tonight!');
+  } else {
+    await sendToGroup('♻️ Bin reminder: blue bin (recycling) goes out tomorrow morning. Don\'t forget to put it out tonight!');
   }
 }
 

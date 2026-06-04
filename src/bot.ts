@@ -283,6 +283,35 @@ bot.command('weekend', async (ctx) => {
   }
 });
 
+// Handle /pregnancy command — manual trigger for the Monday pregnancy update
+bot.command('pregnancy', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  try {
+    // ignore
+  } catch {
+    // ignore
+  }
+  const { generatePregnancyUpdate } = await import('./ai');
+  const message = await generatePregnancyUpdate();
+  if (message) {
+    await ctx.reply(message, { parse_mode: 'Markdown' });
+  } else {
+    await ctx.reply('No pregnancy update — either the due date has passed or it\'s not configured.');
+  }
+});
+
+// Handle /bin command — manual trigger for the Wednesday bin reminder
+bot.command('bin', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  const { getThursdayBinType } = await import('./scheduler');
+  const binType = getThursdayBinType();
+  if (binType === 'general') {
+    await ctx.reply('🗑️ Bin reminder: black bin (general waste) goes out tomorrow morning. Don\'t forget to put it out tonight!');
+  } else {
+    await ctx.reply('♻️ Bin reminder: blue bin (recycling) goes out tomorrow morning. Don\'t forget to put it out tonight!');
+  }
+});
+
 // Handle /friday command — manual trigger for the Friday school's-out check-in
 bot.command('friday', async (ctx) => {
   if (!isFromGroup(ctx)) return;
@@ -318,6 +347,8 @@ bot.command('help', async (ctx) => {
 
 🗓 */weekend* — What's actually on locally this weekend (searches for real events)
 🏫 */friday* — Friday school's-out check-in with local events and weather
+🤰 */pregnancy* — This week's pregnancy update
+🗑️ */bin* — Which bin goes out tomorrow
 
 Just chat naturally — I'll figure out what you need! 😊`;
 

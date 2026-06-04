@@ -1370,6 +1370,42 @@ RULES:
   return textBlock?.text || '';
 }
 
+export async function generatePregnancyUpdate(): Promise<string> {
+  const dueDate = new Date(config.family.babyDue);
+  const now = getLocalNow(config.timezone);
+
+  if (now >= dueDate) return ''; // baby has arrived — stop sending
+
+  const msUntilDue = dueDate.getTime() - now.getTime();
+  const daysUntilDue = Math.floor(msUntilDue / (1000 * 60 * 60 * 24));
+  const weeksRemaining = Math.floor(daysUntilDue / 7);
+  const currentWeek = 40 - weeksRemaining;
+
+  if (currentWeek < 1) return '';
+
+  const dueDateStr = dueDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  const prompt = `Toni is ${currentWeek} weeks pregnant (due ${dueDateStr}, ${weeksRemaining} weeks to go). Write a warm Monday morning pregnancy update for her and Luke to read in their family Telegram chat.
+
+Include:
+1. The week number and weeks remaining
+2. What the baby is roughly the size of (a recognisable fruit, vegetable, or object)
+3. One or two things happening developmentally or physically this week — accurate but conversational, not clinical
+4. A short warm closing note
+
+4–6 sentences. Warm and personal, like it's from a friend who knows them — not a medical leaflet.`;
+
+  const response = await createMessage({
+    model: config.anthropic.model,
+    max_tokens: 400,
+    system: buildSystemPrompt(),
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
+  return textBlock?.text || '';
+}
+
 // ── Message intent detection ──────────────────────────────────────────────────
 
 export async function shouldRoseRespond(
