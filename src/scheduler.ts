@@ -21,6 +21,8 @@ import {
   getUpcomingBirthdays,
   hasBirthdayReminderFired,
   markBirthdayReminderFired,
+  hasNotificationFired,
+  markNotificationFired,
 } from './db';
 
 type SendMessageFn = (text: string) => Promise<void>;
@@ -128,9 +130,6 @@ export function initScheduler(sendFn: SendMessageFn): void {
   console.log('Scheduler initialised ✓');
 }
 
-// Track which event reminders we've already sent this run (persists in memory)
-const sentEventReminders = new Set<string>();
-
 async function checkEventReminders(): Promise<void> {
   const now = new Date();
 
@@ -151,15 +150,16 @@ async function checkEventReminders(): Promise<void> {
     ];
 
     for (const window of reminderWindows) {
-      const key = `${event.id}-${window.label}`;
-      if (sentEventReminders.has(key)) continue;
-
       const diff = Math.abs(hoursUntil - window.hours);
-      if (diff <= window.tolerance) {
-        sentEventReminders.add(key);
-        const message = await generateEventReminder(event, Math.round(hoursUntil));
-        await sendToGroup(message);
-      }
+      if (diff > window.tolerance) continue;
+
+      // Persisted dedupe so reminders survive redeploys/restarts.
+      const key = `event:${event.id}:${window.label}`;
+      if (await hasNotificationFired(key)) continue;
+      await markNotificationFired(key);
+
+      const message = await generateEventReminder(event, Math.round(hoursUntil));
+      await sendToGroup(message);
     }
   }
 }
@@ -175,9 +175,6 @@ async function checkPersonalReminders(): Promise<void> {
     await sendToGroup(message);
   }
 }
-
-// Track which holiday activity messages we've already sent this process run
-const sentHolidayActivities = new Set<string>();
 
 const HOLIDAY_KEYWORDS = ['school holiday', 'half term', 'easter holiday', 'christmas holiday', 'summer holiday', 'inset day'];
 
@@ -195,9 +192,11 @@ async function checkUpcomingHolidayActivities(): Promise<void> {
   for (const event of events) {
     const name = event.summary.toLowerCase();
     if (!HOLIDAY_KEYWORDS.some(k => name.includes(k))) continue;
-    if (sentHolidayActivities.has(event.id)) continue;
 
-    sentHolidayActivities.add(event.id);
+    // Persisted dedupe so the nudge isn't re-sent after a redeploy.
+    const key = `holiday:${event.id}`;
+    if (await hasNotificationFired(key)) continue;
+    await markNotificationFired(key);
 
     // Parse dates — all-day events come back as YYYY-MM-DD strings
     const startDate = event.start.includes('T')

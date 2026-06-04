@@ -8,7 +8,7 @@ export interface UserConfig {
 
 export interface ChildConfig {
   name: string;
-  age: number;
+  dob: string; // ISO date string (YYYY-MM-DD)
 }
 
 export interface FamilyConfig {
@@ -24,6 +24,16 @@ function requireEnv(key: string): string {
   return value;
 }
 
+/** Accurate current age from a date of birth (accounts for whether the birthday has passed this year). */
+export function ageFromDob(dob: string): number {
+  const birth = new Date(dob);
+  const now = new Date();
+  let age = now.getFullYear() - birth.getFullYear();
+  const monthDiff = now.getMonth() - birth.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birth.getDate())) age--;
+  return age;
+}
+
 export const config = {
   telegram: {
     botToken: requireEnv('TELEGRAM_BOT_TOKEN'),
@@ -32,6 +42,10 @@ export const config = {
   anthropic: {
     apiKey: requireEnv('ANTHROPIC_API_KEY'),
     model: 'claude-sonnet-4-20250514',
+  },
+  supabase: {
+    url: requireEnv('Supabase_url'),
+    key: requireEnv('Supabase_key'),
   },
   google: {
     credentialsJson: process.env['GOOGLE_CREDENTIALS_JSON'] || '{}',
@@ -51,15 +65,22 @@ export const config = {
     },
   },
   timezone: process.env['TIMEZONE'] || 'Europe/London',
+  // When true, Rose will use an LLM check to decide whether to chime in on
+  // messages that don't directly mention her. Off by default (costs an extra
+  // API call per group message).
+  proactiveReplies: process.env['ROSE_PROACTIVE'] === 'true',
   location: process.env['FAMILY_LOCATION'] || 'Cheltenham, Gloucestershire',
   braveSearchApiKey: process.env['BRAVE_SEARCH_API_KEY'] || null,
   openaiApiKey: process.env['OPENAI_API_KEY'] || null,
   family: {
     children: [
-      { name: 'Poppy', age: 7 },
-      { name: 'Billy', age: 5 },
+      // Set POPPY_DOB / BILLY_DOB (YYYY-MM-DD) in the environment to the real
+      // dates of birth so ages stay accurate automatically. Defaults below
+      // produce the current ages (Poppy 7, Billy 5) but are placeholders.
+      { name: 'Poppy', dob: process.env['POPPY_DOB'] || '2018-09-01' },
+      { name: 'Billy', dob: process.env['BILLY_DOB'] || '2020-09-01' },
     ],
-    babyDue: '2026-08-17',
+    babyDue: process.env['BABY_DUE_DATE'] || '2026-08-17',
   },
 };
 

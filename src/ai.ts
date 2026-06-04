@@ -1,11 +1,18 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { config } from './config';
+import { config, ageFromDob } from './config';
 import {
   getRecentConversation,
   addConversationMessage,
   getShoppingList,
+  addShoppingItem,
+  removeShoppingItem,
+  clearShoppingList,
   getTodos,
+  addTodo,
+  completeTodo,
+  addReminder,
   getBirthdays,
+  addBirthday,
   getMealPlan,
   setMeal,
   clearMeal,
@@ -26,6 +33,37 @@ import {
 import { getWeatherForecast, formatDayWeather, formatWeekWeather } from './weather';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
+
+/**
+ * Wrapper around anthropic.messages.create with exponential-backoff retry on
+ * transient errors (5xx, 429, network). Client errors (other 4xx) fail fast.
+ */
+async function createMessage(
+  params: Anthropic.MessageCreateParamsNonStreaming,
+  retries = 3,
+): Promise<Anthropic.Message> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      return await anthropic.messages.create(params);
+    } catch (err) {
+      lastErr = err;
+      const status = (err as { status?: number }).status;
+      if (status && status < 500 && status !== 429) throw err; // non-retryable
+      if (attempt < retries - 1) {
+        await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+/** Human-readable family description built from config, with live-computed ages. */
+function familyDescription(): string {
+  const kids = config.family.children.map((c) => `${c.name} (${ageFromDob(c.dob)})`).join(', ');
+  const due = new Date(config.family.babyDue).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+  return `${kids}, and a baby due ${due}`;
+}
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -128,6 +166,11 @@ const tools: Anthropic.Tool[] = [
       },
       required: ['item'],
     },
+  },
+  {
+    name: 'clear_shopping_list',
+    description: "Clear the entire shopping list (mark all items as completed). Use when the user confirms they've finished the shop, or asks to clear/empty the list.",
+    input_schema: { type: 'object' as const, properties: {}, required: [] },
   },
   {
     name: 'get_todo_list',
@@ -256,8 +299,6 @@ async function executeTool(
   toolInput: Record<string, unknown>,
   userName: string
 ): Promise<string> {
-  const db = await import('./db');
-
   try {
     switch (toolName) {
       case 'get_todays_events': {
@@ -383,53 +424,60 @@ async function executeTool(
       }
 
       case 'get_shopping_list': {
-        const items = await db.getShoppingList();
+        const items = await getShoppingList();
         if (items.length === 0) return 'Shopping list is empty.';
         return items.map((i) => `- ${i.item} (added by ${i.added_by})`).join('\n');
       }
 
       case 'add_shopping_item': {
-        await db.addShoppingItem(toolInput['item'] as string, userName);
+        await addShoppingItem(toolInput['item'] as string, userName);
         return `Added "${toolInput['item']}" to the shopping list.`;
       }
 
       case 'remove_shopping_item': {
-        const removed = await db.removeShoppingItem(toolInput['item'] as string);
+        const removed = await removeShoppingItem(toolInput['item'] as string);
         return removed
           ? `Removed "${toolInput['item']}" from the shopping list.`
           : `Couldn't find "${toolInput['item']}" on the shopping list.`;
       }
 
+      case 'clear_shopping_list': {
+        const count = await clearShoppingList();
+        return count > 0
+          ? `Cleared ${count} item(s) from the shopping list.`
+          : 'The shopping list was already empty.';
+      }
+
       case 'get_todo_list': {
-        const todos = await db.getTodos();
+        const todos = await getTodos();
         if (todos.length === 0) return 'To-do list is empty.';
         return todos.map((t) => `- ${t.task}${t.due_date ? ` (due: ${t.due_date})` : ''}`).join('\n');
       }
 
       case 'add_todo': {
-        await db.addTodo(toolInput['task'] as string, userName, toolInput['due_date'] as string | undefined);
+        await addTodo(toolInput['task'] as string, userName, toolInput['due_date'] as string | undefined);
         return `Added "${toolInput['task']}" to the to-do list.`;
       }
 
       case 'complete_todo': {
-        const done = await db.completeTodo(toolInput['task'] as string);
+        const done = await completeTodo(toolInput['task'] as string);
         return done
           ? `Marked "${toolInput['task']}" as complete.`
           : `Couldn't find "${toolInput['task']}" in the to-do list.`;
       }
 
       case 'add_reminder': {
-        await db.addReminder(
+        const remindDate = parseInTimezone(toolInput['remind_at'] as string, config.timezone);
+        await addReminder(
           toolInput['user_name'] as string,
           toolInput['message'] as string,
-          parseInTimezone(toolInput['remind_at'] as string, config.timezone)
+          remindDate
         );
-        const remindDate = parseInTimezone(toolInput['remind_at'] as string, config.timezone);
         return `Reminder set for ${toolInput['user_name']} at ${remindDate.toLocaleString('en-GB')}: "${toolInput['message']}"`;
       }
 
       case 'add_birthday': {
-        await db.addBirthday(
+        await addBirthday(
           toolInput['name'] as string,
           toolInput['date'] as string,
           (toolInput['relation'] as string) || '',
@@ -439,7 +487,7 @@ async function executeTool(
       }
 
       case 'get_birthdays': {
-        const birthdays = await db.getBirthdays();
+        const birthdays = await getBirthdays();
         if (birthdays.length === 0) return 'No birthdays stored.';
         return birthdays.map((b) => `- ${b.name}: ${b.date}${b.relation ? ` (${b.relation})` : ''}`).join('\n');
       }
@@ -450,7 +498,12 @@ async function executeTool(
           toolInput['end_date'] as string
         );
         if (meals.length === 0) return 'No meals planned for that period.';
-        return meals.map((m) => `${m.date} ${m.meal_type}: ${m.meal}`).join('\n');
+        return meals.map((m) => {
+          const label = new Date(`${m.date}T12:00:00`).toLocaleDateString('en-GB', {
+            weekday: 'short', day: 'numeric', month: 'short', timeZone: config.timezone,
+          });
+          return `${label} — ${m.meal_type}: ${m.meal}`;
+        }).join('\n');
       }
 
       case 'set_meal': {
@@ -566,7 +619,7 @@ Current date and time: ${dateStr} at ${timeStr} (${config.timezone})
 
 FAMILY:
 - Luke and Toni are the parents
-- Kids: ${children.map(c => `${c.name} (${c.age})`).join(', ')}
+- Kids: ${children.map(c => `${c.name} (${ageFromDob(c.dob)})`).join(', ')}
 - Based in ${config.location}
 - Baby due ${babyDueStr} — ${babyCountdown}
 - They have a dog — whenever Luke is away from home (day travel or overnight), dog walker coverage needs to be in place
@@ -761,10 +814,13 @@ export async function generateResponse(
     });
   }
 
-  let response = await anthropic.messages.create({
+  // Build the system prompt once — it's identical across every loop iteration.
+  const systemPrompt = buildSystemPrompt();
+
+  let response = await createMessage({
     model: config.anthropic.model,
-    max_tokens: 8192,
-    system: buildSystemPrompt(),
+    max_tokens: 4096,
+    system: systemPrompt,
     tools,
     messages,
   });
@@ -800,10 +856,10 @@ export async function generateResponse(
     messages.push({ role: 'assistant', content: response.content });
     messages.push({ role: 'user', content: toolResults });
 
-    response = await anthropic.messages.create({
+    response = await createMessage({
       model: config.anthropic.model,
-      max_tokens: 8192,
-      system: buildSystemPrompt(),
+      max_tokens: 4096,
+      system: systemPrompt,
       tools,
       messages,
     });
@@ -840,9 +896,23 @@ export async function generateDailySummary(): Promise<string> {
     ? '\n⚠️ Calendar unavailable — Rose could not connect to Google Calendar this morning.'
     : '';
 
-  const today = new Date();
-  const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat
+  // Use the timezone-aware "now" for day-of-week (a fresh new Date() would be
+  // UTC on the server and could report the wrong day between midnight and 1am BST).
+  const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat
   const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+
+  // Detect school holidays from the calendar so we don't nag about school run /
+  // PE kit during a break. Only the calendar is authoritative — never guess.
+  const tomorrowDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const tomorrowStr = `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getDate()).padStart(2, '0')}`;
+  const HOLIDAY_KEYWORDS = ['school holiday', 'half term', 'easter holiday', 'christmas holiday', 'summer holiday', 'inset day'];
+  const holidayRanges = [...todayEvents, ...upcomingEvents]
+    .filter(e => HOLIDAY_KEYWORDS.some(k => e.summary.toLowerCase().includes(k)))
+    .map(e => ({ start: e.start.slice(0, 10), end: e.end.slice(0, 10) }));
+  const inHoliday = (dateStr: string) =>
+    holidayRanges.some(r => (dateStr >= r.start && dateStr < r.end) || dateStr === r.start);
+  const todayIsHoliday = inHoliday(todayStr);
+  const tomorrowIsHoliday = inHoliday(tomorrowStr);
 
   const schoolRunSchedule: Record<number, string> = {
     1: 'Luke does drop-off and after-school club pick-up',
@@ -851,7 +921,7 @@ export async function generateDailySummary(): Promise<string> {
     4: 'Luke does drop-off, Toni picks up',
     5: 'Toni does both',
   };
-  const todaySchoolRun = isWeekday ? schoolRunSchedule[dayOfWeek] : null;
+  const todaySchoolRun = (isWeekday && !todayIsHoliday) ? schoolRunSchedule[dayOfWeek] : null;
 
   // PE schedule: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
   const peSchedule: Record<number, string[]> = {
@@ -860,8 +930,8 @@ export async function generateDailySummary(): Promise<string> {
     5: ['Poppy', 'Billy'],  // Friday
   };
   const tomorrowDow = (dayOfWeek + 1) % 7;
-  const todayPE = peSchedule[dayOfWeek] ?? [];
-  const tomorrowPE = peSchedule[tomorrowDow] ?? [];
+  const todayPE = todayIsHoliday ? [] : (peSchedule[dayOfWeek] ?? []);
+  const tomorrowPE = tomorrowIsHoliday ? [] : (peSchedule[tomorrowDow] ?? []);
   const peAlerts: string[] = [];
   if (todayPE.length > 0) {
     peAlerts.push(`${todayPE.join(' and ')} ${todayPE.length === 1 ? 'has' : 'have'} PE today — make sure kit is on them!`);
@@ -881,7 +951,7 @@ export async function generateDailySummary(): Promise<string> {
 
   const prompt = `Generate a punchy good morning message for Luke and Toni. Use short bulleted lines with emojis. Group items under bold topic headers where relevant (e.g. **🎒 Kids**, **📅 Today**, **👀 Coming up**, **🌤 Weather**, **🍽 Food**). Keep the tone warm with light wit — like a witty friend who also happens to be extremely organised.
 
-Family: Poppy (7), Billy (5), and a baby due 17th August.
+Family: ${familyDescription()}.
 
 Today's events:
 ${formatEventsForAI(todayEvents)}
@@ -906,7 +976,7 @@ Rules:
 - Vary the tone and emojis day to day so it doesn't feel like a template
 ${calendarWarning}`;
 
-  const response = await anthropic.messages.create({
+  const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 512,
     system: buildSystemPrompt(),
@@ -933,7 +1003,7 @@ export async function generateWeeklySummary(): Promise<string> {
 
 IMPORTANT: The day names in the event list and date range above are pre-computed and correct. Use them exactly as given.
 
-Family: Poppy (7), Billy (5), and a baby due 17th August.
+Family: ${familyDescription()}.
 
 This week's events:
 ${formatEventsForAI(weekEvents)}
@@ -949,7 +1019,7 @@ SCHOOL RUN CHECK: Cross-reference the week's events against the regular school r
 
 If there are any travel events or work commitments for Luke on Monday or Thursday, flag the specific school run that needs cover and suggest asking Grandma. If Monday and Thursday are clear, give a quick reassuring note that the school runs are sorted for the week.`;
 
-  const response = await anthropic.messages.create({
+  const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 600,
     system: buildSystemPrompt(),
@@ -1008,7 +1078,7 @@ ${schoolRunNote ? `School run context: ${schoolRunNote}` : ''}
 
 Write it conversationally — not just "Reminder: X". Reference school run context only if it's a weekday school-time event. Keep it brief and natural. No invented travel tips or traffic commentary.`;
 
-  const response = await anthropic.messages.create({
+  const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 256,
     system: buildSystemPrompt(),
@@ -1075,7 +1145,7 @@ RULES:
 - Weave in weather naturally
 - Short and punchy — WhatsApp energy, not a newsletter`;
 
-  const response = await anthropic.messages.create({
+  const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 400,
     system: buildSystemPrompt(),
@@ -1158,7 +1228,7 @@ RULES FOR THIS MESSAGE:
 - ONLY mention events that appear in the search results with clear specifics. Do NOT suggest generic days out or permanent attractions. If nothing specific is found, skip the local events section.
 - Keep it brief and warm.`;
 
-  const response = await anthropic.messages.create({
+  const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 450,
     system: buildSystemPrompt(),
@@ -1172,7 +1242,7 @@ RULES FOR THIS MESSAGE:
 export async function generateBirthdayReminder(name: string, relation: string | null, daysUntil: number): Promise<string> {
   const prompt = `Generate a friendly reminder for Luke and Toni that ${name}${relation ? ` (${relation})` : ''}'s birthday is in ${daysUntil} days. Keep it warm and natural, maybe suggest thinking about a gift or plans if it's coming up soon.`;
 
-  const response = await anthropic.messages.create({
+  const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 200,
     system: buildSystemPrompt(),
@@ -1226,7 +1296,7 @@ ${weatherSection ? `${weatherSection}\n\nUse the forecast to help tailor suggest
 
 Write a friendly, practical message suggesting 3–5 specific activities or places they could visit during the holidays. Be specific — use actual names and venues from the results where possible. Write like a PA sharing useful finds, not a robot making a list. Keep it warm and concise. Don't invent places or events not in the results.`;
 
-  const response = await anthropic.messages.create({
+  const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 600,
     system: buildSystemPrompt(),
@@ -1289,7 +1359,7 @@ RULES:
 - Aim for 2–4 specific things. Sound like a PA who's actually done the research, not a search engine summary.
 - Keep it short and warm.`;
 
-  const response = await anthropic.messages.create({
+  const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 500,
     system: buildSystemPrompt(),
@@ -1308,7 +1378,7 @@ export async function shouldRoseRespond(
 ): Promise<boolean> {
   if (isDirectlyMentioned) return true;
 
-  const response = await anthropic.messages.create({
+  const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 10,
     messages: [

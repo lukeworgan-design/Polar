@@ -223,13 +223,28 @@ export async function deleteEvent(eventId: string): Promise<void> {
 }
 
 export async function findEventsByKeyword(keyword: string, daysAhead: number = 365): Promise<CalendarEvent[]> {
+  const cal = await getCalendarClient();
+  const cid = await getFamilyCalendarId();
   const now = new Date();
   const future = new Date();
   future.setDate(now.getDate() + daysAhead);
 
-  const events = await getEventsForPeriod(now, future);
+  // Use the API's server-side text search (q) to avoid pulling a full year of events.
+  const res = await cal.events.list({
+    calendarId: cid,
+    q: keyword,
+    timeMin: now.toISOString(),
+    timeMax: future.toISOString(),
+    singleEvents: true,
+    orderBy: 'startTime',
+    maxResults: 25,
+  });
+
+  // q matches description/location too, so still filter to summary matches for precision.
   const lower = keyword.toLowerCase();
-  return events.filter((e) => e.summary.toLowerCase().includes(lower));
+  return (res.data.items || [])
+    .map(eventToCalendarEvent)
+    .filter((e) => e.summary.toLowerCase().includes(lower));
 }
 
 export async function checkConflicts(start: Date, end: Date, excludeEventId?: string): Promise<CalendarEvent[]> {

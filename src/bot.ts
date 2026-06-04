@@ -2,7 +2,7 @@ import { createServer } from 'http';
 import { Telegraf, Context } from 'telegraf';
 import { Message } from 'telegraf/typings/core/types/typegram';
 import { config, getUserName } from './config';
-import { generateResponse, ImageData } from './ai';
+import { generateResponse, shouldRoseRespond, ImageData } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
 
@@ -81,6 +81,20 @@ async function handleGroupMessage(ctx: Context): Promise<void> {
 
   const mentioned = isDirectlyMentioned(text, botUsername);
   const userName = getUserName(userId);
+
+  // When Rose isn't directly addressed, only chime in if proactive replies are
+  // enabled AND the message looks like something she can actually help with —
+  // otherwise she'd reply to every bit of back-and-forth between Luke and Toni.
+  if (!mentioned) {
+    if (!config.proactiveReplies) return;
+    try {
+      const relevant = await shouldRoseRespond(text, false);
+      if (!relevant) return;
+    } catch (err) {
+      console.error('shouldRoseRespond failed:', err);
+      return;
+    }
+  }
 
   updateRateLimit(userId);
 
@@ -416,6 +430,17 @@ async function main(): Promise<void> {
 
   const botInfo = await bot.telegram.getMe();
   console.log(`Running as @${botInfo.username}, listening to group: ${GROUP_ID}`);
+
+  // Optional "I'm back" ping after a (re)deploy — set ROSE_STARTUP_PING=true to
+  // enable. Handy in production to know instantly when Rose recovers; leave off
+  // during active development to avoid spamming the chat on every redeploy.
+  if (process.env['ROSE_STARTUP_PING'] === 'true') {
+    try {
+      await sendToGroup('🌹 Rose is back online');
+    } catch (err) {
+      console.error('Startup ping failed:', err);
+    }
+  }
 
   process.once('SIGINT', () => { console.log('Shutting down...'); bot.stop('SIGINT'); });
   process.once('SIGTERM', () => { console.log('Shutting down...'); bot.stop('SIGTERM'); });
