@@ -15,6 +15,7 @@ import {
   generateHolidayActivities,
   generateWeekendEvents,
   generatePregnancyUpdate,
+  generateBabyChecklistReminder,
 } from './ai';
 import {
   getPendingReminders,
@@ -144,6 +145,16 @@ export function initScheduler(sendFn: SendMessageFn): void {
       if (message) await sendToGroup(message);
     } catch (err) {
       console.error('Error sending pregnancy update:', err);
+    }
+  }, { timezone: config.timezone });
+
+  // Baby checklist reminder — every other day at 10am
+  cron.schedule('0 10 */2 * *', async () => {
+    try {
+      const message = await generateBabyChecklistReminder();
+      if (message) await sendToGroup(message);
+    } catch (err) {
+      console.error('Error sending baby checklist reminder:', err);
     }
   }, { timezone: config.timezone });
 

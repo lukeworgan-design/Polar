@@ -17,6 +17,9 @@ import {
   setMeal,
   clearMeal,
   MealType,
+  getBabyChecklist,
+  addBabyChecklistItem,
+  completeBabyChecklistItem,
 } from './db';
 import {
   getEventsForPeriod,
@@ -171,6 +174,34 @@ const tools: Anthropic.Tool[] = [
     name: 'clear_shopping_list',
     description: "Clear the entire shopping list (mark all items as completed). Use when the user confirms they've finished the shop, or asks to clear/empty the list.",
     input_schema: { type: 'object' as const, properties: {}, required: [] },
+  },
+  {
+    name: 'get_baby_checklist',
+    description: "Get the baby prep checklist — items still needed before the baby arrives (bouncer, monitor, etc.)",
+    input_schema: { type: 'object' as const, properties: {}, required: [] },
+  },
+  {
+    name: 'add_baby_checklist_item',
+    description: "Add an item to the baby prep checklist",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        item: { type: 'string', description: 'The item to add (e.g. "baby monitor", "bouncer")' },
+        category: { type: 'string', description: 'Optional category (e.g. "sleeping", "feeding", "transport")' },
+      },
+      required: ['item'],
+    },
+  },
+  {
+    name: 'complete_baby_checklist_item',
+    description: "Mark a baby checklist item as done/acquired",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        item: { type: 'string', description: 'The item to mark as done' },
+      },
+      required: ['item'],
+    },
   },
   {
     name: 'get_todo_list',
@@ -446,6 +477,31 @@ async function executeTool(
         return count > 0
           ? `Cleared ${count} item(s) from the shopping list.`
           : 'The shopping list was already empty.';
+      }
+
+      case 'get_baby_checklist': {
+        const items = await getBabyChecklist();
+        if (items.length === 0) return 'Baby checklist is empty — everything has been ticked off!';
+        const grouped: Record<string, string[]> = {};
+        for (const item of items) {
+          const cat = item.category || 'Other';
+          (grouped[cat] ??= []).push(item.item);
+        }
+        return Object.entries(grouped)
+          .map(([cat, its]) => `${cat}:\n${its.map(i => `  - ${i}`).join('\n')}`)
+          .join('\n\n');
+      }
+
+      case 'add_baby_checklist_item': {
+        await addBabyChecklistItem(toolInput['item'] as string, userName, toolInput['category'] as string | undefined);
+        return `Added "${toolInput['item']}" to the baby checklist.`;
+      }
+
+      case 'complete_baby_checklist_item': {
+        const done = await completeBabyChecklistItem(toolInput['item'] as string);
+        return done
+          ? `Ticked off "${toolInput['item']}" from the baby checklist. ✓`
+          : `Couldn't find "${toolInput['item']}" on the baby checklist.`;
       }
 
       case 'get_todo_list': {
@@ -1362,6 +1418,39 @@ RULES:
   const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 500,
+    system: buildSystemPrompt(),
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
+  return textBlock?.text || '';
+}
+
+export async function generateBabyChecklistReminder(): Promise<string> {
+  const dueDate = new Date(config.family.babyDue);
+  const now = getLocalNow(config.timezone);
+
+  if (now >= dueDate) return ''; // baby has arrived
+
+  const items = await getBabyChecklist();
+  if (items.length === 0) return ''; // all done!
+
+  const msUntilDue = dueDate.getTime() - now.getTime();
+  const weeksRemaining = Math.floor(msUntilDue / (1000 * 60 * 60 * 24 * 7));
+
+  const itemList = items
+    .map((i) => `- ${i.item}${i.category ? ` (${i.category})` : ''}`)
+    .join('\n');
+
+  const prompt = `${weeksRemaining} weeks until the baby is due. ${items.length} item${items.length === 1 ? '' : 's'} still outstanding on the baby prep checklist:
+
+${itemList}
+
+Write a short, warm nudge for Luke and Toni's family Telegram chat. Highlight 2–3 of the most important outstanding items (sleeping and safety gear first if present). Gently encourage them to tick a couple off — light and supportive, not nagging. 3–4 sentences max.`;
+
+  const response = await createMessage({
+    model: config.anthropic.model,
+    max_tokens: 300,
     system: buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });

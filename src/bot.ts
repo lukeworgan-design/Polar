@@ -283,6 +283,31 @@ bot.command('weekend', async (ctx) => {
   }
 });
 
+// Handle /baby command — show the baby prep checklist
+bot.command('baby', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  try {
+    await ctx.sendChatAction('typing');
+  } catch {
+    // ignore
+  }
+  const { getBabyChecklist } = await import('./db');
+  const items = await getBabyChecklist();
+  if (items.length === 0) {
+    await ctx.reply("🎉 Baby checklist is all clear — everything's been ticked off!");
+    return;
+  }
+  const grouped: Record<string, string[]> = {};
+  for (const item of items) {
+    const cat = item.category || 'Other';
+    (grouped[cat] ??= []).push(item.item);
+  }
+  const lines = Object.entries(grouped)
+    .map(([cat, its]) => `*${cat}*\n${its.map(i => `• ${i}`).join('\n')}`)
+    .join('\n\n');
+  await ctx.reply(`🍼 *Baby prep checklist* (${items.length} item${items.length === 1 ? '' : 's'} to go)\n\n${lines}`, { parse_mode: 'Markdown' });
+});
+
 // Handle /pregnancy command — manual trigger for the Monday pregnancy update
 bot.command('pregnancy', async (ctx) => {
   if (!isFromGroup(ctx)) return;
@@ -347,6 +372,7 @@ bot.command('help', async (ctx) => {
 
 🗓 */weekend* — What's actually on locally this weekend (searches for real events)
 🏫 */friday* — Friday school's-out check-in with local events and weather
+🍼 */baby* — Baby prep checklist
 🤰 */pregnancy* — This week's pregnancy update
 🗑️ */bin* — Which bin goes out tomorrow
 

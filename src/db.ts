@@ -252,4 +252,42 @@ export async function clearConversationContext(): Promise<void> {
   if (error) throw new Error(`DB clearConversationContext failed: ${error.message}`);
 }
 
+// ── Baby Checklist ─────────────────────────────────────────────────────────────
+
+export interface BabyChecklistItem {
+  id: number;
+  item: string;
+  category: string | null;
+}
+
+export async function addBabyChecklistItem(item: string, addedBy: string, category?: string): Promise<void> {
+  const { error } = await db.from('baby_checklist').insert({ item, added_by: addedBy, category: category ?? null });
+  if (error) throw new Error(`DB addBabyChecklistItem failed: ${error.message}`);
+}
+
+export async function getBabyChecklist(): Promise<BabyChecklistItem[]> {
+  const { data, error } = await db
+    .from('baby_checklist')
+    .select('id, item, category')
+    .eq('completed', false)
+    .order('added_at', { ascending: true });
+  if (error) throw new Error(`DB getBabyChecklist failed: ${error.message}`);
+  return (data ?? []) as BabyChecklistItem[];
+}
+
+export async function completeBabyChecklistItem(item: string): Promise<boolean> {
+  const { data, error } = await db
+    .from('baby_checklist')
+    .select('id')
+    .eq('completed', false)
+    .ilike('item', `%${item}%`);
+  if (error) throw new Error(`DB completeBabyChecklistItem failed: ${error.message}`);
+  if (!data || data.length === 0) return false;
+  const { error: updError } = await db.from('baby_checklist')
+    .update({ completed: true, completed_at: new Date().toISOString() })
+    .in('id', data.map((r) => r.id));
+  if (updError) throw new Error(`DB completeBabyChecklistItem update failed: ${updError.message}`);
+  return true;
+}
+
 export default db;
