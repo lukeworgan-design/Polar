@@ -41,7 +41,7 @@ export const config = {
   },
   anthropic: {
     apiKey: requireEnv('ANTHROPIC_API_KEY'),
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-5',
   },
   supabase: {
     url: requireEnv('Supabase_url'),
