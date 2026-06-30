@@ -1161,7 +1161,8 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
                 if splits.data:
                     parts.append(f"\n=== KM SPLITS: {latest['date'][:10]} ({(latest.get('distance_meters') or 0)/1000:.1f}km) ===")
                     for s in splits.data:
-                        parts.append(f"  KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cadence {s.get('cadence_avg','?')}spm")
+                        asc_str = f" | Ascent {s['ascent_m']:.0f}m" if s.get('ascent_m') else ""
+                        parts.append(f"  KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cadence {s.get('cadence_avg','?')}spm{asc_str}")
 
         now             = datetime.now(timezone.utc)
         week_start      = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
