@@ -452,6 +452,12 @@ def _build_splits_from_laps(fitfile, exercise_id: str, session_date: str, expect
             "descent_m": sf(data.get("total_descent")),
         })
         lap_num += 1
+    # If avg lap distance << 1km these are terrain-based (Flat/Uphill/Downhill) auto-laps,
+    # not km splits — signal to fall back to record aggregation
+    if split_rows:
+        avg_dist = sum(s.get("distance_m") or 0 for s in split_rows) / len(split_rows)
+        if avg_dist < 500:
+            return []
     return split_rows
 
 
@@ -544,9 +550,9 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
         # Try lap messages first
         split_rows = _build_splits_from_laps(fitfile, exercise_id, session_date, expected_laps)
 
-        # Fall back to per-second records if laps are missing or sparse
-        if expected_laps and len(split_rows) < max(5, expected_laps // 2):
-            log.info(f"FIT {exercise_id}: only {len(split_rows)} lap msgs for {expected_laps}km — falling back to record aggregation")
+        # Fall back to per-second records if laps are missing, sparse, or terrain-based
+        if not split_rows or (expected_laps and len(split_rows) < max(5, expected_laps // 2)):
+            log.info(f"FIT {exercise_id}: {len(split_rows)} lap rows for {expected_laps}km — falling back to record aggregation")
             record_splits = _build_splits_from_records(fitfile, exercise_id, session_date)
             if len(record_splits) > len(split_rows):
                 return record_splits
