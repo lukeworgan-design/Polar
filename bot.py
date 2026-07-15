@@ -1,6 +1,6 @@
 """
 bot.py - Polar Ultra Running Coach Telegram Bot v8.3
-Athlete: Luke Worgan | Goal: Cotswold Way Ultra 100km 13 Jun 2026
+Athlete: Luke Worgan | Cotswold Way Ultra 100km 13 Jun 2026 ✅ COMPLETED
 Watch: Polar Grit X2 | Deployed: Railway.app
 """
 
@@ -45,7 +45,9 @@ RESTING_HR_BASELINE = 47
 AEROBIC_THRESHOLD   = 149
 ANAEROBIC_THRESHOLD = 178
 MAX_HR              = 198
-MARATHON_DATE       = datetime(2026, 6, 13).date()  # Cotswold Way Ultra
+MARATHON_DATE       = datetime(2026, 6, 13).date()  # Cotswold Way Ultra ✅ COMPLETED
+NEXT_RACE_NAME      = None   # set when next A-race is confirmed
+NEXT_RACE_DATE      = None   # set when next A-race is confirmed
 
 debriefed_today:    set = set()
 alerts_fired_today: set = set()
@@ -96,8 +98,17 @@ def si(v):
     try: return int(float(v)) if v not in (None, "", "N/A") else None
     except: return None
 
+def days_to_race() -> str:
+    if NEXT_RACE_DATE:
+        d = (NEXT_RACE_DATE - datetime.now().date()).days
+        return f"{d}d to {NEXT_RACE_NAME or 'next race'}"
+    days_since = (datetime.now().date() - MARATHON_DATE).days
+    return f"Cotswold Way COMPLETED ({days_since}d ago) — no A-race set"
+
 def days_to_marathon() -> int:
-    return (MARATHON_DATE - datetime.now().date()).days
+    if NEXT_RACE_DATE:
+        return (NEXT_RACE_DATE - datetime.now().date()).days
+    return 0
 
 def recharge_emoji(status: str) -> str:
     if not status: return "⚪"
@@ -319,7 +330,7 @@ def check_and_push_alerts():
                 recent = supabase.table("polar_exercises").select("date").gte("date", five_days_ago).limit(1).execute()
                 if not recent.data:
                     alerts_fired_today.add("detraining_alert")
-                    alerts.append(f"⬇️ *DETRAINING RISK*\nNo runs in 5+ days. Load ratio: {float(ratio):.2f}\n{days_to_marathon()} days to Cotswold Way — even 20 mins easy maintains fitness.")
+                    alerts.append(f"⬇️ *DETRAINING RISK*\nNo runs in 5+ days. Load ratio: {float(ratio):.2f}\nEven 20 mins easy maintains fitness.")
     except Exception as e:
         log.error(f"Alert check cardio load: {e}")
 
@@ -371,7 +382,7 @@ def check_and_push_alerts():
     if dtm in milestones and milestone_key not in alerts_fired_today:
         alerts_fired_today.add(milestone_key)
         if dtm == 1:
-            msg = "🎯 *TOMORROW IS RACE DAY*\nCotswold Way 100km tomorrow. Easy 10 min shakeout max.\nKit ready. Poles packed. Fuel sorted. Sleep early. Trust the training."
+            msg = "🎯 *TOMORROW IS RACE DAY*\nEasy 10 min shakeout max.\nKit ready. Fuel sorted. Sleep early. Trust the training."
         elif dtm <= 7:
             msg = f"🎯 *{dtm} DAYS TO COTSWOLD WAY*\nFinal taper. Short and easy only. Legs should feel fresh — that's the goal."
         elif dtm <= 14:
@@ -418,7 +429,7 @@ def format_status_dashboard() -> str:
         f"{cl_emoji} 🔥 Load ratio {ratio} · {status_str} · {cl_score}/10 _(30%)_",
         f"{hr_emoji} ❤️ Resting HR {avg_rhr}bpm · {hr_score}/10 _(20%)_",
         f"{hrv_emoji} 📉 HRV {hrv_this} vs {hrv_last}wk · {hrv_score}/10 _(20%)_",
-        "", f"🎯 *Cotswold Way: {dtm}d away*",
+        "", f"🎯 *{days_to_race()}*",
         f"💡 _{session}_",
     ]
     return "\n".join(lines)
@@ -1234,18 +1245,17 @@ ATHLETE PROFILE:
 - VO2max: 55 | Max HR: 198bpm | Resting HR: 47bpm
 - Aerobic threshold: 149bpm | Anaerobic threshold: 178bpm | FTP: 272W
 - Watch: Polar Grit X2
-- Recent: London Marathon 27 Apr 2026 completed — now in ultra build
+- Recent: London Marathon 27 Apr 2026 completed ✅
+- Recent: Cotswold Way Ultra 100km 13 June 2026 completed ✅ — now in post-ultra recovery/base phase
 
-PRIMARY GOAL: Cotswold Way Ultra 100km | 13 June 2026 | ~2250m elevation gain
-TERRAIN: Rolling trail, non-technical but continuously undulating
-RACE STRATEGY: Completion focus — no time target. Start conservative, walk ALL hills early, fuel every 20–30 mins from the gun, treat aid stations as checkpoints not rest stops.
+CURRENT STATUS: Post-Cotswold Way recovery — no A-race target set yet.
+FOCUS: Rebuild aerobic base, enjoy running, no pressure. When Luke names a next race, update NEXT_RACE_DATE and NEXT_RACE_NAME in config.
 
-TRAINING PLAN (6-week block):
-PHASE 1 (weeks 1–2): Recovery & reactivation — easy aerobic only, zero fatigue accumulation
-PHASE 2 (weeks 3–5): Controlled build — extend long run (10→22km), introduce hill steady runs, maintain low load
-PHASE 3 (week 6): Taper — cut volume 40–60%, keep frequency, arrive fresh
-
-WEEKLY STRUCTURE: Tue easy 5–8km · Thu hill steady 8–10km · Sat long trail run · Sun optional walk 60–90min
+TRAINING APPROACH (post-ultra):
+- No structured plan until next race is confirmed
+- Keep runs easy and enjoyable — aerobic base maintenance
+- Introduce intensity only when fully recovered and motivated
+- Weekly structure flexible — run when body says yes
 
 KEY SESSIONS:
 - Long run (Sat): conversational pace, HR low aerobic, hills included, practice fueling every 20–30 min
@@ -1303,7 +1313,7 @@ def extract_and_save_note(reply: str, user_text: str):
 
 def format_full_summary() -> str:
     lines = [f"📊 *Full Summary — {datetime.now(timezone.utc).strftime('%-d %b %Y')}*",
-             f"🎯 *Cotswold Way 100km: {days_to_marathon()}d away*\n"]
+             f"🎯 *{days_to_race()}*\n"]
 
     # ── Training ──
     try:
@@ -1497,7 +1507,7 @@ def send_morning_briefing():
         response = claude.messages.create(
             model="claude-sonnet-4-6", max_tokens=600,
             system=build_system_prompt(),
-            messages=[{"role": "user", "content": f"""{briefing_type}. Today is {today_dow} {today_date_str}. Cotswold Way Ultra 100km is {days_to_marathon()} days away.{run_context}{sw_context}{load_context} Readiness score: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
+            messages=[{"role": "user", "content": f"""{briefing_type}. Today is {today_dow} {today_date_str}. {days_to_race()}.{run_context}{sw_context}{load_context} Readiness score: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
 
 Structure your reply with clear emoji-led sections so it's easy to scan on mobile:
 
@@ -1547,7 +1557,7 @@ def send_post_run_debrief(exercise_id: str):
         prompt = f"""Elite running coach. Luke just finished a run. 3 short paragraphs (max 280 tokens).
 
 ATHLETE: Luke Worgan, 37yo, 167cm, 78kg, VO2max 55, max HR 198, aerobic threshold 149bpm, anaerobic threshold 178bpm
-COTSWOLD WAY ULTRA: {days_to_marathon()} days away — 100km completion focus
+STATUS: {days_to_race()}
 GOALS:\n{goals_text}
 
 TODAY'S RUN:
@@ -1614,7 +1624,7 @@ def send_evening_debrief():
             checkin_context = f"\nLast check-in ({last_checkin['date']}): fatigue {last_checkin.get('fatigue_score','?')}/10, mood {last_checkin.get('mood_score','?')}/10" if last_checkin else ""
             prompt = f"""Elite running coach. Evening data summary — short and scannable. Use emojis to lead each section so it's easy to read on mobile.
 
-ATHLETE: Luke Worgan | COTSWOLD WAY ULTRA: {days_to_marathon()} days away — 100km completion focus
+ATHLETE: Luke Worgan | {days_to_race()}
 GOALS:\n{goals_text}
 
 TODAY: Steps {steps} | Active {active_min}min
@@ -1633,7 +1643,7 @@ End with: NOTE: evening debrief | <10-word summary>"""
         else:
             prompt = f"""Elite running coach. Evening — data still syncing. Keep it short and emoji-led.
 
-WEEK: {round(weekly_km,1)}km | {len(week_runs)} runs | COTSWOLD WAY: {days_to_marathon()} days
+WEEK: {round(weekly_km,1)}km | {len(week_runs)} runs | {days_to_race()}
 {cl_text}\n{sw_text}
 
 📊 DATA STATUS — note data is still syncing, share what's available
