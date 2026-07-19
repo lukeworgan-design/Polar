@@ -648,8 +648,74 @@ def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> 
     return split_rows
 
 
+def _elevation_from_gps(fitfile) -> dict:
+    """
+    Returns {km_idx: (ascent_m, descent_m)} using Open-Meteo DEM elevation
+    looked up from GPS coordinates in the FIT file. Much more accurate than
+    barometric altitude which drifts over time.
+    Falls back to empty dict if GPS unavailable or API unreachable.
+    """
+    SEMICIRCLES = 2 ** 31
+    SAMPLE_EVERY_M = 50  # one GPS point per 50m of distance
+
+    points = []
+    last_dist = -SAMPLE_EVERY_M
+    for record in fitfile.get_messages("record"):
+        data   = {d.name: d.value for d in record}
+        dist_m = sf(data.get("distance"))
+        lat    = data.get("position_lat")
+        lon    = data.get("position_long")
+        if dist_m is None or lat is None or lon is None:
+            continue
+        if dist_m - last_dist >= SAMPLE_EVERY_M:
+            points.append((dist_m, lat * 180 / SEMICIRCLES, lon * 180 / SEMICIRCLES))
+            last_dist = dist_m
+
+    if len(points) < 2:
+        return {}
+
+    # Query Open-Meteo elevation API in batches of 100
+    elevs = []
+    for i in range(0, len(points), 100):
+        batch = points[i:i + 100]
+        try:
+            r = requests.get(
+                "https://api.open-meteo.com/v1/elevation",
+                params={"latitude":  ",".join(f"{p[1]:.6f}" for p in batch),
+                        "longitude": ",".join(f"{p[2]:.6f}" for p in batch)},
+                timeout=15,
+            )
+            if r.ok:
+                elevs.extend(r.json().get("elevation", [None] * len(batch)))
+            else:
+                log.warning(f"Open-Meteo elevation API error: {r.status_code}")
+                return {}
+        except Exception as e:
+            log.warning(f"Open-Meteo elevation request failed: {e}")
+            return {}
+
+    # Compute per-km ascent/descent from DEM elevations
+    buckets  = {}
+    prev_elev = None
+    for (dist_m, _, __), elev in zip(points, elevs):
+        if elev is None:
+            continue
+        km_idx = int(dist_m / 1000)
+        if km_idx not in buckets:
+            buckets[km_idx] = [0.0, 0.0]
+        if prev_elev is not None:
+            diff = elev - prev_elev
+            if diff > 0:   buckets[km_idx][0] += diff
+            elif diff < 0: buckets[km_idx][1] += abs(diff)
+        prev_elev = elev
+
+    result = {k: (round(v[0], 1) or None, round(v[1], 1) or None) for k, v in buckets.items()}
+    log.info(f"Open-Meteo GPS elevation: {len(points)} points, {len(result)} km buckets")
+    return result
+
+
 def _ascent_by_km_from_records(fitfile) -> dict:
-    """Returns {km_idx: (ascent_m, descent_m)} computed from record altitude data."""
+    """Barometer fallback — used only when GPS coordinates are absent in FIT."""
     buckets  = {}
     prev_alt = None
     for record in fitfile.get_messages("record"):
@@ -684,8 +750,8 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
             if len(record_splits) > len(split_rows):
                 return record_splits
 
-        # Always enrich with altitude from record messages (lap messages have no elevation)
-        ascent_map = _ascent_by_km_from_records(fitfile)
+        # Enrich splits with elevation — GPS+DEM preferred, barometer fallback
+        ascent_map = _elevation_from_gps(fitfile) or _ascent_by_km_from_records(fitfile)
         for s in split_rows:
             km_idx = s["lap_number"]
             if km_idx in ascent_map:
