@@ -715,23 +715,41 @@ def _elevation_from_gps(fitfile) -> dict:
 
 
 def _ascent_by_km_from_records(fitfile) -> dict:
-    """Barometer fallback — used only when GPS coordinates are absent in FIT."""
-    buckets  = {}
-    prev_alt = None
+    """Barometer fallback — smoothed rolling average + threshold to suppress drift."""
+    SMOOTH_N  = 5    # rolling window over 5 records (~5 seconds)
+    THRESHOLD = 0.5  # ignore sub-0.5m changes (barometer noise floor)
+    buckets   = {}
+    window    = []
+    prev_smoothed = None
     for record in fitfile.get_messages("record"):
-        data     = {d.name: d.value for d in record}
-        dist_m   = sf(data.get("distance"))
+        data   = {d.name: d.value for d in record}
+        dist_m = sf(data.get("distance"))
         if dist_m is None: continue
-        km_idx   = int(dist_m / 1000)
-        raw_alt  = data.get("enhanced_altitude") if data.get("enhanced_altitude") is not None else data.get("altitude")
-        alt      = sf(raw_alt)
+        raw_alt = data.get("enhanced_altitude") if data.get("enhanced_altitude") is not None else data.get("altitude")
+        alt     = sf(raw_alt)
+        if alt is None: continue
+        km_idx  = int(dist_m / 1000)
         if km_idx not in buckets: buckets[km_idx] = [0.0, 0.0]
-        if alt is not None and prev_alt is not None:
-            diff = alt - prev_alt
-            if diff > 0:   buckets[km_idx][0] += diff
-            elif diff < 0: buckets[km_idx][1] += abs(diff)
-        prev_alt = alt
+        window.append(alt)
+        if len(window) > SMOOTH_N: window.pop(0)
+        smoothed = sum(window) / len(window)
+        if prev_smoothed is not None:
+            diff = smoothed - prev_smoothed
+            if diff > THRESHOLD:    buckets[km_idx][0] += diff
+            elif diff < -THRESHOLD: buckets[km_idx][1] += abs(diff)
+        prev_smoothed = smoothed
     return {k: (round(v[0], 1) or None, round(v[1], 1) or None) for k, v in buckets.items()}
+
+
+def _read_fit_session_elevation(fitfile) -> tuple:
+    """Read total_ascent / total_descent from the FIT session summary message."""
+    for msg in fitfile.get_messages("session"):
+        data = {d.name: d.value for d in msg}
+        asc  = sf(data.get("total_ascent"))
+        des  = sf(data.get("total_descent"))
+        if asc is not None or des is not None:
+            return asc, des
+    return None, None
 
 
 def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_distance_m: float = None) -> list:
@@ -750,12 +768,26 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
             if len(record_splits) > len(split_rows):
                 return record_splits
 
-        # Enrich splits with elevation — GPS+DEM preferred, barometer fallback
-        ascent_map = _elevation_from_gps(fitfile) or _ascent_by_km_from_records(fitfile)
+        # Enrich splits with elevation — GPS+DEM preferred, smoothed barometer fallback
+        gps_map    = _elevation_from_gps(fitfile)
+        ascent_map = gps_map or _ascent_by_km_from_records(fitfile)
+        elev_src   = "GPS" if gps_map else "baro"
         for s in split_rows:
             km_idx = s["lap_number"]
             if km_idx in ascent_map:
                 s["ascent_m"], s["descent_m"] = ascent_map[km_idx]
+
+        # Stamp each split with elevation source for diagnostics
+        for s in split_rows:
+            s["_elev_src"] = elev_src
+
+        # Read FIT session summary for accurate total elevation
+        session_asc, session_des = _read_fit_session_elevation(fitfile)
+        if session_asc is not None:
+            log.info(f"FIT session elevation: {session_asc}m ascent / {session_des}m descent")
+            for s in split_rows:
+                s["_session_asc"] = session_asc
+                s["_session_des"] = session_des
 
         return split_rows
     except Exception as e:
@@ -1085,13 +1117,14 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
             "avg_heart_rate": si(hr.get("average")), "max_heart_rate": si(hr.get("maximum")),
             "avg_cadence": avg_cadence, "max_cadence": max_cadence, "avg_power": avg_power, "max_power": max_power,
             "training_load": cardio_load, "muscle_load": muscle_load,
-            "ascent": round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or strava_total_asc or None,
-            "descent": round(sum(s["descent_m"] for s in split_rows if s.get("descent_m")), 1) or None,
+            "ascent":  next((s["_session_asc"] for s in split_rows if s.get("_session_asc") is not None), None) or round(sum(s["ascent_m"]  for s in split_rows if s.get("ascent_m")),  1) or strava_total_asc or None,
+            "descent": next((s["_session_des"] for s in split_rows if s.get("_session_des") is not None), None) or round(sum(s["descent_m"] for s in split_rows if s.get("descent_m")), 1) or None,
             "strava_activity_id": strava_id,
             "hr_zones": json.dumps(hr_zones_parsed), "raw_json": json.dumps(ex_data), "source": "polar",
         }, on_conflict="polar_exercise_id").execute()
         if split_rows:
-            supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
+            clean = [{k: v for k, v in s.items() if not k.startswith("_")} for s in split_rows]
+            supabase.table("polar_km_splits").upsert(clean, on_conflict="exercise_id,lap_number").execute()
         return len(split_rows)
     except Exception as e:
         log.error(f"Save exercise error {exercise_id}: {e}")
@@ -2147,15 +2180,22 @@ def handle_message(message):
             split_rows = fetch_fit_and_parse(ex_id, ex["date"][:10], dist_m)
             split_rows, strava_id, strava_asc = enrich_splits_with_strava(split_rows, ex["date"][:10], dist_m)
             if split_rows:
-                supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
-                total_asc = round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or strava_asc or None
-                total_des = round(sum(s["descent_m"] for s in split_rows if s.get("descent_m")), 1) or None
+                elev_src  = next((s.get("_elev_src") for s in split_rows if s.get("_elev_src")), "FIT")
+                session_asc = next((s["_session_asc"] for s in split_rows if s.get("_session_asc") is not None), None)
+                session_des = next((s["_session_des"] for s in split_rows if s.get("_session_des") is not None), None)
+                # Strip internal metadata keys before upserting
+                clean_rows = [{k: v for k, v in s.items() if not k.startswith("_")} for s in split_rows]
+                supabase.table("polar_km_splits").upsert(clean_rows, on_conflict="exercise_id,lap_number").execute()
+                total_asc = session_asc or round(sum(s["ascent_m"] for s in clean_rows if s.get("ascent_m")), 1) or strava_asc or None
+                total_des = session_des or round(sum(s["descent_m"] for s in clean_rows if s.get("descent_m")), 1) or None
                 update_payload = {"ascent": total_asc, "descent": total_des}
                 if strava_id: update_payload["strava_activity_id"] = strava_id
                 supabase.table("polar_exercises").update(update_payload).eq("polar_exercise_id", ex_id).execute()
                 splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m").eq("exercise_id", ex_id).order("lap_number").execute()
                 header  = f"{fmt_date(ex['date'])} — {(dist_m or 0)/1000:.1f}km {ex.get('sport','')}"
-                src_str = " (Strava)" if strava_id else " (FIT)"
+                if strava_id:   src_str = " (Strava)"
+                elif elev_src == "GPS": src_str = " (GPS+DEM)"
+                else:           src_str = " (FIT baro)"
                 asc_str = f"  ⛰{total_asc:.0f}m{src_str}" if total_asc else ""
                 bot.send_message(chat_id, f"✅ {len(split_rows)} splits saved{asc_str}\n\n" + format_splits_table(splits.data, header), parse_mode="Markdown")
             else:
