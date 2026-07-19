@@ -828,6 +828,39 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
             if len(record_splits) > len(split_rows):
                 return record_splits
 
+        # Backfill missing stats (HR/power/cadence) from record messages for any lap that lacks them
+        null_laps = {s["lap_number"] for s in split_rows
+                     if s.get("hr_avg") is None or s.get("power_avg") is None or s.get("cadence_avg") is None}
+        if null_laps:
+            rec_buckets: dict = {}
+            for record in fitfile.get_messages("record"):
+                rdata  = {d.name: d.value for d in record}
+                rdist  = sf(rdata.get("distance"))
+                if rdist is None: continue
+                kidx   = int(rdist / 1000)
+                if kidx not in null_laps: continue
+                if kidx not in rec_buckets:
+                    rec_buckets[kidx] = {"hrs": [], "hr_max": None, "powers": [], "cads": []}
+                rb = rec_buckets[kidx]
+                hr = si(rdata.get("heart_rate"))
+                if hr:
+                    rb["hrs"].append(hr)
+                    if rb["hr_max"] is None or hr > rb["hr_max"]: rb["hr_max"] = hr
+                pw = si(rdata.get("power"))
+                if pw: rb["powers"].append(pw)
+                craw = sf(rdata.get("running_cadence") or rdata.get("cadence"))
+                if craw: rb["cads"].append(craw * 2)
+            for s in split_rows:
+                rb = rec_buckets.get(s["lap_number"])
+                if not rb: continue
+                if s.get("hr_avg") is None and rb["hrs"]:
+                    s["hr_avg"] = si(sum(rb["hrs"]) / len(rb["hrs"]))
+                    s["hr_max"] = rb["hr_max"]
+                if s.get("power_avg") is None and rb["powers"]:
+                    s["power_avg"] = si(sum(rb["powers"]) / len(rb["powers"]))
+                if s.get("cadence_avg") is None and rb["cads"]:
+                    s["cadence_avg"] = si(sum(rb["cads"]) / len(rb["cads"]))
+
         # Read FIT session summary first — needed for barometer scaling
         session_asc, session_des = _read_fit_session_elevation(fitfile)
         if session_asc is not None:
@@ -894,7 +927,9 @@ def format_splits_table(splits: list, header: str) -> str:
     else:
         lines = [f"📊 *{header}*\n", "`KM  │ Pace     │ HR      │  Power │ Cad`", "`────┼──────────┼─────────┼────────┼────`"]
     for s in splits:
-        km    = str(s.get("km_number", "?")).rjust(2)
+        dist_m = s.get("distance_m")
+        km_num = s.get("km_number", "?")
+        km = f"{dist_m/1000:.1f}".rjust(3) if (dist_m is not None and dist_m < 950) else str(km_num).rjust(2) + " "
         pace  = (s.get("pace_display") or "N/A").ljust(8)
         hr    = f"{s.get('hr_avg') or '?'}/{s.get('hr_max') or '?'}".ljust(7)
         power = str(s.get("power_avg") or "?").rjust(4) + "W"
@@ -903,9 +938,9 @@ def format_splits_table(splits: list, header: str) -> str:
             asc  = str(int(s["ascent_m"]))  if s.get("ascent_m")  else "—"
             des  = str(int(s["descent_m"])) if s.get("descent_m") else "—"
             elev = f"{asc}/{des}"
-            lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad} │ {elev:>4}`")
+            lines.append(f"`{km} │ {pace} │ {hr} │ {power:>6} │ {cad} │ {elev:>4}`")
         else:
-            lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad}`")
+            lines.append(f"`{km} │ {pace} │ {hr} │ {power:>6} │ {cad}`")
     return "\n".join(lines)
 
 def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict = None) -> str:
