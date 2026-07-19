@@ -923,24 +923,28 @@ def format_splits_table(splits: list, header: str) -> str:
     if not splits: return "No splits found."
     has_elev = any(s.get("ascent_m") or s.get("descent_m") for s in splits)
     if has_elev:
-        lines = [f"📊 *{header}*\n", "`KM  │ Pace     │ HR      │  Power │ Cad │ ↑↓`", "`────┼──────────┼─────────┼────────┼─────┼────`"]
+        lines = [f"📊 *{header}*\n",
+                 "` KM │Pace  │  HR   │Pwr│Cad│↑↓`",
+                 "`────┼──────┼───────┼───┼───┼──`"]
     else:
-        lines = [f"📊 *{header}*\n", "`KM  │ Pace     │ HR      │  Power │ Cad`", "`────┼──────────┼─────────┼────────┼────`"]
+        lines = [f"📊 *{header}*\n",
+                 "` KM │Pace  │  HR   │Pwr│Cad`",
+                 "`────┼──────┼───────┼───┼───`"]
     for s in splits:
         dist_m = s.get("distance_m")
         km_num = s.get("km_number", "?")
-        km = f"{dist_m/1000:.1f}".rjust(3) if (dist_m is not None and dist_m < 950) else str(km_num).rjust(2) + " "
-        pace  = (s.get("pace_display") or "N/A").ljust(8)
-        hr    = f"{s.get('hr_avg') or '?'}/{s.get('hr_max') or '?'}".ljust(7)
-        power = str(s.get("power_avg") or "?").rjust(4) + "W"
-        cad   = str(s.get("cadence_avg") or "?").rjust(3)
+        km     = f"{dist_m/1000:.1f}".rjust(3) if (dist_m is not None and dist_m < 950) else str(km_num).rjust(3)
+        pace   = (s.get("pace_display") or "N/A").replace("/km", "").strip().ljust(5)
+        hr     = f"{s.get('hr_avg') or '?'}/{s.get('hr_max') or '?'}".ljust(7)
+        pwr    = str(s.get("power_avg") or "?").rjust(3)
+        cad    = str(s.get("cadence_avg") or "?").rjust(3)
         if has_elev:
             asc  = str(int(s["ascent_m"]))  if s.get("ascent_m")  else "—"
             des  = str(int(s["descent_m"])) if s.get("descent_m") else "—"
             elev = f"{asc}/{des}"
-            lines.append(f"`{km} │ {pace} │ {hr} │ {power:>6} │ {cad} │ {elev:>4}`")
+            lines.append(f"`{km} │{pace} │{hr}│{pwr}│{cad}│{elev}`")
         else:
-            lines.append(f"`{km} │ {pace} │ {hr} │ {power:>6} │ {cad}`")
+            lines.append(f"`{km} │{pace} │{hr}│{pwr}│{cad}`")
     return "\n".join(lines)
 
 def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict = None) -> str:
