@@ -41,6 +41,9 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 ALLOWED_SPORTS      = {"RUNNING", "TRAIL_RUNNING", "TREADMILL_RUNNING"}
 POLAR_BASE          = "https://www.polaraccesslink.com/v3"
+STRAVA_BASE         = "https://www.strava.com/api/v3"
+STRAVA_CLIENT_ID    = os.environ.get("STRAVA_CLIENT_ID", "")
+STRAVA_CLIENT_SECRET= os.environ.get("STRAVA_CLIENT_SECRET", "")
 RESTING_HR_BASELINE = 47
 AEROBIC_THRESHOLD   = 149
 ANAEROBIC_THRESHOLD = 178
@@ -56,6 +59,119 @@ alerts_fired_today: set = set()
 
 def polar_headers():
     return {"Authorization": f"Bearer {POLAR_ACCESS_TOKEN}", "Accept": "application/json"}
+
+# ── STRAVA ─────────────────────────────────────────────────────────────────
+
+def get_strava_access_token() -> str | None:
+    """Return a valid Strava access token, refreshing if needed."""
+    if not STRAVA_CLIENT_ID or not STRAVA_CLIENT_SECRET:
+        return None
+    try:
+        r = supabase.table("strava_tokens").select("*").eq("id", 1).limit(1).execute()
+        if not r.data:
+            return None
+        tok = r.data[0]
+        if time.time() > tok["expires_at"] - 300:
+            resp = requests.post("https://www.strava.com/oauth/token", data={
+                "client_id": STRAVA_CLIENT_ID, "client_secret": STRAVA_CLIENT_SECRET,
+                "grant_type": "refresh_token", "refresh_token": tok["refresh_token"],
+            })
+            if not resp.ok:
+                log.error(f"Strava token refresh failed: {resp.text}")
+                return None
+            new_tok = resp.json()
+            supabase.table("strava_tokens").upsert({
+                "id": 1, "access_token": new_tok["access_token"],
+                "refresh_token": new_tok["refresh_token"], "expires_at": new_tok["expires_at"],
+            }).execute()
+            return new_tok["access_token"]
+        return tok["access_token"]
+    except Exception as e:
+        log.error(f"Strava token error: {e}")
+        return None
+
+def strava_headers() -> dict | None:
+    tok = get_strava_access_token()
+    return {"Authorization": f"Bearer {tok}"} if tok else None
+
+def find_strava_activity(date_str: str, dist_m: float) -> dict | None:
+    """Find Strava activity matching the Polar exercise by date and distance."""
+    hdrs = strava_headers()
+    if not hdrs:
+        return None
+    try:
+        dt     = datetime.strptime(date_str[:10], "%Y-%m-%d")
+        after  = int(dt.replace(hour=0,  minute=0,  second=0,  tzinfo=timezone.utc).timestamp())
+        before = int(dt.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc).timestamp())
+        r = requests.get(f"{STRAVA_BASE}/athlete/activities",
+                         params={"after": after, "before": before, "per_page": 10},
+                         headers=hdrs, timeout=10)
+        if not r.ok:
+            log.error(f"Strava activities error: {r.status_code}")
+            return None
+        activities = [a for a in r.json() if a.get("type") in ("Run", "TrailRun", "VirtualRun")]
+        if not activities:
+            return None
+        if dist_m:
+            for act in activities:
+                if abs(act.get("distance", 0) - dist_m) < 500:
+                    return act
+        return activities[0]
+    except Exception as e:
+        log.error(f"Strava find activity error: {e}")
+        return None
+
+def strava_elevation_by_km(activity_id: int) -> dict:
+    """Return {km_idx: (ascent_m, descent_m)} from Strava's corrected altitude stream."""
+    hdrs = strava_headers()
+    if not hdrs:
+        return {}
+    try:
+        r = requests.get(f"{STRAVA_BASE}/activities/{activity_id}/streams",
+                         params={"keys": "altitude,distance", "series_type": "distance"},
+                         headers=hdrs, timeout=15)
+        if not r.ok:
+            log.error(f"Strava streams error {activity_id}: {r.status_code}")
+            return {}
+        streams  = {s["type"]: s["data"] for s in r.json()}
+        alt_data = streams.get("altitude", [])
+        dst_data = streams.get("distance", [])
+        if not alt_data or not dst_data:
+            return {}
+        buckets  = {}
+        prev_alt = None
+        for dist, alt in zip(dst_data, alt_data):
+            km_idx = int(dist / 1000)
+            if km_idx not in buckets:
+                buckets[km_idx] = [0.0, 0.0]
+            if prev_alt is not None:
+                diff = alt - prev_alt
+                if diff > 0:   buckets[km_idx][0] += diff
+                elif diff < 0: buckets[km_idx][1] += abs(diff)
+            prev_alt = alt
+        return {k: (round(v[0], 1) or None, round(v[1], 1) or None) for k, v in buckets.items()}
+    except Exception as e:
+        log.error(f"Strava stream error {activity_id}: {e}")
+        return {}
+
+def enrich_splits_with_strava(split_rows: list, date_str: str, dist_m: float):
+    """Enrich split_rows with Strava elevation. Returns (split_rows, strava_id, total_ascent)."""
+    act = find_strava_activity(date_str, dist_m)
+    if not act:
+        return split_rows, None, None
+    strava_id    = act["id"]
+    strava_ascent = sf(act.get("total_elevation_gain"))
+    elev_map     = strava_elevation_by_km(strava_id)
+    if elev_map and split_rows:
+        for s in split_rows:
+            km_idx = s.get("lap_number", s.get("km_number", 1) - 1)
+            if km_idx in elev_map:
+                s["ascent_m"], s["descent_m"] = elev_map[km_idx]
+        total_asc = round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or strava_ascent
+    else:
+        total_asc = strava_ascent
+    log.info(f"Strava enriched {date_str}: activity {strava_id}, total ascent {total_asc}m")
+    return split_rows, strava_id, total_asc
 
 def parse_pt_seconds(pt: str) -> float:
     if not pt: return 0.0
@@ -875,6 +991,9 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
         start       = ex_data.get("start_time", "")
         dur_s       = parse_pt_seconds(ex_data.get("duration", ""))
         dist_m      = sf(ex_data.get("distance"))
+        # Enrich splits with Strava elevation (better than FIT barometer)
+        date_str    = start[:10] if start else ""
+        split_rows, strava_id, strava_total_asc = enrich_splits_with_strava(split_rows, date_str, dist_m)
         cadence_obj = ex_data.get("cadence", {}) or {}
         power_obj   = ex_data.get("power", {}) or {}
         avg_cadence = si(cadence_obj.get("avg") or ex_data.get("avg_cadence"))
@@ -900,8 +1019,9 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
             "avg_heart_rate": si(hr.get("average")), "max_heart_rate": si(hr.get("maximum")),
             "avg_cadence": avg_cadence, "max_cadence": max_cadence, "avg_power": avg_power, "max_power": max_power,
             "training_load": cardio_load, "muscle_load": muscle_load,
-            "ascent": round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or None,
+            "ascent": round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or strava_total_asc or None,
             "descent": round(sum(s["descent_m"] for s in split_rows if s.get("descent_m")), 1) or None,
+            "strava_activity_id": strava_id,
             "hr_zones": json.dumps(hr_zones_parsed), "raw_json": json.dumps(ex_data), "source": "polar",
         }, on_conflict="polar_exercise_id").execute()
         if split_rows:
@@ -1808,6 +1928,44 @@ def handle_message(message):
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
+    if lower == "/stravaauth":
+        if not STRAVA_CLIENT_ID:
+            bot.reply_to(message, "⚠️ STRAVA_CLIENT_ID not set in Railway environment."); return
+        auth_url = (f"https://www.strava.com/oauth/authorize"
+                    f"?client_id={STRAVA_CLIENT_ID}"
+                    f"&redirect_uri=https://localhost/callback"
+                    f"&response_type=code"
+                    f"&approval_prompt=auto"
+                    f"&scope=activity:read_all")
+        bot.reply_to(message,
+            f"1️⃣ Open this URL:\n{auth_url}\n\n"
+            f"2️⃣ Click *Authorise* on Strava\n\n"
+            f"3️⃣ You'll get a 'localhost refused to connect' page — that's fine. "
+            f"Copy the full URL from your browser bar.\n\n"
+            f"4️⃣ Send me: `/stravacode CODE`\n"
+            f"_(the `code=` value from the URL)_", parse_mode="Markdown")
+        return
+
+    if lower.startswith("/stravacode "):
+        code = user_text.split(" ", 1)[1].strip()
+        try:
+            resp = requests.post("https://www.strava.com/oauth/token", data={
+                "client_id": STRAVA_CLIENT_ID, "client_secret": STRAVA_CLIENT_SECRET,
+                "code": code, "grant_type": "authorization_code",
+            })
+            if not resp.ok:
+                bot.reply_to(message, f"❌ Strava auth failed: {resp.text}"); return
+            tok     = resp.json()
+            athlete = tok.get("athlete", {})
+            supabase.table("strava_tokens").upsert({
+                "id": 1, "access_token": tok["access_token"],
+                "refresh_token": tok["refresh_token"], "expires_at": tok["expires_at"],
+            }).execute()
+            bot.reply_to(message, f"✅ Strava connected — {athlete.get('firstname','')} {athlete.get('lastname','')} 🎉\nElevation will now use Strava's corrected altitude stream.")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+        return
+
     if lower == "/sync":
         bot.reply_to(message, "🔄 Syncing all Polar data...")
         new         = sync_new_polar_exercises()
@@ -1921,15 +2079,18 @@ def handle_message(message):
             supabase.table("polar_km_splits").delete().eq("exercise_id", ex_id).execute()
             # Re-fetch FIT and parse
             split_rows = fetch_fit_and_parse(ex_id, ex["date"][:10], dist_m)
+            split_rows, strava_id, strava_asc = enrich_splits_with_strava(split_rows, ex["date"][:10], dist_m)
             if split_rows:
                 supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
-                # Write total ascent/descent back to polar_exercises
-                total_asc = round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or None
+                total_asc = round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or strava_asc or None
                 total_des = round(sum(s["descent_m"] for s in split_rows if s.get("descent_m")), 1) or None
-                supabase.table("polar_exercises").update({"ascent": total_asc, "descent": total_des}).eq("polar_exercise_id", ex_id).execute()
+                update_payload = {"ascent": total_asc, "descent": total_des}
+                if strava_id: update_payload["strava_activity_id"] = strava_id
+                supabase.table("polar_exercises").update(update_payload).eq("polar_exercise_id", ex_id).execute()
                 splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m").eq("exercise_id", ex_id).order("lap_number").execute()
                 header  = f"{fmt_date(ex['date'])} — {(dist_m or 0)/1000:.1f}km {ex.get('sport','')}"
-                asc_str = f"  ⛰{total_asc}m" if total_asc else ""
+                src_str = " (Strava)" if strava_id else " (FIT)"
+                asc_str = f"  ⛰{total_asc:.0f}m{src_str}" if total_asc else ""
                 bot.send_message(chat_id, f"✅ {len(split_rows)} splits saved{asc_str}\n\n" + format_splits_table(splits.data, header), parse_mode="Markdown")
             else:
                 bot.send_message(chat_id, "⚠️ No splits found in FIT file — watch may not be set to auto-lap every km.")
