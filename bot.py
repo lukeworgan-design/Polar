@@ -654,21 +654,20 @@ def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> 
 
 def _elevation_from_gps(fitfile, session_asc=None, session_des=None) -> dict:
     """
-    Per-km net elevation from GPS + Open-Meteo DEM.
+    Per-km elevation from GPS + Open-Meteo DEM.
 
-    Averages GPS coordinates in a ±100m window around each km boundary to
-    suppress single-point GPS noise before the DEM lookup.
-
-    For loop/out-and-back routes (end GPS within 300m of start), the final
-    boundary DEM is snapped to the start DEM — this removes the altitude bias
-    that arises when GPS drift puts the start and end on different DEM pixels.
+    Samples DEM every 200m (fewer points = less noise accumulation vs 50m).
+    For loop/out-and-back routes (end GPS within 300m of start), applies
+    linear detrending to remove the GPS-drift-induced altitude tilt across
+    the DEM profile before accumulating per-km ascent/descent.
     """
     import math
 
-    WINDOW_M = 100  # metres either side of boundary to average GPS coords
+    SAMPLE_EVERY_M = 200
+    SMOOTH_N       = 5   # centred moving average on the DEM profile
 
-    # Collect all GPS records
-    gps_records = []
+    gps_samples = []
+    last_dist   = -SAMPLE_EVERY_M
     for record in fitfile.get_messages("record"):
         data   = {d.name: d.value for d in record}
         dist_m = sf(data.get("distance"))
@@ -676,71 +675,78 @@ def _elevation_from_gps(fitfile, session_asc=None, session_des=None) -> dict:
         lon    = data.get("position_long")
         if dist_m is None or lat is None or lon is None:
             continue
-        gps_records.append((dist_m, lat * 180.0 / (2 ** 31), lon * 180.0 / (2 ** 31)))
+        lat_deg = lat * 180.0 / (2 ** 31)
+        lon_deg = lon * 180.0 / (2 ** 31)
+        if dist_m - last_dist >= SAMPLE_EVERY_M:
+            gps_samples.append((dist_m, lat_deg, lon_deg))
+            last_dist = dist_m
 
-    if len(gps_records) < 10:
+    if len(gps_samples) < 5:
         return {}
 
-    max_dist = gps_records[-1][0]
-
-    # Average GPS coords in ±WINDOW_M window around each km boundary
-    boundaries: dict[int, tuple] = {}  # km_bd → (avg_lat, avg_lon)
-    for km_bd in range(0, int(max_dist / 1000) + 2):
-        center = km_bd * 1000
-        pts    = [(lat, lon) for (d, lat, lon) in gps_records if abs(d - center) <= WINDOW_M]
-        if pts:
-            boundaries[km_bd] = (
-                sum(p[0] for p in pts) / len(pts),
-                sum(p[1] for p in pts) / len(pts),
+    # Query Open-Meteo DEM in batches of 100
+    elevs: list = []
+    for i in range(0, len(gps_samples), 100):
+        batch = gps_samples[i:i + 100]
+        try:
+            r = requests.get(
+                "https://api.open-meteo.com/v1/elevation",
+                params={"latitude":  ",".join(f"{p[1]:.6f}" for p in batch),
+                        "longitude": ",".join(f"{p[2]:.6f}" for p in batch)},
+                timeout=15,
             )
-
-    if len(boundaries) < 2:
-        return {}
-
-    sorted_bds = sorted(boundaries.keys())
-    lats = [boundaries[b][0] for b in sorted_bds]
-    lons = [boundaries[b][1] for b in sorted_bds]
-
-    # One Open-Meteo DEM request
-    try:
-        r = requests.get(
-            "https://api.open-meteo.com/v1/elevation",
-            params={"latitude":  ",".join(f"{l:.6f}" for l in lats),
-                    "longitude": ",".join(f"{l:.6f}" for l in lons)},
-            timeout=15,
-        )
-        if not r.ok:
-            log.warning(f"Open-Meteo elevation API error: {r.status_code}")
+            if not r.ok:
+                log.warning(f"Open-Meteo elevation API error: {r.status_code}")
+                return {}
+            elevs.extend(r.json().get("elevation", [None] * len(batch)))
+        except Exception as e:
+            log.warning(f"Open-Meteo elevation failed: {e}")
             return {}
-        elevs = list(r.json().get("elevation", []))
-    except Exception as e:
-        log.warning(f"Open-Meteo boundary elevation failed: {e}")
+
+    if len(elevs) != len(gps_samples) or None in elevs:
         return {}
 
-    if len(elevs) != len(sorted_bds):
-        return {}
+    # Loop/out-and-back: apply linear detrend to remove GPS-drift DEM tilt.
+    # GPS drifts ~linearly over time; on a returning route this makes the DEM
+    # profile appear to ascend throughout.  Removing the linear trend restores
+    # the true shape: detrended[i] = raw[i] - net_drift * (dist_i / total_dist)
+    start_lat, start_lon = gps_samples[0][1],  gps_samples[0][2]
+    end_lat,   end_lon   = gps_samples[-1][1], gps_samples[-1][2]
+    dlat_m = (end_lat  - start_lat) * 111320
+    dlon_m = (end_lon  - start_lon) * 111320 * math.cos(math.radians((start_lat + end_lat) / 2))
+    loop_dist = math.hypot(dlat_m, dlon_m)
+    if loop_dist < 300:
+        net_drift  = elevs[-1] - elevs[0]
+        total_dist = gps_samples[-1][0]
+        for i, (d, _, __) in enumerate(gps_samples):
+            elevs[i] -= net_drift * (d / total_dist)
+        log.info(f"Loop ({loop_dist:.0f}m): removed {net_drift:.1f}m linear DEM drift")
 
-    # Loop/out-and-back detection: if end GPS is within 300m of start GPS,
-    # snap end DEM to start DEM to remove GPS-drift altitude bias.
-    start_lat, start_lon = boundaries[sorted_bds[0]]
-    end_lat,   end_lon   = boundaries[sorted_bds[-1]]
-    dlat_m = (end_lat - start_lat) * 111320
-    dlon_m = (end_lon - start_lon) * 111320 * math.cos(math.radians((start_lat + end_lat) / 2))
-    start_end_dist = math.hypot(dlat_m, dlon_m)
-    if start_end_dist < 300:
-        elevs[-1] = elevs[0]
-        log.info(f"Loop route detected ({start_end_dist:.0f}m start↔end): end DEM snapped to start")
+    # 5-point centred moving average to further suppress DEM pixel noise
+    half = SMOOTH_N // 2
+    smoothed = [
+        sum(elevs[max(0, i - half):min(len(elevs), i + half + 1)]) /
+        len(elevs[max(0, i - half):min(len(elevs), i + half + 1)])
+        for i in range(len(elevs))
+    ]
 
-    log.info(f"GPS DEM boundaries: {list(zip(sorted_bds, [round(e, 1) for e in elevs]))}")
+    log.info(f"GPS DEM: {len(gps_samples)} pts, loop_dist={loop_dist:.0f}m, "
+             f"drift={(elevs[-1]-elevs[0]) if loop_dist>=300 else 0:.1f}m")
 
-    # Net elevation per km from consecutive boundary DEM heights
+    # Accumulate per-km ascent/descent from the smoothed DEM profile
     buckets: dict[int, list] = {}
-    for i in range(1, len(sorted_bds)):
-        km_idx = sorted_bds[i] - 1
-        net    = elevs[i] - elevs[i - 1]
-        buckets[km_idx] = [net if net > 0 else 0.0, -net if net < 0 else 0.0]
+    prev_elev = None
+    for (dist_m, _, __), elev in zip(gps_samples, smoothed):
+        km_idx = int(dist_m / 1000)
+        if km_idx not in buckets:
+            buckets[km_idx] = [0.0, 0.0]
+        if prev_elev is not None:
+            diff = elev - prev_elev
+            if diff > 0:   buckets[km_idx][0] += diff
+            elif diff < 0: buckets[km_idx][1] += abs(diff)
+        prev_elev = elev
 
-    # Scale to FIT session totals when available
+    # Scale to FIT session totals
     if session_asc is not None:
         raw_asc = sum(v[0] for v in buckets.values())
         scale   = (session_asc / raw_asc) if raw_asc > 0 else 0.0
@@ -751,7 +757,6 @@ def _elevation_from_gps(fitfile, session_asc=None, session_des=None) -> dict:
         scale   = (session_des / raw_des) if raw_des > 0 else 0.0
         for k in buckets: buckets[k][1] = round(buckets[k][1] * scale, 1)
 
-    log.info(f"GPS boundary elevation: {len(sorted_bds)} boundaries → {len(buckets)} km buckets")
     return {k: (v[0] or None, v[1] or None) for k, v in buckets.items()}
 
 
