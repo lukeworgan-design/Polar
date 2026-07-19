@@ -655,9 +655,9 @@ def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> 
 def _elevation_from_gps(fitfile) -> dict:
     """
     Returns {km_idx: (ascent_m, descent_m)} using Open-Meteo DEM elevation
-    looked up from GPS coordinates in the FIT file. Much more accurate than
-    barometric altitude which drifts over time.
+    looked up from GPS coordinates in the FIT file.
     Falls back to empty dict if GPS unavailable or API unreachable.
+    Only reliable for routes with significant elevation change (>= 30m total).
     """
     SAMPLE_EVERY_M = 50  # one GPS point per 50m of distance
 
@@ -670,11 +670,11 @@ def _elevation_from_gps(fitfile) -> dict:
         lon    = data.get("position_long")
         if dist_m is None or lat is None or lon is None:
             continue
-        # fitparse auto-converts position fields to degrees — use values directly
-        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-            continue  # skip if value looks like raw semicircles (not converted)
+        # fitparse returns raw semicircles for position fields — convert to degrees
+        lat_deg = lat * 180.0 / (2 ** 31)
+        lon_deg = lon * 180.0 / (2 ** 31)
         if dist_m - last_dist >= SAMPLE_EVERY_M:
-            points.append((dist_m, lat, lon))
+            points.append((dist_m, lat_deg, lon_deg))
             last_dist = dist_m
 
     if len(points) < 2:
@@ -720,12 +720,16 @@ def _elevation_from_gps(fitfile) -> dict:
     return result
 
 
-def _ascent_by_km_from_records(fitfile) -> dict:
-    """Barometer fallback — smoothed rolling average + threshold to suppress drift."""
-    SMOOTH_N  = 5    # rolling window over 5 records (~5 seconds)
-    THRESHOLD = 0.5  # ignore sub-0.5m changes (barometer noise floor)
-    buckets   = {}
-    window    = []
+def _ascent_by_km_from_records(fitfile, session_asc=None, session_des=None) -> dict:
+    """
+    Barometer per-km elevation using smoothed rolling average.
+    When session totals are supplied (from FIT session message) the raw per-km
+    values are scaled so they sum to the accurate Polar total — this corrects
+    barometer drift while preserving the per-km shape.
+    """
+    SMOOTH_N = 5  # rolling window over 5 records (~5 seconds)
+    buckets  = {}
+    window   = []
     prev_smoothed = None
     for record in fitfile.get_messages("record"):
         data   = {d.name: d.value for d in record}
@@ -741,9 +745,21 @@ def _ascent_by_km_from_records(fitfile) -> dict:
         smoothed = sum(window) / len(window)
         if prev_smoothed is not None:
             diff = smoothed - prev_smoothed
-            if diff > THRESHOLD:    buckets[km_idx][0] += diff
-            elif diff < -THRESHOLD: buckets[km_idx][1] += abs(diff)
+            if diff > 0:   buckets[km_idx][0] += diff
+            elif diff < 0: buckets[km_idx][1] += abs(diff)
         prev_smoothed = smoothed
+
+    # Scale per-km values to match FIT session totals (corrects barometric drift)
+    if session_asc is not None:
+        raw_asc = sum(v[0] for v in buckets.values())
+        scale   = (session_asc / raw_asc) if raw_asc > 0 else 0.0
+        for k in buckets: buckets[k][0] = buckets[k][0] * scale
+
+    if session_des is not None:
+        raw_des = sum(v[1] for v in buckets.values())
+        scale   = (session_des / raw_des) if raw_des > 0 else 0.0
+        for k in buckets: buckets[k][1] = buckets[k][1] * scale
+
     return {k: (round(v[0], 1) or None, round(v[1], 1) or None) for k, v in buckets.items()}
 
 
@@ -774,26 +790,31 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
             if len(record_splits) > len(split_rows):
                 return record_splits
 
-        # Enrich splits with elevation — GPS+DEM preferred, smoothed barometer fallback
-        gps_map    = _elevation_from_gps(fitfile)
-        ascent_map = gps_map or _ascent_by_km_from_records(fitfile)
-        elev_src   = "GPS" if gps_map else "baro"
-        for s in split_rows:
-            km_idx = s["lap_number"]
-            if km_idx in ascent_map:
-                s["ascent_m"], s["descent_m"] = ascent_map[km_idx]
-
-        # Stamp each split with elevation source for diagnostics
-        for s in split_rows:
-            s["_elev_src"] = elev_src
-
-        # Read FIT session summary for accurate total elevation
+        # Read FIT session summary first — needed for barometer scaling
         session_asc, session_des = _read_fit_session_elevation(fitfile)
         if session_asc is not None:
             log.info(f"FIT session elevation: {session_asc}m ascent / {session_des}m descent")
             for s in split_rows:
                 s["_session_asc"] = session_asc
                 s["_session_des"] = session_des
+
+        # Enrich per-km elevation — GPS+DEM for significant hills, scaled barometer otherwise.
+        # GPS+DEM is unreliable on gentle terrain (<30m) due to DEM resolution (~30m).
+        use_gps = (session_asc or 0) >= 30
+        gps_map = _elevation_from_gps(fitfile) if use_gps else {}
+        ascent_map = gps_map or _ascent_by_km_from_records(fitfile, session_asc, session_des)
+        elev_src   = "GPS" if gps_map else ("baro-scaled" if session_asc is not None else "baro")
+        for s in split_rows:
+            km_idx = s["lap_number"]
+            if km_idx in ascent_map:
+                # Only fill elevation when FIT lap message had no data — don't overwrite Polar's values
+                if s.get("ascent_m") is None:
+                    s["ascent_m"] = ascent_map[km_idx][0]
+                if s.get("descent_m") is None:
+                    s["descent_m"] = ascent_map[km_idx][1]
+
+        for s in split_rows:
+            s["_elev_src"] = elev_src
 
         return split_rows
     except Exception as e:
@@ -2199,9 +2220,10 @@ def handle_message(message):
                 supabase.table("polar_exercises").update(update_payload).eq("polar_exercise_id", ex_id).execute()
                 splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m").eq("exercise_id", ex_id).order("lap_number").execute()
                 header  = f"{fmt_date(ex['date'])} — {(dist_m or 0)/1000:.1f}km {ex.get('sport','')}"
-                if strava_id:   src_str = " (Strava)"
-                elif elev_src == "GPS": src_str = " (GPS+DEM)"
-                else:           src_str = " (FIT baro)"
+                if strava_id:                src_str = " (Strava)"
+                elif elev_src == "GPS":      src_str = " (GPS+DEM)"
+                elif elev_src == "baro-scaled": src_str = " (baro→scaled)"
+                else:                        src_str = " (baro)"
                 asc_str = f"  ⛰{total_asc:.0f}m{src_str}" if total_asc else ""
                 bot.send_message(chat_id, f"✅ {len(split_rows)} splits saved{asc_str}\n\n" + format_splits_table(splits.data, header), parse_mode="Markdown")
             else:
