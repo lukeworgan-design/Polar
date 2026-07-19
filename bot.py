@@ -722,45 +722,43 @@ def _elevation_from_gps(fitfile) -> dict:
 
 def _ascent_by_km_from_records(fitfile, session_asc=None, session_des=None) -> dict:
     """
-    Barometer per-km elevation using smoothed rolling average.
-    When session totals are supplied (from FIT session message) the raw per-km
-    values are scaled so they sum to the accurate Polar total — this corrects
-    barometer drift while preserving the per-km shape.
+    Per-km net elevation from barometer: compare km-boundary altitudes.
+    Uses first vs last altitude seen within each km bucket — immune to cumulative
+    drift that breaks rolling-average approaches on out-and-back or loop routes.
+    Scaled to FIT session totals when available to correct residual drift.
     """
-    SMOOTH_N = 5  # rolling window over 5 records (~5 seconds)
-    buckets  = {}
-    window   = []
-    prev_smoothed = None
+    km_first: dict[int, float] = {}
+    km_last:  dict[int, float] = {}
+
     for record in fitfile.get_messages("record"):
-        data   = {d.name: d.value for d in record}
-        dist_m = sf(data.get("distance"))
+        data    = {d.name: d.value for d in record}
+        dist_m  = sf(data.get("distance"))
         if dist_m is None: continue
         raw_alt = data.get("enhanced_altitude") if data.get("enhanced_altitude") is not None else data.get("altitude")
         alt     = sf(raw_alt)
         if alt is None: continue
         km_idx  = int(dist_m / 1000)
-        if km_idx not in buckets: buckets[km_idx] = [0.0, 0.0]
-        window.append(alt)
-        if len(window) > SMOOTH_N: window.pop(0)
-        smoothed = sum(window) / len(window)
-        if prev_smoothed is not None:
-            diff = smoothed - prev_smoothed
-            if diff > 0:   buckets[km_idx][0] += diff
-            elif diff < 0: buckets[km_idx][1] += abs(diff)
-        prev_smoothed = smoothed
+        if km_idx not in km_first:
+            km_first[km_idx] = alt
+        km_last[km_idx] = alt
 
-    # Scale per-km values to match FIT session totals (corrects barometric drift)
+    buckets: dict[int, list] = {}
+    for km_idx, start_alt in km_first.items():
+        net = km_last.get(km_idx, start_alt) - start_alt
+        buckets[km_idx] = [net if net > 0 else 0.0, -net if net < 0 else 0.0]
+
+    # Scale per-km values to match FIT session totals (corrects residual barometric drift)
     if session_asc is not None:
         raw_asc = sum(v[0] for v in buckets.values())
         scale   = (session_asc / raw_asc) if raw_asc > 0 else 0.0
-        for k in buckets: buckets[k][0] = buckets[k][0] * scale
+        for k in buckets: buckets[k][0] = round(buckets[k][0] * scale, 1)
 
     if session_des is not None:
         raw_des = sum(v[1] for v in buckets.values())
         scale   = (session_des / raw_des) if raw_des > 0 else 0.0
-        for k in buckets: buckets[k][1] = buckets[k][1] * scale
+        for k in buckets: buckets[k][1] = round(buckets[k][1] * scale, 1)
 
-    return {k: (round(v[0], 1) or None, round(v[1], 1) or None) for k, v in buckets.items()}
+    return {k: (v[0] or None, v[1] or None) for k, v in buckets.items()}
 
 
 def _read_fit_session_elevation(fitfile) -> tuple:
