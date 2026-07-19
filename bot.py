@@ -2169,16 +2169,24 @@ def handle_message(message):
             for msg in fitfile.messages:
                 all_msg_types.add(getattr(msg, 'name', None) or f"mesg_{getattr(msg, 'mesg_num', '?')}")
 
-            # Record field names + first few altitude values
+            # Scan ALL records: altitude range + per-km boundary
             rec_fields  = set()
-            alt_sample  = []
-            ealt_sample = []
-            for i, record in enumerate(fitfile.get_messages("record")):
+            km_first_alt: dict = {}
+            km_last_alt:  dict = {}
+            all_alts = []
+            for record in fitfile.get_messages("record"):
                 data = {d.name: d.value for d in record}
                 rec_fields.update(data.keys())
-                if data.get("altitude") is not None:          alt_sample.append(round(data["altitude"], 1))
-                if data.get("enhanced_altitude") is not None: ealt_sample.append(round(data["enhanced_altitude"], 1))
-                if i > 200: break
+                dist_m = sf(data.get("distance"))
+                raw_alt = data.get("enhanced_altitude") if data.get("enhanced_altitude") is not None else data.get("altitude")
+                alt = sf(raw_alt)
+                if dist_m is None or alt is None:
+                    continue
+                all_alts.append(alt)
+                km_idx = int(dist_m / 1000)
+                if km_idx not in km_first_alt:
+                    km_first_alt[km_idx] = alt
+                km_last_alt[km_idx] = alt
 
             # Per-lap elevation from lap messages
             lap_elev_rows = []
@@ -2191,12 +2199,25 @@ def handle_message(message):
                 dist = data.get("total_distance")
                 lap_elev_rows.append(f"  L{lap_n+1}: dist={dist}m  asc={asc}  des={des}")
 
+            # Per-km altitude boundary table
+            km_alt_rows = []
+            for km_idx in sorted(km_first_alt.keys()):
+                fa = km_first_alt[km_idx]
+                la = km_last_alt.get(km_idx, fa)
+                net = round(la - fa, 1)
+                sign = "+" if net > 0 else ""
+                km_alt_rows.append(f"  km{km_idx+1}: {fa:.1f}→{la:.1f}m  net={sign}{net}m")
+
+            alt_min = round(min(all_alts), 1) if all_alts else "n/a"
+            alt_max = round(max(all_alts), 1) if all_alts else "n/a"
+            alt_range = round(max(all_alts) - min(all_alts), 1) if all_alts else "n/a"
+
             lines = [
                 f"📦 *FIT message types:* `{'`, `'.join(sorted(all_msg_types))}`\n",
                 f"📐 *Lap fields:* `{'`, `'.join(sorted(lap_fields_all))}`\n",
                 f"⛰ *Per-lap ascent/descent:*\n" + "\n".join(lap_elev_rows[:10]),
-                f"\n🏔 *enhanced\\_altitude (first 6):* `{ealt_sample[:6]}`",
-                f"🏔 *altitude (first 6):* `{alt_sample[:6]}`",
+                f"\n🏔 *Altitude range:* min={alt_min}m  max={alt_max}m  range={alt_range}m  ({len(all_alts)} pts)",
+                f"\n📊 *Per-km altitude boundary:*\n" + "\n".join(km_alt_rows),
             ]
             bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
