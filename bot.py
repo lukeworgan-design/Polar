@@ -2162,25 +2162,43 @@ def handle_message(message):
             ex_id  = ex["polar_exercise_id"]
             r      = requests.get(f"{POLAR_BASE}/exercises/{ex_id}/fit", headers={"Authorization": f"Bearer {POLAR_ACCESS_TOKEN}", "Accept": "application/octet-stream"})
             if not r.ok: bot.reply_to(message, f"FIT fetch failed: {r.status_code}"); return
-            fitfile    = fitparse.FitFile(io.BytesIO(r.content))
-            fields     = set()
-            alt_sample = []
+            fitfile = fitparse.FitFile(io.BytesIO(r.content))
+
+            # All FIT message types in this file
+            all_msg_types = set()
+            for msg in fitfile.messages:
+                all_msg_types.add(getattr(msg, 'name', None) or f"mesg_{getattr(msg, 'mesg_num', '?')}")
+
+            # Record field names + first few altitude values
+            rec_fields  = set()
+            alt_sample  = []
             ealt_sample = []
             for i, record in enumerate(fitfile.get_messages("record")):
                 data = {d.name: d.value for d in record}
-                fields.update(data.keys())
-                if data.get("altitude") is not None:     alt_sample.append(data["altitude"])
-                if data.get("enhanced_altitude") is not None: ealt_sample.append(data["enhanced_altitude"])
+                rec_fields.update(data.keys())
+                if data.get("altitude") is not None:          alt_sample.append(round(data["altitude"], 1))
+                if data.get("enhanced_altitude") is not None: ealt_sample.append(round(data["enhanced_altitude"], 1))
                 if i > 200: break
-            lap_fields = set()
-            lap_sample = {}
-            for record in fitfile.get_messages("lap"):
-                for d in record:
-                    lap_fields.add(d.name)
-                    if d.name not in lap_sample and d.value is not None:
-                        lap_sample[d.name] = d.value
-                break
-            bot.reply_to(message, f"📦 Record fields: `{'`, `'.join(sorted(fields))}`\n\n🏔 altitude (first 5): `{alt_sample[:5]}`\n\n📐 Lap fields: `{'`, `'.join(sorted(lap_fields))}`\n\n⛰ Lap sample: `{lap_sample}`")
+
+            # Per-lap elevation from lap messages
+            lap_elev_rows = []
+            lap_fields_all = set()
+            for lap_n, record in enumerate(fitfile.get_messages("lap")):
+                data = {d.name: d.value for d in record}
+                lap_fields_all.update(data.keys())
+                asc = data.get("total_ascent")
+                des = data.get("total_descent")
+                dist = data.get("total_distance")
+                lap_elev_rows.append(f"  L{lap_n+1}: dist={dist}m  asc={asc}  des={des}")
+
+            lines = [
+                f"📦 *FIT message types:* `{'`, `'.join(sorted(all_msg_types))}`\n",
+                f"📐 *Lap fields:* `{'`, `'.join(sorted(lap_fields_all))}`\n",
+                f"⛰ *Per-lap ascent/descent:*\n" + "\n".join(lap_elev_rows[:10]),
+                f"\n🏔 *enhanced\\_altitude (first 6):* `{ealt_sample[:6]}`",
+                f"🏔 *altitude (first 6):* `{alt_sample[:6]}`",
+            ]
+            bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
