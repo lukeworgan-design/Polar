@@ -659,7 +659,6 @@ def _elevation_from_gps(fitfile) -> dict:
     barometric altitude which drifts over time.
     Falls back to empty dict if GPS unavailable or API unreachable.
     """
-    SEMICIRCLES = 2 ** 31
     SAMPLE_EVERY_M = 50  # one GPS point per 50m of distance
 
     points = []
@@ -671,8 +670,11 @@ def _elevation_from_gps(fitfile) -> dict:
         lon    = data.get("position_long")
         if dist_m is None or lat is None or lon is None:
             continue
+        # fitparse auto-converts position fields to degrees — use values directly
+        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            continue  # skip if value looks like raw semicircles (not converted)
         if dist_m - last_dist >= SAMPLE_EVERY_M:
-            points.append((dist_m, lat * 180 / SEMICIRCLES, lon * 180 / SEMICIRCLES))
+            points.append((dist_m, lat, lon))
             last_dist = dist_m
 
     if len(points) < 2:
