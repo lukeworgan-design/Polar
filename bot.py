@@ -896,7 +896,7 @@ def format_splits_table(splits: list, header: str) -> str:
     for s in splits:
         km    = str(s.get("km_number", "?")).rjust(2)
         pace  = (s.get("pace_display") or "N/A").ljust(8)
-        hr    = f"{s.get('hr_avg','?')}/{s.get('hr_max','?')}".ljust(7)
+        hr    = f"{s.get('hr_avg') or '?'}/{s.get('hr_max') or '?'}".ljust(7)
         power = str(s.get("power_avg") or "?").rjust(4) + "W"
         cad   = str(s.get("cadence_avg") or "?").rjust(3)
         if has_elev:
