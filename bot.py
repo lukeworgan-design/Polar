@@ -655,11 +655,20 @@ def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> 
 def _elevation_from_gps(fitfile, session_asc=None, session_des=None) -> dict:
     """
     Per-km net elevation from GPS + Open-Meteo DEM.
-    Queries DEM elevation at km-boundary GPS coordinates only — no cumulative
-    noise accumulation, works reliably even for gentle terrain.
+
+    Averages GPS coordinates in a ±100m window around each km boundary to
+    suppress single-point GPS noise before the DEM lookup.
+
+    For loop/out-and-back routes (end GPS within 300m of start), the final
+    boundary DEM is snapped to the start DEM — this removes the altitude bias
+    that arises when GPS drift puts the start and end on different DEM pixels.
     """
-    # Find the GPS record closest to each km boundary (0m, 1000m, 2000m, …)
-    boundaries: dict[int, tuple] = {}  # km_boundary_int → (lat_deg, lon_deg, err_m)
+    import math
+
+    WINDOW_M = 100  # metres either side of boundary to average GPS coords
+
+    # Collect all GPS records
+    gps_records = []
     for record in fitfile.get_messages("record"):
         data   = {d.name: d.value for d in record}
         dist_m = sf(data.get("distance"))
@@ -667,12 +676,23 @@ def _elevation_from_gps(fitfile, session_asc=None, session_des=None) -> dict:
         lon    = data.get("position_long")
         if dist_m is None or lat is None or lon is None:
             continue
-        lat_deg = lat * 180.0 / (2 ** 31)
-        lon_deg = lon * 180.0 / (2 ** 31)
-        km_bd   = round(dist_m / 1000)
-        err     = abs(dist_m - km_bd * 1000)
-        if km_bd not in boundaries or err < boundaries[km_bd][2]:
-            boundaries[km_bd] = (lat_deg, lon_deg, err)
+        gps_records.append((dist_m, lat * 180.0 / (2 ** 31), lon * 180.0 / (2 ** 31)))
+
+    if len(gps_records) < 10:
+        return {}
+
+    max_dist = gps_records[-1][0]
+
+    # Average GPS coords in ±WINDOW_M window around each km boundary
+    boundaries: dict[int, tuple] = {}  # km_bd → (avg_lat, avg_lon)
+    for km_bd in range(0, int(max_dist / 1000) + 2):
+        center = km_bd * 1000
+        pts    = [(lat, lon) for (d, lat, lon) in gps_records if abs(d - center) <= WINDOW_M]
+        if pts:
+            boundaries[km_bd] = (
+                sum(p[0] for p in pts) / len(pts),
+                sum(p[1] for p in pts) / len(pts),
+            )
 
     if len(boundaries) < 2:
         return {}
@@ -681,7 +701,7 @@ def _elevation_from_gps(fitfile, session_asc=None, session_des=None) -> dict:
     lats = [boundaries[b][0] for b in sorted_bds]
     lons = [boundaries[b][1] for b in sorted_bds]
 
-    # One Open-Meteo request for all boundary coordinates
+    # One Open-Meteo DEM request
     try:
         r = requests.get(
             "https://api.open-meteo.com/v1/elevation",
@@ -692,13 +712,26 @@ def _elevation_from_gps(fitfile, session_asc=None, session_des=None) -> dict:
         if not r.ok:
             log.warning(f"Open-Meteo elevation API error: {r.status_code}")
             return {}
-        elevs = r.json().get("elevation", [])
+        elevs = list(r.json().get("elevation", []))
     except Exception as e:
         log.warning(f"Open-Meteo boundary elevation failed: {e}")
         return {}
 
     if len(elevs) != len(sorted_bds):
         return {}
+
+    # Loop/out-and-back detection: if end GPS is within 300m of start GPS,
+    # snap end DEM to start DEM to remove GPS-drift altitude bias.
+    start_lat, start_lon = boundaries[sorted_bds[0]]
+    end_lat,   end_lon   = boundaries[sorted_bds[-1]]
+    dlat_m = (end_lat - start_lat) * 111320
+    dlon_m = (end_lon - start_lon) * 111320 * math.cos(math.radians((start_lat + end_lat) / 2))
+    start_end_dist = math.hypot(dlat_m, dlon_m)
+    if start_end_dist < 300:
+        elevs[-1] = elevs[0]
+        log.info(f"Loop route detected ({start_end_dist:.0f}m start↔end): end DEM snapped to start")
+
+    log.info(f"GPS DEM boundaries: {list(zip(sorted_bds, [round(e, 1) for e in elevs]))}")
 
     # Net elevation per km from consecutive boundary DEM heights
     buckets: dict[int, list] = {}
