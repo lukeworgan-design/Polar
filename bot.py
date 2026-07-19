@@ -553,19 +553,17 @@ def format_status_dashboard() -> str:
 
 def _build_splits_from_laps(fitfile, exercise_id: str, session_date: str, expected_laps) -> list:
     """Parse km splits from FIT 'lap' messages."""
-    split_rows = []
-    lap_num    = 0
+    all_laps = []
+    lap_num  = 0
     for record in fitfile.get_messages("lap"):
-        data = {d.name: d.value for d in record}
-        if expected_laps is not None and lap_num >= expected_laps:
-            continue
+        data            = {d.name: d.value for d in record}
         lap_dur         = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
         dist_m          = sf(data.get("total_distance"))
         avg_speed       = sf(data.get("avg_speed") or data.get("enhanced_avg_speed"))
         pace_s          = (1000 / avg_speed) if (avg_speed and avg_speed > 0) else (lap_dur / (dist_m / 1000) if (lap_dur and dist_m and dist_m > 0) else None)
         cadence_raw     = sf(data.get("avg_running_cadence") or data.get("avg_cadence"))
         cadence_max_raw = sf(data.get("max_running_cadence") or data.get("max_cadence"))
-        split_rows.append({
+        all_laps.append({
             "exercise_id": exercise_id, "session_date": session_date,
             "lap_number": lap_num, "km_number": lap_num + 1,
             "duration_seconds": lap_dur, "split_time_seconds": sf(data.get("total_elapsed_time")),
@@ -579,13 +577,19 @@ def _build_splits_from_laps(fitfile, exercise_id: str, session_date: str, expect
             "descent_m": sf(data.get("total_descent")),
         })
         lap_num += 1
-    # If avg lap distance << 1km these are terrain-based (Flat/Uphill/Downhill) auto-laps,
-    # not km splits — signal to fall back to record aggregation
-    if split_rows:
-        avg_dist = sum(s.get("distance_m") or 0 for s in split_rows) / len(split_rows)
-        if avg_dist < 500:
-            return []
-    return split_rows
+
+    if not all_laps:
+        return []
+
+    # Detect interval/terrain laps by checking avg distance across ALL laps before capping.
+    # 800m threshold separates km auto-laps (~1000m) from interval/terrain segments (<700m).
+    avg_dist = sum(s.get("distance_m") or 0 for s in all_laps) / len(all_laps)
+    if avg_dist < 800:
+        return []
+
+    # Cap to ceil(distance/km) to include partial final km (e.g. 0.9km on a 5.9km run)
+    max_laps = (expected_laps + 1) if expected_laps else len(all_laps)
+    return all_laps[:max_laps]
 
 
 def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> list:
