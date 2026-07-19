@@ -838,9 +838,9 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
 
         # Enrich per-km elevation — GPS boundary DEM preferred (no cumulative noise),
         # scaled barometer fallback when GPS unavailable.
-        gps_map    = _elevation_from_gps(fitfile, session_asc, session_des)
-        ascent_map = gps_map or _ascent_by_km_from_records(fitfile, session_asc, session_des)
-        elev_src   = "GPS" if gps_map else ("baro-scaled" if session_asc is not None else "baro")
+        baro_map   = _ascent_by_km_from_records(fitfile, session_asc, session_des)
+        ascent_map = baro_map or _elevation_from_gps(fitfile, session_asc, session_des)
+        elev_src   = ("baro-scaled" if session_asc is not None else "baro") if baro_map else "GPS"
         for s in split_rows:
             km_idx = s["lap_number"]
             if km_idx in ascent_map:
