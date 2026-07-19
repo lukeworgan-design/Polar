@@ -652,17 +652,14 @@ def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> 
     return split_rows
 
 
-def _elevation_from_gps(fitfile) -> dict:
+def _elevation_from_gps(fitfile, session_asc=None, session_des=None) -> dict:
     """
-    Returns {km_idx: (ascent_m, descent_m)} using Open-Meteo DEM elevation
-    looked up from GPS coordinates in the FIT file.
-    Falls back to empty dict if GPS unavailable or API unreachable.
-    Only reliable for routes with significant elevation change (>= 30m total).
+    Per-km net elevation from GPS + Open-Meteo DEM.
+    Queries DEM elevation at km-boundary GPS coordinates only — no cumulative
+    noise accumulation, works reliably even for gentle terrain.
     """
-    SAMPLE_EVERY_M = 50  # one GPS point per 50m of distance
-
-    points = []
-    last_dist = -SAMPLE_EVERY_M
+    # Find the GPS record closest to each km boundary (0m, 1000m, 2000m, …)
+    boundaries: dict[int, tuple] = {}  # km_boundary_int → (lat_deg, lon_deg, err_m)
     for record in fitfile.get_messages("record"):
         data   = {d.name: d.value for d in record}
         dist_m = sf(data.get("distance"))
@@ -670,54 +667,59 @@ def _elevation_from_gps(fitfile) -> dict:
         lon    = data.get("position_long")
         if dist_m is None or lat is None or lon is None:
             continue
-        # fitparse returns raw semicircles for position fields — convert to degrees
         lat_deg = lat * 180.0 / (2 ** 31)
         lon_deg = lon * 180.0 / (2 ** 31)
-        if dist_m - last_dist >= SAMPLE_EVERY_M:
-            points.append((dist_m, lat_deg, lon_deg))
-            last_dist = dist_m
+        km_bd   = round(dist_m / 1000)
+        err     = abs(dist_m - km_bd * 1000)
+        if km_bd not in boundaries or err < boundaries[km_bd][2]:
+            boundaries[km_bd] = (lat_deg, lon_deg, err)
 
-    if len(points) < 2:
+    if len(boundaries) < 2:
         return {}
 
-    # Query Open-Meteo elevation API in batches of 100
-    elevs = []
-    for i in range(0, len(points), 100):
-        batch = points[i:i + 100]
-        try:
-            r = requests.get(
-                "https://api.open-meteo.com/v1/elevation",
-                params={"latitude":  ",".join(f"{p[1]:.6f}" for p in batch),
-                        "longitude": ",".join(f"{p[2]:.6f}" for p in batch)},
-                timeout=15,
-            )
-            if r.ok:
-                elevs.extend(r.json().get("elevation", [None] * len(batch)))
-            else:
-                log.warning(f"Open-Meteo elevation API error: {r.status_code}")
-                return {}
-        except Exception as e:
-            log.warning(f"Open-Meteo elevation request failed: {e}")
+    sorted_bds = sorted(boundaries.keys())
+    lats = [boundaries[b][0] for b in sorted_bds]
+    lons = [boundaries[b][1] for b in sorted_bds]
+
+    # One Open-Meteo request for all boundary coordinates
+    try:
+        r = requests.get(
+            "https://api.open-meteo.com/v1/elevation",
+            params={"latitude":  ",".join(f"{l:.6f}" for l in lats),
+                    "longitude": ",".join(f"{l:.6f}" for l in lons)},
+            timeout=15,
+        )
+        if not r.ok:
+            log.warning(f"Open-Meteo elevation API error: {r.status_code}")
             return {}
+        elevs = r.json().get("elevation", [])
+    except Exception as e:
+        log.warning(f"Open-Meteo boundary elevation failed: {e}")
+        return {}
 
-    # Compute per-km ascent/descent from DEM elevations
-    buckets  = {}
-    prev_elev = None
-    for (dist_m, _, __), elev in zip(points, elevs):
-        if elev is None:
-            continue
-        km_idx = int(dist_m / 1000)
-        if km_idx not in buckets:
-            buckets[km_idx] = [0.0, 0.0]
-        if prev_elev is not None:
-            diff = elev - prev_elev
-            if diff > 0:   buckets[km_idx][0] += diff
-            elif diff < 0: buckets[km_idx][1] += abs(diff)
-        prev_elev = elev
+    if len(elevs) != len(sorted_bds):
+        return {}
 
-    result = {k: (round(v[0], 1) or None, round(v[1], 1) or None) for k, v in buckets.items()}
-    log.info(f"Open-Meteo GPS elevation: {len(points)} points, {len(result)} km buckets")
-    return result
+    # Net elevation per km from consecutive boundary DEM heights
+    buckets: dict[int, list] = {}
+    for i in range(1, len(sorted_bds)):
+        km_idx = sorted_bds[i] - 1
+        net    = elevs[i] - elevs[i - 1]
+        buckets[km_idx] = [net if net > 0 else 0.0, -net if net < 0 else 0.0]
+
+    # Scale to FIT session totals when available
+    if session_asc is not None:
+        raw_asc = sum(v[0] for v in buckets.values())
+        scale   = (session_asc / raw_asc) if raw_asc > 0 else 0.0
+        for k in buckets: buckets[k][0] = round(buckets[k][0] * scale, 1)
+
+    if session_des is not None:
+        raw_des = sum(v[1] for v in buckets.values())
+        scale   = (session_des / raw_des) if raw_des > 0 else 0.0
+        for k in buckets: buckets[k][1] = round(buckets[k][1] * scale, 1)
+
+    log.info(f"GPS boundary elevation: {len(sorted_bds)} boundaries → {len(buckets)} km buckets")
+    return {k: (v[0] or None, v[1] or None) for k, v in buckets.items()}
 
 
 def _ascent_by_km_from_records(fitfile, session_asc=None, session_des=None) -> dict:
@@ -796,10 +798,9 @@ def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_
                 s["_session_asc"] = session_asc
                 s["_session_des"] = session_des
 
-        # Enrich per-km elevation — GPS+DEM for significant hills, scaled barometer otherwise.
-        # GPS+DEM is unreliable on gentle terrain (<30m) due to DEM resolution (~30m).
-        use_gps = (session_asc or 0) >= 30
-        gps_map = _elevation_from_gps(fitfile) if use_gps else {}
+        # Enrich per-km elevation — GPS boundary DEM preferred (no cumulative noise),
+        # scaled barometer fallback when GPS unavailable.
+        gps_map    = _elevation_from_gps(fitfile, session_asc, session_des)
         ascent_map = gps_map or _ascent_by_km_from_records(fitfile, session_asc, session_des)
         elev_src   = "GPS" if gps_map else ("baro-scaled" if session_asc is not None else "baro")
         for s in split_rows:
