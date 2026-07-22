@@ -337,6 +337,45 @@ bot.command('bin', async (ctx) => {
   }
 });
 
+// Handle /events command — diagnostic: show what Rose reads from the calendar
+// and whether she currently considers today a school holiday.
+bot.command('events', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  try {
+    await ctx.sendChatAction('typing');
+  } catch {
+    // ignore
+  }
+
+  try {
+    const { getTodaysEvents, getUpcomingEvents } = await import('./calendar');
+    const [today, upcoming] = await Promise.all([getTodaysEvents(), getUpcomingEvents(3)]);
+
+    const HOLIDAY_KEYWORDS = ['holiday', 'half term', 'inset', 'teacher training', 'training day', 'school closed'];
+    const isHolidayEvent = (summary: string) =>
+      HOLIDAY_KEYWORDS.some((k) => summary.toLowerCase().includes(k));
+
+    const fmt = (e: { summary: string; start: string; end: string }) =>
+      `• ${e.summary} (${e.start} → ${e.end})${isHolidayEvent(e.summary) ? '  ⟵ 🏖 detected as holiday' : ''}`;
+
+    const seen = new Set<string>();
+    const all = [...today, ...upcoming].filter((e) => {
+      const key = `${e.summary}|${e.start}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    const lines = all.length ? all.map(fmt).join('\n') : '(no events found)';
+    await ctx.reply(
+      `📋 What I can see on the Family calendar (today + next 3 days):\n\n${lines}\n\nIf a holiday is missing or not flagged above, either it's named without a holiday keyword or it's on a different calendar than the one I read.`,
+    );
+  } catch (err) {
+    console.error('Error in /events diagnostic:', err);
+    await ctx.reply('Couldn\'t read the calendar just now — I may not be able to connect to Google Calendar.');
+  }
+});
+
 // Handle /friday command — manual trigger for the Friday school's-out check-in
 bot.command('friday', async (ctx) => {
   if (!isFromGroup(ctx)) return;
