@@ -961,10 +961,12 @@ export async function generateDailySummary(): Promise<string> {
   // PE kit during a break. Only the calendar is authoritative — never guess.
   const tomorrowDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
   const tomorrowStr = `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getDate()).padStart(2, '0')}`;
-  const HOLIDAY_KEYWORDS = ['school holiday', 'half term', 'easter holiday', 'christmas holiday', 'summer holiday', 'inset day'];
-  const holidayRanges = [...todayEvents, ...upcomingEvents]
+  const HOLIDAY_KEYWORDS = ['holiday', 'half term', 'inset', 'teacher training', 'training day', 'school closed'];
+  const calendarHolidayRanges = [...todayEvents, ...upcomingEvents]
     .filter(e => HOLIDAY_KEYWORDS.some(k => e.summary.toLowerCase().includes(k)))
     .map(e => ({ start: e.start.slice(0, 10), end: e.end.slice(0, 10) }));
+  // Merge calendar-detected holidays with the known term dates in config.
+  const holidayRanges = [...calendarHolidayRanges, ...config.family.schoolHolidays];
   const inHoliday = (dateStr: string) =>
     holidayRanges.some(r => (dateStr >= r.start && dateStr < r.end) || dateStr === r.start);
   const todayIsHoliday = inHoliday(todayStr);
@@ -1022,6 +1024,8 @@ ${todaySchoolRun ? `SCHOOL RUN TODAY: ${todaySchoolRun}. Include a **🚌 School
 ${mealSection ? `MEALS: ${mealSection}\nInclude a **🍽 Food** section with today's planned meals. Keep it to one line per meal. If only dinner is set, just mention dinner.` : ''}
 
 ${peSection ? `PE KIT ALERT: ${peSection}\nInclude this under the **🎒 Kids** section. Use exactly the day names given (today/tomorrow) — do not guess or invent.` : ''}
+
+${todayIsHoliday ? `IMPORTANT: Today is during the school holidays. Do NOT mention PE kit, the school run, school uniform, breakfast club, or after-school clubs — there is no school. If anything, a cheerful "no school run to worry about today" is welcome, but keep it light.` : ''}
 
 Rules:
 - Start with a varied one-liner greeting (no "Good morning!" every day)

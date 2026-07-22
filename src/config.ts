@@ -76,7 +76,17 @@ export const config = {
       { name: 'Poppy', dob: process.env['POPPY_DOB'] || '2018-09-01' },
       { name: 'Billy', dob: process.env['BILLY_DOB'] || '2020-09-01' },
     ],
-    babyDue: process.env['BABY_DUE_DATE'] || '2026-08-17',
+    babyDue: process.env['BABY_DUE_DATE'] || '2026-08-10',
+    // Known school holiday ranges [start, endExclusive] as a fallback so Rose
+    // stops nagging about PE kit / school runs even when the Family calendar has
+    // no holiday event. Edit these to match Poppy & Billy's actual school
+    // (Gloucestershire) term dates. The Google Calendar is still checked too —
+    // whichever source flags a holiday wins.
+    schoolHolidays: [
+      { name: 'Summer holidays 2026', start: '2026-07-22', end: '2026-09-03' },
+      { name: 'October half term 2026', start: '2026-10-26', end: '2026-10-31' },
+      { name: 'Christmas holidays 2026', start: '2026-12-19', end: '2027-01-05' },
+    ] as Array<{ name: string; start: string; end: string }>,
   },
   // Bin collection — Cheltenham BC alternates general/recycling fortnightly on Thursdays.
   // Set BIN_REFERENCE_DATE to any known Friday collection date (YYYY-MM-DD) and
