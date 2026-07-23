@@ -2254,6 +2254,24 @@ def handle_message(message):
         bot.reply_to(message, "⚠️ *Recent warnings/errors:*\n```\n" + "\n".join(lines[-20:]) + "\n```", parse_mode="Markdown")
         return
 
+    if lower == "/backfillsports":
+        try:
+            rows = supabase.table("polar_exercises").select("polar_exercise_id,raw_json").eq("sport","OTHER").execute()
+            updated = []
+            for r in rows.data:
+                if not r.get("raw_json"): continue
+                d = json.loads(r["raw_json"])
+                detailed = d.get("detailed_sport_info")
+                if detailed and detailed != "OTHER":
+                    supabase.table("polar_exercises").update({"sport": detailed}).eq("polar_exercise_id", r["polar_exercise_id"]).execute()
+                    updated.append(f"{d.get('start_time','?')[:10]}: OTHER → {detailed}")
+            if updated:
+                bot.reply_to(message, "✅ Updated:\n" + "\n".join(updated))
+            else:
+                bot.reply_to(message, "No OTHER exercises with detailed_sport_info found.")
+        except Exception as e: bot.reply_to(message, f"Error: {e}")
+        return
+
     if lower == "/otherdebug":
         try:
             rows = supabase.table("polar_exercises").select("date,sport,raw_json").eq("sport","OTHER").order("date",desc=True).limit(3).execute()
