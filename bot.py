@@ -1212,6 +1212,8 @@ def save_wellness_checkin(text: str) -> str:
 def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) -> int:
     try:
         sport       = ex_data.get("sport", "")
+        if sport == "OTHER" and ex_data.get("detailed_sport_info"):
+            sport = ex_data["detailed_sport_info"]
         hr          = ex_data.get("heart_rate", {}) or {}
         load        = ex_data.get("training_load_pro", {}) or {}
         zones       = ex_data.get("heart_rate_zones", []) or []
@@ -2066,6 +2068,20 @@ End with: NOTE: evening debrief | data pending"""
 
 # ── BACKGROUND LOOPS ───────────────────────────────────────────────────────
 
+def _backfill_other_sports():
+    """Resolve sport=OTHER rows using detailed_sport_info stored in raw_json."""
+    try:
+        rows = supabase.table("polar_exercises").select("polar_exercise_id,raw_json").eq("sport","OTHER").execute()
+        for r in rows.data:
+            if not r.get("raw_json"): continue
+            d = json.loads(r["raw_json"])
+            detailed = d.get("detailed_sport_info")
+            if detailed and detailed != "OTHER":
+                supabase.table("polar_exercises").update({"sport": detailed}).eq("polar_exercise_id", r["polar_exercise_id"]).execute()
+                log.info(f"Backfilled {r['polar_exercise_id']}: OTHER → {detailed}")
+    except Exception as e:
+        log.error(f"_backfill_other_sports: {e}")
+
 def polar_sync_loop():
     while True:
         try:
@@ -2594,6 +2610,7 @@ if __name__ == "__main__":
     log.info("🏃 Polar Super Coach Bot v8.2 starting...")
     log.info(f"Supabase: {SUPABASE_URL}")
     log.info(f"Polar User: {POLAR_USER_ID}")
+    _backfill_other_sports()
     threading.Thread(target=polar_sync_loop, daemon=True).start()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     bot.infinity_polling(interval=1, timeout=30)
