@@ -281,6 +281,7 @@ def sport_emoji(sport: str) -> str:
     if "FLEX" in sport or "STRETCH" in sport: return "🧘"
     if "CORE" in sport:        return "💪"
     if "CROSS" in sport or "BOOTCAMP" in sport: return "⚡"
+    if sport == "OTHER": return "💪"
     if sport in RUNNING_SPORTS: return "🏃"
     return "🏃"
 
@@ -1068,7 +1069,8 @@ def format_new_run_notification(ex: dict, exercise_id: str, splits_count: int) -
         hr      = ex.get("heart_rate", {}) or {}
         avg_hr  = hr.get("average") or hr.get("avg") or ex.get("avg_heart_rate", "?")
         max_hr  = hr.get("maximum") or hr.get("max") or ex.get("max_heart_rate", "?")
-        load    = ex.get("training_load") or ex.get("training_load_pro", {}).get("cardio-load", "?")
+        load_raw = ex.get("training_load") or ex.get("training_load_pro", {}).get("cardio-load")
+        load     = round(load_raw) if load_raw else "?"
         pace_s  = dur_s / dist_km if dist_km else 0
         lines   = [f"{sport_emoji(sport)} *New {sport.replace('_',' ').title()} Synced!*\n"]
         if dist_km > 0:
@@ -1081,10 +1083,9 @@ def format_new_run_notification(ex: dict, exercise_id: str, splits_count: int) -
         if splits_count > 0:
             split_data = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m,distance_m").eq("exercise_id", exercise_id).order("lap_number").limit(5).execute()
             if split_data.data:
+                table_lines = format_splits_table(split_data.data, "").split("\n")
                 lines.append("\n*First splits:*")
-                lines.append("`KM  │ Pace     │  HR │ Power │ Cad`")
-                for s in split_data.data:
-                    lines.append(f"`{str(s['km_number']).rjust(2)}  │ {(s.get('pace_display') or 'N/A').ljust(8)} │ {str(s.get('hr_avg') or '?').rjust(3)} │ {str(s.get('power_avg') or '?').rjust(4)}W │ {str(s.get('cadence_avg') or '?').rjust(3)}`")
+                lines.extend(table_lines[1:])  # skip the "📊 *…*" header line
         return "\n".join(lines)
     except Exception as e:
         log.error(f"Format notification error: {e}")
