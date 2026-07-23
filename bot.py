@@ -2238,6 +2238,19 @@ def handle_message(message):
         bot.reply_to(message, "⚠️ *Recent warnings/errors:*\n```\n" + "\n".join(lines[-20:]) + "\n```", parse_mode="Markdown")
         return
 
+    if lower == "/otherdebug":
+        try:
+            rows = supabase.table("polar_exercises").select("date,sport,raw_json").eq("sport","OTHER").order("date",desc=True).limit(3).execute()
+            if not rows.data: bot.reply_to(message, "No OTHER exercises found."); return
+            out = []
+            for r in rows.data:
+                d = json.loads(r["raw_json"]) if r.get("raw_json") else {}
+                scalar = {k: v for k, v in d.items() if isinstance(v, (str, int, float, bool)) or v is None}
+                out.append(f"*{r['date'][:10]}*\n`{json.dumps(scalar, indent=2)[:800]}`")
+            bot.reply_to(message, "\n\n".join(out), parse_mode="Markdown")
+        except Exception as e: bot.reply_to(message, f"Error: {e}")
+        return
+
     if lower == "/synccheck":
         try:
             r = requests.get(f"{POLAR_BASE}/exercises", headers=polar_headers())
