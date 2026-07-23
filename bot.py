@@ -39,7 +39,8 @@ bot      = telebot.TeleBot(TELEGRAM_TOKEN)
 claude   = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-ALLOWED_SPORTS      = {"RUNNING", "TRAIL_RUNNING", "TREADMILL_RUNNING"}
+RUNNING_SPORTS      = {"RUNNING", "TRAIL_RUNNING", "TREADMILL_RUNNING"}
+ALLOWED_SPORTS      = RUNNING_SPORTS | {"STRENGTH_TRAINING", "FUNCTIONAL_TRAINING", "FLEXIBILITY_TRAINING", "YOGA", "STRETCHING", "CORE", "CROSS_TRAINING", "BOOTCAMP"}
 POLAR_BASE          = "https://www.polaraccesslink.com/v3"
 STRAVA_BASE         = "https://www.strava.com/api/v3"
 STRAVA_CLIENT_ID    = os.environ.get("STRAVA_CLIENT_ID", "")
@@ -262,8 +263,15 @@ def readiness_emoji(score: float) -> str:
 
 def sport_emoji(sport: str) -> str:
     if not sport: return "🏃"
-    if "TRAIL" in sport:     return "🏔️"
-    if "TREADMILL" in sport: return "⚙️"
+    if "TRAIL" in sport:       return "🏔️"
+    if "TREADMILL" in sport:   return "⚙️"
+    if "STRENGTH" in sport:    return "🏋️"
+    if "FUNCTIONAL" in sport:  return "🏋️"
+    if "YOGA" in sport:        return "🧘"
+    if "FLEX" in sport or "STRETCH" in sport: return "🧘"
+    if "CORE" in sport:        return "💪"
+    if "CROSS" in sport or "BOOTCAMP" in sport: return "⚡"
+    if sport in RUNNING_SPORTS: return "🏃"
     return "🏃"
 
 def fmt_date(date_str: str) -> str:
@@ -1052,7 +1060,14 @@ def format_new_run_notification(ex: dict, exercise_id: str, splits_count: int) -
         max_hr  = hr.get("maximum") or hr.get("max") or ex.get("max_heart_rate", "?")
         load    = ex.get("training_load") or ex.get("training_load_pro", {}).get("cardio-load", "?")
         pace_s  = dur_s / dist_km if dist_km else 0
-        lines   = [f"{sport_emoji(sport)} *New {sport.replace('_',' ').title()} Synced!*\n", f"📅 {fmt_date(ex.get('start_time') or ex.get('date',''))}  •  {dist_km:.2f}km  •  {int(dur_s//60)}min", f"💨 {seconds_to_pace(pace_s)}  ❤️ {avg_hr}/{max_hr}bpm", f"🔥 Load {load}", f"📊 {splits_count} km splits saved"]
+        lines   = [f"{sport_emoji(sport)} *New {sport.replace('_',' ').title()} Synced!*\n"]
+        if dist_km > 0:
+            lines.append(f"📅 {fmt_date(ex.get('start_time') or ex.get('date',''))}  •  {dist_km:.2f}km  •  {int(dur_s//60)}min")
+            lines.append(f"💨 {seconds_to_pace(pace_s)}  ❤️ {avg_hr}/{max_hr}bpm")
+        else:
+            lines.append(f"📅 {fmt_date(ex.get('start_time') or ex.get('date',''))}  •  {int(dur_s//60)}min")
+            lines.append(f"❤️ {avg_hr}/{max_hr}bpm")
+        lines += [f"🔥 Load {load}", f"📊 {splits_count} km splits saved" if splits_count else ""]
         if splits_count > 0:
             split_data = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m,distance_m").eq("exercise_id", exercise_id).order("lap_number").limit(5).execute()
             if split_data.data:
@@ -1264,10 +1279,11 @@ def sync_new_polar_exercises() -> list:
             detail_r = requests.get(f"{POLAR_BASE}/exercises/{ex_id}?zones=true", headers=polar_headers())
             if not detail_r.ok: continue
             ex_data    = detail_r.json()
+            sport      = ex_data.get("sport", "")
             dist_m     = sf(ex_data.get("distance"))
-            split_rows = fetch_fit_and_parse(ex_id, ex_data.get("start_time", "")[:10], dist_m)
+            split_rows = fetch_fit_and_parse(ex_id, ex_data.get("start_time", "")[:10], dist_m) if sport in RUNNING_SPORTS else []
             splits     = save_exercise_from_api(ex_data, ex_id, split_rows)
-            new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits})
+            new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits, "sport": sport})
         return new_exercises
     except Exception as e:
         log.error(f"Exercises sync error: {e}")
@@ -2036,7 +2052,8 @@ def polar_sync_loop():
             new = sync_new_polar_exercises()
             for ex in new:
                 bot.send_message(YOUR_TELEGRAM_ID, format_new_run_notification(ex["data"], ex["id"], ex["splits"]), parse_mode="Markdown")
-                threading.Thread(target=send_post_run_debrief, args=(ex["id"],), daemon=True).start()
+                if ex.get("sport", "") in RUNNING_SPORTS:
+                    threading.Thread(target=send_post_run_debrief, args=(ex["id"],), daemon=True).start()
             sleep_n     = sync_sleep()
             recharge_n  = sync_nightly_recharge()
             activity_n  = sync_daily_activity()
