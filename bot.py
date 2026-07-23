@@ -2197,7 +2197,8 @@ def handle_message(message):
         if new:
             for ex in new:
                 bot.send_message(chat_id, format_new_run_notification(ex["data"], ex["id"], ex["splits"]), parse_mode="Markdown")
-                threading.Thread(target=send_post_run_debrief, args=(ex["id"],), daemon=True).start()
+                if ex.get("sport", "") in RUNNING_SPORTS:
+                    threading.Thread(target=send_post_run_debrief, args=(ex["id"],), daemon=True).start()
         else:
             bot.send_message(chat_id, "No new exercises found.")
         parts = []
@@ -2208,6 +2209,31 @@ def handle_message(message):
         if load_n:      parts.append(f"🔥 {load_n} load days")
         if sleepwise_n: parts.append(f"🧠 {sleepwise_n} SleepWise days")
         if parts: bot.send_message(chat_id, "✅ Synced: " + "  •  ".join(parts))
+        return
+
+    if lower == "/synccheck":
+        try:
+            r = requests.get(f"{POLAR_BASE}/exercises", headers=polar_headers())
+            if r.status_code == 204:
+                bot.reply_to(message, "Polar API returned 204 — no exercises available."); return
+            if not r.ok:
+                bot.reply_to(message, f"Polar API error: {r.status_code} {r.text[:200]}"); return
+            exercises = r.json()
+            if not isinstance(exercises, list): exercises = exercises.get("exercises", [])
+            if not exercises:
+                bot.reply_to(message, "Polar returned 0 exercises."); return
+            db_ids = {row["polar_exercise_id"] for row in (supabase.table("polar_exercises").select("polar_exercise_id").execute().data or [])}
+            lines = [f"📡 *Polar exercises* ({len(exercises)} returned):\n"]
+            for ex in exercises[:20]:
+                ex_id   = str(ex.get("id", "?"))
+                sport   = ex.get("sport", "?")
+                start   = (ex.get("start_time") or ex.get("date") or "?")[:10]
+                in_db   = "✅" if ex_id in db_ids else "❌ missing"
+                allowed = "✓" if sport in ALLOWED_SPORTS else "✗ skipped"
+                lines.append(f"{sport_emoji(sport)} `{start}` {sport} — {in_db} {allowed}")
+            bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
         return
 
     if lower == "/fitdebug":
