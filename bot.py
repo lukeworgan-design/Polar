@@ -1270,21 +1270,24 @@ def sync_new_polar_exercises() -> list:
             if not ex_id or ex.get("sport", "") not in ALLOWED_SPORTS: continue
             existing = supabase.table("polar_exercises").select("polar_exercise_id,distance_meters").eq("polar_exercise_id", ex_id).limit(1).execute()
             if existing.data:
-                # Re-fetch splits if significantly incomplete (e.g. synced mid-run)
+                # Re-fetch if distance unknown (partial save) or splits missing for a running exercise
                 ex_dist_m   = sf((existing.data[0] or {}).get("distance_meters")) or 0
                 expected    = int(ex_dist_m / 1000)
-                if expected >= 5:
-                    split_count = supabase.table("polar_km_splits").select("id", count="exact").eq("exercise_id", ex_id).execute()
-                    actual      = split_count.count or 0
-                    if actual < max(5, expected // 2):
-                        log.info(f"Exercise {ex_id}: only {actual}/{expected} splits — re-fetching FIT")
-                        supabase.table("polar_km_splits").delete().eq("exercise_id", ex_id).execute()
-                        detail_r2 = requests.get(f"{POLAR_BASE}/exercises/{ex_id}?zones=true", headers=polar_headers())
-                        if detail_r2.ok:
-                            ex_data2   = detail_r2.json()
-                            split_rows = fetch_fit_and_parse(ex_id, ex_data2.get("start_time", "")[:10], ex_dist_m)
-                            if split_rows:
-                                supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
+                split_count = supabase.table("polar_km_splits").select("id", count="exact").eq("exercise_id", ex_id).execute()
+                actual      = split_count.count or 0
+                sport_ex    = ex.get("sport", "")
+                needs_refetch = (
+                    (ex_dist_m == 0 and sport_ex in RUNNING_SPORTS) or
+                    (expected >= 5 and actual < max(5, expected // 2))
+                )
+                if needs_refetch:
+                    log.info(f"Exercise {ex_id}: dist={ex_dist_m} splits={actual}/{expected} — re-fetching")
+                    supabase.table("polar_km_splits").delete().eq("exercise_id", ex_id).execute()
+                    detail_r2 = requests.get(f"{POLAR_BASE}/exercises/{ex_id}?zones=true", headers=polar_headers())
+                    if detail_r2.ok:
+                        ex_data2   = detail_r2.json()
+                        split_rows = fetch_fit_and_parse(ex_id, ex_data2.get("start_time", "")[:10], ex_dist_m or sf(ex_data2.get("distance")))
+                        save_exercise_from_api(ex_data2, ex_id, split_rows)
                 continue
             detail_r = requests.get(f"{POLAR_BASE}/exercises/{ex_id}?zones=true", headers=polar_headers())
             if not detail_r.ok:
@@ -2253,7 +2256,11 @@ def handle_message(message):
                 start   = (ex.get("start_time") or ex.get("date") or "?")[:10]
                 in_db   = "✅" if ex_id in db_ids else "❌ missing"
                 allowed = "✓" if sport in ALLOWED_SPORTS else "✗ skipped"
-                lines.append(f"{sport_emoji(sport)} `{start}` {sport} — {in_db} {allowed}")
+                splits_n = ""
+            if ex_id in db_ids and sport in RUNNING_SPORTS:
+                sc = supabase.table("polar_km_splits").select("id", count="exact").eq("exercise_id", ex_id).execute()
+                splits_n = f" ({sc.count or 0}sp)"
+            lines.append(f"{sport_emoji(sport)} `{start}` {sport} — {in_db}{splits_n} {allowed}")
             bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             bot.reply_to(message, f"Error: {e}")
