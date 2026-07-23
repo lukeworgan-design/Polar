@@ -25,6 +25,16 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
+from collections import deque
+_log_buffer: deque = deque(maxlen=50)
+class _BufHandler(logging.Handler):
+    def emit(self, record):
+        if record.levelno >= logging.WARNING:
+            _log_buffer.append(self.format(record))
+_buf_handler = _BufHandler()
+_buf_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+logging.getLogger().addHandler(_buf_handler)
+
 TELEGRAM_TOKEN      = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_API_KEY   = os.environ["ANTHROPIC_API_KEY"]
 POLAR_ACCESS_TOKEN  = os.environ["POLAR_ACCESS_TOKEN"]
@@ -1277,13 +1287,19 @@ def sync_new_polar_exercises() -> list:
                                 supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
                 continue
             detail_r = requests.get(f"{POLAR_BASE}/exercises/{ex_id}?zones=true", headers=polar_headers())
-            if not detail_r.ok: continue
+            if not detail_r.ok:
+                log.warning(f"Exercise {ex_id}: detail fetch failed {detail_r.status_code}")
+                continue
             ex_data    = detail_r.json()
             sport      = ex_data.get("sport", "")
             dist_m     = sf(ex_data.get("distance"))
-            split_rows = fetch_fit_and_parse(ex_id, ex_data.get("start_time", "")[:10], dist_m) if sport in RUNNING_SPORTS else []
-            splits     = save_exercise_from_api(ex_data, ex_id, split_rows)
-            new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits, "sport": sport})
+            try:
+                split_rows = fetch_fit_and_parse(ex_id, ex_data.get("start_time", "")[:10], dist_m) if sport in RUNNING_SPORTS else []
+                splits     = save_exercise_from_api(ex_data, ex_id, split_rows)
+                new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits, "sport": sport})
+                log.info(f"Synced exercise {ex_id} {sport} {ex_data.get('start_time','')[:10]}")
+            except Exception as ex_err:
+                log.error(f"Exercise {ex_id} save failed: {ex_err}")
         return new_exercises
     except Exception as e:
         log.error(f"Exercises sync error: {e}")
@@ -2209,6 +2225,13 @@ def handle_message(message):
         if load_n:      parts.append(f"🔥 {load_n} load days")
         if sleepwise_n: parts.append(f"🧠 {sleepwise_n} SleepWise days")
         if parts: bot.send_message(chat_id, "✅ Synced: " + "  •  ".join(parts))
+        return
+
+    if lower == "/synclogs":
+        lines = list(_log_buffer)
+        if not lines:
+            bot.reply_to(message, "No warnings or errors since last restart."); return
+        bot.reply_to(message, "⚠️ *Recent warnings/errors:*\n```\n" + "\n".join(lines[-20:]) + "\n```", parse_mode="Markdown")
         return
 
     if lower == "/synccheck":
