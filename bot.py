@@ -1948,41 +1948,54 @@ def send_post_run_debrief(exercise_id: str):
         cl          = cl_resp.data[0] if cl_resp.data else {}
         now         = datetime.now(timezone.utc)
         week_start  = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
-        week_runs   = supabase.table("polar_exercises").select("date,distance_meters,training_load,duration_seconds").gte("date", week_start).order("date").execute().data or []
-        goals_resp  = supabase.table("goals").select("race_name,race_date,distance_km,target_time").eq("active", True).execute()
-        goals_text  = "\n".join([f"- {g['race_name']} on {g['race_date']}: {g['distance_km']}km target {g['target_time']}" for g in (goals_resp.data or [])]) or "No active goals."
+        today_str2  = now.strftime("%Y-%m-%d")
+        week_runs   = supabase.table("polar_exercises").select("date,sport,distance_meters,training_load,duration_seconds,avg_heart_rate").gte("date", week_start).order("date").execute().data or []
+        goals_resp  = supabase.table("goals").select("race_name,race_date,distance_km,target_time").eq("active", True).gte("race_date", today_str2).execute()
+        goals_text  = "\n".join([f"- {g['race_name']} on {g['race_date']}: {g['distance_km']}km target {g['target_time']}" for g in (goals_resp.data or [])]) or "No active goals set — in base-building phase."
         dist_km     = round((run.get("distance_meters") or 0) / 1000, 2)
         dur_s       = run.get("duration_seconds") or 0
         dur_str     = f"{dur_s // 3600}h {(dur_s % 3600) // 60}m" if dur_s >= 3600 else f"{dur_s // 60}m {dur_s % 60}s"
         pace_s      = (dur_s / dist_km) if dist_km > 0 else 0
-        splits_text = ("KM SPLITS:\n" + "\n".join([f"  km {s['km_number']}: {s.get('pace_display','?')} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cad {s.get('cadence_avg','?')}spm" for s in splits[:20]])) if splits else ""
-        weekly_km   = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
-        weekly_load = sum((r.get("training_load") or 0) for r in week_runs)
-        sleep_text  = "\n".join([f"  - {s['date']}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h, score {s.get('sleep_score','?')}, deep {(s.get('deep_sleep_seconds') or 0)//60}min" for s in sleep_rows]) or "No recent sleep data."
-        hrv_text    = f"Recharge: {hrv.get('recharge_status','?')}, ANS {hrv.get('ans_charge','?')}, HRV {hrv.get('hrv_avg','?')}" if hrv else "No HRV data."
-        cl_text     = f"Cardio load: {cl.get('cardio_load_status','?')} | Strain {cl.get('strain','?')} / Tolerance {cl.get('tolerance','?')} | Ratio {cl.get('cardio_load_ratio','?')}" if cl else "No cardio load data."
-        prompt = f"""Elite running coach. Luke just finished a run. 3 short paragraphs (max 280 tokens).
+        def session_label(r):
+            sp = r.get("sport","")
+            d  = round((r.get("distance_meters") or 0)/1000,1)
+            if sp in RUNNING_SPORTS: return f"🏃 {d}km run (HR {r.get('avg_heart_rate','?')})"
+            return f"💪 {sp.replace('_',' ').title()}"
+        splits_text  = "\n".join([f"  km{s['km_number']}: {s.get('pace_display','?')} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')}bpm | {s.get('power_avg','?')}W" for s in splits[:20]]) if splits else "No splits."
+        weekly_km    = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
+        weekly_load  = sum((r.get("training_load") or 0) for r in week_runs)
+        week_summary = "\n".join([f"  {r['date'][:10]}: {session_label(r)}" for r in week_runs])
+        sleep_text   = " | ".join([f"{s['date'][:5]}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h score {s.get('sleep_score','?')}" for s in sleep_rows]) or "No sleep data."
+        hrv_text     = f"Recharge {hrv.get('recharge_status','?')}, HRV {hrv.get('hrv_avg','?')}, ANS {hrv.get('ans_charge','?')}" if hrv else "No HRV."
+        cl_text      = f"Load ratio {cl.get('cardio_load_ratio','?')} ({cl.get('cardio_load_status','?')}) | Strain {cl.get('strain','?')} / Tolerance {cl.get('tolerance','?')}" if cl else "No load data."
+        prompt = f"""You are Luke's 5am Crew running coach — a mate who really knows him. Write a post-run debrief that feels like a WhatsApp voice note transcribed: warm, funny, honest, uses his running lore.
 
-ATHLETE: Luke Worgan, 37yo, 167cm, 78kg, VO2max 55, max HR 198, aerobic threshold 149bpm, anaerobic threshold 178bpm
-STATUS: {days_to_race()}
-GOALS:\n{goals_text}
+ATHLETE: Luke Worgan | 37 | VO2max 55 | Max HR 198 | Aerobic threshold 149bpm | Anaerobic threshold 178bpm
+PHASE: {goals_text}
+RUNNING LORE: 5am Crew | Code Brown | Tin Man | Luke Logic | "if I can't keep my HR down, may as well keep it up" | accidental progression run | found another hill
 
-TODAY'S RUN:
-- Distance: {dist_km}km | Duration: {dur_str} | Avg pace: {seconds_to_pace(pace_s)}
-- Avg HR: {run.get('avg_heart_rate','?')}bpm | Max HR: {run.get('max_heart_rate','?')}bpm
-- Avg power: {run.get('avg_power','?')}W | Cadence: {run.get('avg_cadence','?')}spm
-- Training load: {run.get('training_load','?')} | Ascent: {run.get('ascent','?')}m
+TODAY'S RUN: {dist_km}km in {dur_str} @ avg {seconds_to_pace(pace_s)}
+HR: avg {run.get('avg_heart_rate','?')} / max {run.get('max_heart_rate','?')}bpm | Power {run.get('avg_power','?')}W | Load {round(run.get('training_load') or 0)}
+SPLITS:
 {splits_text}
 
-RECOVERY: {sleep_text}\n{hrv_text}\n{cl_text}
-WEEK SO FAR: {round(weekly_km,1)}km | load {round(weekly_load,0)} across {len(week_runs)} sessions
+WEEK SO FAR ({round(weekly_km,1)}km, {len(week_runs)} sessions):
+{week_summary}
 
-Para 1: Quality of run — effort, HR vs zones, pacing from splits.
-Para 2: One strength, one thing to work on.
-Para 3: Rest of today — nutrition, recovery, movement given cardio load.
+RECOVERY: {sleep_text}
+{hrv_text}
+{cl_text}
 
+Write in this structure (use emojis, short punchy lines, phone-readable):
+1. One-liner that nails the character of this run (funny/honest)
+2. Tell the story through the splits — what happened km by km, in plain language
+3. Verdict: was this smart training? what does it say about where he is right now?
+4. Week snapshot — celebrate the pattern (not just the session)
+5. One coach's note: single specific thing for next time
+
+Max 450 tokens. No bullet-point walls. Short paragraphs. Sound like a person, not a report.
 End with: NOTE: post-run debrief | <10-word summary>"""
-        response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
+        response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=700, messages=[{"role": "user", "content": prompt}])
         reply    = extract_and_save_note(response.content[0].text, "post-run debrief")
         msg      = f"🏃 *Post-run debrief* — {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)}\n\n{reply}"
         bot.send_message(YOUR_TELEGRAM_ID, msg[:4000], parse_mode="Markdown")
@@ -2005,8 +2018,8 @@ def send_evening_debrief():
         cl            = cl_resp.data[0] if cl_resp.data else {}
         sw_resp       = supabase.table("polar_sleepwise").select("date,grade,grade_classification,circadian_bedtime_start,circadian_bedtime_end").order("date", desc=True).limit(1).execute()
         sw            = sw_resp.data[0] if sw_resp.data else {}
-        goals_resp    = supabase.table("goals").select("race_name,race_date,distance_km,target_time").eq("active", True).execute()
-        goals_text    = "\n".join([f"- {g['race_name']} on {g['race_date']}: target {g['target_time']}" for g in (goals_resp.data or [])]) or "No active goals."
+        goals_resp    = supabase.table("goals").select("race_name,race_date,distance_km,target_time").eq("active", True).gte("race_date", today_str).execute()
+        goals_text    = "\n".join([f"- {g['race_name']} on {g['race_date']}: target {g['target_time']}" for g in (goals_resp.data or [])]) or "No active goals — base-building phase."
         checkin_resp  = supabase.table("wellness_checkins").select("date,fatigue_score,sleep_score,mood_score,notes").order("date", desc=True).limit(1).execute()
         last_checkin  = checkin_resp.data[0] if checkin_resp.data else None
         checkin_today = last_checkin and last_checkin.get("date") == today_str
