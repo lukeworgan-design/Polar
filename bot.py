@@ -1696,8 +1696,10 @@ After every substantive response end with:
 NOTE: <topic> | <one sentence summary>"""
 
 def build_system_prompt(run_limit: int = 10, sleep_days: int = 7) -> str:
-    system = BASE_SYSTEM.replace("{days_to_marathon}", str(days_to_marathon()))
-    return f"{system}\n\n{build_training_context(run_limit, sleep_days)}"
+    system  = BASE_SYSTEM.replace("{days_to_marathon}", str(days_to_marathon()))
+    now     = datetime.now(timezone.utc)
+    datestr = now.strftime("%A %-d %B %Y")  # e.g. "Friday 31 July 2026"
+    return f"TODAY: {datestr}\n\n{system}\n\n{build_training_context(run_limit, sleep_days)}"
 
 conversation_history = {}
 
