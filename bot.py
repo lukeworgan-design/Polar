@@ -1988,14 +1988,96 @@ RECOVERY: {sleep_text}
 {hrv_text}
 {cl_text}
 
-Write in this structure (use emojis, short punchy lines, phone-readable):
-1. One-liner that nails the character of this run (funny/honest)
-2. Tell the story through the splits — what happened km by km, in plain language
-3. Verdict: was this smart training? what does it say about where he is right now?
-4. Week snapshot — celebrate the pattern (not just the session)
-5. One coach's note: single specific thing for next time
+--- EXAMPLE OF THE EXACT TONE AND STYLE TO MATCH ---
+(This is a real debrief for a different run. Learn the voice from it, don't copy the content.)
 
-Max 450 tokens. No bullet-point walls. Short paragraphs. Sound like a person, not a report.
+🌅 Friday 5am Crew
+
+15 from 15.
+
+Don't overlook that.
+
+Three weeks ago the goal wasn't to get faster. It wasn't to smash intervals every morning. It was simply to become the bloke who gets up at 5 a.m. and trains before the house wakes up.
+
+Mission well and truly underway. 👊
+
+⸻
+
+Today's run was one of those that Strava will completely misunderstand.
+
+Nobody is giving kudos for 7:04/km.
+
+But I absolutely am.
+
+You set out to run easy… and you actually ran easy.
+
+No "I'll just see what happens."
+
+No accidental progression run.
+
+No convincing yourself that because HR was behaving you may as well wind it up.
+
+Just 42 minutes of proper aerobic work.
+
+The splits tell the story.
+
+First kilometre was the body waking up.
+
+Second and third settled into that familiar rhythm where you're just ticking over.
+
+Then something I really liked happened…
+
+Instead of fading because you were bored, you naturally picked things up again. Not because you were racing home or chasing a pace, but because your body had loosened up. Km 5 and 6 came back under seven-minute pace while your heart rate barely moved.
+
+That's efficient running.
+
+Your heart rate spent almost the entire run parked around 150–153 bpm. That's about as steady as it gets. The power eased off slightly through the middle before creeping back up at the end, and the cadence followed suit. Nothing dramatic. Just smooth.
+
+That's exactly what "easy" should look like.
+
+What I also can't ignore is the bigger picture.
+
+This week has had a lovely rhythm to it:
+
+🏃 Monday – Easy.
+
+💪 Tuesday – Kettlebell.
+
+🏃 Wednesday – Easy.
+
+💪 Thursday – Kettlebell.
+
+🏃 Friday – Easy.
+
+No ego.
+
+No trying to win training.
+
+Just stacking brick after brick.
+
+Your recovery metrics are backing that up too. Good HRV. Excellent recharge. Cardio load exactly where we'd want it. That's your body quietly saying: "Yep… I can absorb this."
+
+I reckon you've crossed a line over the last few weeks.
+
+Earlier in the year your easy runs often turned into threshold runs wearing a fake moustache.
+
+Now they actually have a purpose.
+
+And… perhaps my favourite statistic of the whole run…
+
+Zero code browns. 🚽🏆
+
+One thing for next time: leave your watch on the HR screen for the first 15 minutes. Ignore pace completely. Build the run around effort, and let the pace be whatever pace wants to turn up that morning. That's exactly how you keep turning "easy" into your secret weapon. 👊
+--- END EXAMPLE ---
+
+Write in this structure (short punchy lines, phone-readable, emojis where natural):
+1. One-liner or short opener that nails the character of this run — honest, often funny
+2. Walk through the splits — what actually happened km by km, in plain language like you were there
+3. Verdict: was this smart training? what does it say about where Luke is right now?
+4. Week snapshot — celebrate the pattern, not just today
+5. One coach's note: the single most useful thing for next time
+
+No bullet-point walls. Short paragraphs. Sound like a person, not a report.
 End with: NOTE: post-run debrief | <10-word summary>"""
         response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=700, messages=[{"role": "user", "content": prompt}])
         reply    = extract_and_save_note(response.content[0].text, "post-run debrief")
