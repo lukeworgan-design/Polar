@@ -1519,18 +1519,28 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
 
         runs = supabase.table("polar_exercises").select("polar_exercise_id,date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load,ascent,descent,source").order("date", desc=True).limit(run_limit).execute()
         if runs.data:
-            parts.append(f"\n=== RECENT RUNS (last {len(runs.data)}) ===")
+            parts.append(f"\n=== RECENT SESSIONS (last {len(runs.data)}) ===")
             for r in runs.data:
                 dist_km = (r.get("distance_meters") or 0) / 1000
                 dur_s   = r.get("duration_seconds") or 0
                 pace_s  = dur_s / dist_km if dist_km else 0
                 src     = " [manual]" if r.get("source") == "manual" else ""
-                parts.append(f"  {r['date'][:10]} | {r.get('sport','?')}{src} | {dist_km:.1f}km | {int(dur_s//60)}min | Pace: {seconds_to_pace(pace_s)} | HR: {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')} | Power: {r.get('avg_power','?')}W | Cadence: {r.get('avg_cadence','?')}spm | Load: {r.get('training_load','?')} | Ascent: {r.get('ascent','?')}m")
+                try:
+                    day_name = datetime.strptime(r["date"][:10], "%Y-%m-%d").strftime("%A")
+                except Exception:
+                    day_name = ""
+                date_label = f"{day_name} {r['date'][:10]}" if day_name else r["date"][:10]
+                parts.append(f"  {date_label} | {r.get('sport','?')}{src} | {dist_km:.1f}km | {int(dur_s//60)}min | Pace: {seconds_to_pace(pace_s)} | HR: {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')} | Power: {r.get('avg_power','?')}W | Cadence: {r.get('avg_cadence','?')}spm | Load: {r.get('training_load','?')} | Ascent: {r.get('ascent','?')}m")
             latest = get_latest_run_with_splits()
             if latest:
                 splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m,distance_m").eq("exercise_id", latest["polar_exercise_id"]).order("lap_number").execute()
                 if splits.data:
-                    parts.append(f"\n=== KM SPLITS: {latest['date'][:10]} ({(latest.get('distance_meters') or 0)/1000:.1f}km) ===")
+                    try:
+                        split_day = datetime.strptime(latest["date"][:10], "%Y-%m-%d").strftime("%A")
+                    except Exception:
+                        split_day = ""
+                    split_label = f"{split_day} {latest['date'][:10]}" if split_day else latest["date"][:10]
+                    parts.append(f"\n=== KM SPLITS: {split_label} ({(latest.get('distance_meters') or 0)/1000:.1f}km) ===")
                     for s in splits.data:
                         asc_str = f" | Ascent {s['ascent_m']:.0f}m" if s.get('ascent_m') else ""
                         parts.append(f"  KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cadence {s.get('cadence_avg','?')}spm{asc_str}")
