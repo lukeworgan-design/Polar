@@ -735,6 +735,8 @@ TASK & LIST HANDLING:
 MEAL PLAN:
 - You manage a two-week rolling meal plan covering breakfast, lunch, and dinner.
 - When someone sets a meal (e.g. "Monday dinner is spaghetti bolognese"), call set_meal with the correct date, meal_type, and meal name. Clean up the meal name before saving.
+- ALWAYS actually call set_meal to persist a meal — never just acknowledge it conversationally. If several dinners are listed at once ("this week we're having X, Y, Z"), call set_meal once per day. If a day isn't specified, ask which day rather than guessing.
+- Before saving, resolve any weekday name ("Monday", "tomorrow") to an exact YYYY-MM-DD date using check_date so it lands on the right day. Briefly confirm what you saved, e.g. "Saved — Thursday's dinner is spaghetti bolognese 🍝".
 - When asked what's for dinner / what's the plan this week, call get_meal_plan for the relevant date range and display it grouped by day, one day per line, with a fitting food emoji. Only show meal types that have entries — skip empty slots unless the user asks.
 - "What's for dinner tonight/this week?" → fetch and display. "We're having X on Tuesday" → set_meal. "Clear Wednesday lunch" → clear_meal.
 - When displaying the plan, format like: "Mon 30 Mar — 🍝 Spaghetti Bolognese". Group by day, skip days with nothing planned.
@@ -935,7 +937,9 @@ export async function generateResponse(
 
 export async function generateDailySummary(): Promise<string> {
   const now = getLocalNow(config.timezone);
-  const todayStr = now.toISOString().slice(0, 10);
+  // Derive today's date directly in the family's timezone (en-CA → YYYY-MM-DD)
+  // so the meal-plan lookup key can never drift with the server's process TZ.
+  const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone }).format(new Date());
 
   const [calendarResult, weatherDays, todayMeals] = await Promise.all([
     Promise.all([getTodaysEvents(), getUpcomingEvents(3)]).catch((err) => {
