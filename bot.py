@@ -1968,23 +1968,40 @@ def send_post_run_debrief(exercise_id: str):
         dur_s       = run.get("duration_seconds") or 0
         dur_str     = f"{dur_s // 3600}h {(dur_s % 3600) // 60}m" if dur_s >= 3600 else f"{dur_s // 60}m {dur_s % 60}s"
         pace_s      = (dur_s / dist_km) if dist_km > 0 else 0
+        # Derive run start hour from raw_json (Polar stores full ISO start_time there)
+        run_hour    = None
+        try:
+            rj = json.loads(run.get("raw_json") or "{}")
+            st = rj.get("start_time", "")
+            if "T" in st:
+                run_hour = int(st.split("T")[1][:2])
+        except Exception:
+            pass
+        is_5am      = run_hour is not None and run_hour < 7
+        time_ctx    = f"Run started at {run_hour:02d}:xx local time — {'this WAS a pre-dawn 5am Crew session' if is_5am else 'NOT a 5am run, so do NOT open with 5am Crew — adapt the opener to the actual time of day'}."
         def session_label(r):
             sp = r.get("sport","")
             d  = round((r.get("distance_meters") or 0)/1000,1)
             if sp in RUNNING_SPORTS: return f"🏃 {d}km run (HR {r.get('avg_heart_rate','?')})"
             return f"💪 {sp.replace('_',' ').title()}"
-        splits_text  = "\n".join([f"  km{s['km_number']}: {s.get('pace_display','?')} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')}bpm | {s.get('power_avg','?')}W" for s in splits[:20]]) if splits else "No splits."
+        def fmt_split(s):
+            dist = s.get("distance_m")
+            if dist is not None and dist < 200:
+                return f"  km{s['km_number']}: PARTIAL FINISH ({int(dist)}m only) — skip in narrative, just note run finished mid-km"
+            return f"  km{s['km_number']}: {s.get('pace_display','?')} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')}bpm | {s.get('power_avg','?')}W"
+        splits_text  = "\n".join([fmt_split(s) for s in splits[:20]]) if splits else "No splits."
         weekly_km    = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
         weekly_load  = sum((r.get("training_load") or 0) for r in week_runs)
         week_summary = "\n".join([f"  {r['date'][:10]}: {session_label(r)}" for r in week_runs])
         sleep_text   = " | ".join([f"{s['date'][:5]}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h score {s.get('sleep_score','?')}" for s in sleep_rows]) or "No sleep data."
         hrv_text     = f"Recharge {hrv.get('recharge_status','?')}, HRV {hrv.get('hrv_avg','?')}, ANS {hrv.get('ans_charge','?')}" if hrv else "No HRV."
         cl_text      = f"Load ratio {cl.get('cardio_load_ratio','?')} ({cl.get('cardio_load_status','?')}) | Strain {cl.get('strain','?')} / Tolerance {cl.get('tolerance','?')}" if cl else "No load data."
-        prompt = f"""You are Luke's 5am Crew running coach — a mate who really knows him. Write a post-run debrief that feels like a WhatsApp voice note transcribed: warm, funny, honest, uses his running lore.
+        prompt = f"""You are Luke's running coach — a mate who really knows him. Write a post-run debrief that feels like a WhatsApp voice note transcribed: warm, funny, honest, uses his running lore.
 
 ATHLETE: Luke Worgan | 37 | VO2max 55 | Max HR 198 | Aerobic threshold 149bpm | Anaerobic threshold 178bpm
 PHASE: {goals_text}
-RUNNING LORE: 5am Crew | Code Brown | Tin Man | Luke Logic | "if I can't keep my HR down, may as well keep it up" | accidental progression run | found another hill
+RUNNING LORE: 5am Crew (his pre-dawn squad) | Code Brown | Tin Man | Luke Logic | "if I can't keep my HR down, may as well keep it up" | accidental progression run | found another hill
+TIMING: {time_ctx}
 
 TODAY'S RUN: {dist_km}km in {dur_str} @ avg {seconds_to_pace(pace_s)}
 HR: avg {run.get('avg_heart_rate','?')} / max {run.get('max_heart_rate','?')}bpm | Power {run.get('avg_power','?')}W | Load {round(run.get('training_load') or 0)}
