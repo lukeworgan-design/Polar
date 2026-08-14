@@ -290,6 +290,95 @@ export async function completeBabyChecklistItem(item: string): Promise<boolean> 
   return true;
 }
 
+// ── Baby Tracker (feeds, nappies, sleep, medicine) ─────────────────────────────
+// Requires a Supabase table:
+//   create table baby_logs (
+//     id bigint generated always as identity primary key,
+//     type text not null,          -- 'feed' | 'nappy' | 'sleep' | 'medicine' | 'pump'
+//     detail text,                 -- e.g. 'wet'/'dirty', 'left'/'bottle', med name, 'asleep'/'awake'
+//     amount text,                 -- e.g. '90ml', '2.5ml', '15 min'
+//     logged_by text,
+//     logged_at timestamptz not null default now()
+//   );
+
+export type BabyLogType = 'feed' | 'nappy' | 'sleep' | 'medicine' | 'pump';
+
+export interface BabyLog {
+  id: number;
+  type: BabyLogType;
+  detail: string | null;
+  amount: string | null;
+  logged_by: string | null;
+  logged_at: string;
+}
+
+export async function addBabyLog(
+  type: BabyLogType,
+  detail: string | null,
+  amount: string | null,
+  loggedBy: string,
+  loggedAt?: Date,
+): Promise<void> {
+  const row: Record<string, unknown> = { type, detail, amount, logged_by: loggedBy };
+  if (loggedAt) row['logged_at'] = loggedAt.toISOString();
+  const { error } = await db.from('baby_logs').insert(row);
+  if (error) throw new Error(`DB addBabyLog failed: ${error.message}`);
+}
+
+export async function getLastBabyLog(type: BabyLogType): Promise<BabyLog | null> {
+  const { data, error } = await db
+    .from('baby_logs')
+    .select('id, type, detail, amount, logged_by, logged_at')
+    .eq('type', type)
+    .order('logged_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`DB getLastBabyLog failed: ${error.message}`);
+  return (data as BabyLog) ?? null;
+}
+
+export async function getBabyLogsSince(sinceIso: string): Promise<BabyLog[]> {
+  const { data, error } = await db
+    .from('baby_logs')
+    .select('id, type, detail, amount, logged_by, logged_at')
+    .gte('logged_at', sinceIso)
+    .order('logged_at', { ascending: true });
+  if (error) throw new Error(`DB getBabyLogsSince failed: ${error.message}`);
+  return (data ?? []) as BabyLog[];
+}
+
+// ── Baby Growth (weights) ──────────────────────────────────────────────────────
+// Requires a Supabase table:
+//   create table baby_weights (
+//     id bigint generated always as identity primary key,
+//     grams int not null,
+//     measured_on date not null,
+//     note text,
+//     logged_by text,
+//     created_at timestamptz default now()
+//   );
+
+export interface BabyWeight {
+  id: number;
+  grams: number;
+  measured_on: string;
+  note: string | null;
+}
+
+export async function addBabyWeight(grams: number, measuredOn: string, note: string | null, loggedBy: string): Promise<void> {
+  const { error } = await db.from('baby_weights').insert({ grams, measured_on: measuredOn, note, logged_by: loggedBy });
+  if (error) throw new Error(`DB addBabyWeight failed: ${error.message}`);
+}
+
+export async function getBabyWeights(): Promise<BabyWeight[]> {
+  const { data, error } = await db
+    .from('baby_weights')
+    .select('id, grams, measured_on, note')
+    .order('measured_on', { ascending: true });
+  if (error) throw new Error(`DB getBabyWeights failed: ${error.message}`);
+  return (data ?? []) as BabyWeight[];
+}
+
 // ── App Settings (generic key/value) ───────────────────────────────────────────
 // Requires a Supabase table:
 //   create table app_settings (key text primary key, value text, updated_at timestamptz default now());

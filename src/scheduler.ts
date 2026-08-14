@@ -16,6 +16,7 @@ import {
   generateWeekendEvents,
   generatePregnancyUpdate,
   generateBabyChecklistReminder,
+  getDueImmunisationReminder,
 } from './ai';
 import {
   getPendingReminders,
@@ -155,6 +156,19 @@ export function initScheduler(sendFn: SendMessageFn): void {
       if (message) await sendToGroup(message);
     } catch (err) {
       console.error('Error sending baby checklist reminder:', err);
+    }
+  }, { timezone: config.timezone });
+
+  // Immunisation reminder — check daily at 9am, nudge ~a week before each jab
+  cron.schedule('0 9 * * *', async () => {
+    try {
+      const due = getDueImmunisationReminder();
+      if (due && !(await hasNotificationFired(due.key))) {
+        await markNotificationFired(due.key);
+        await sendToGroup(due.message);
+      }
+    } catch (err) {
+      console.error('Error sending immunisation reminder:', err);
     }
   }, { timezone: config.timezone });
 

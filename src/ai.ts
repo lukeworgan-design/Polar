@@ -22,6 +22,12 @@ import {
   completeBabyChecklistItem,
   getSetting,
   setSetting,
+  addBabyLog,
+  getLastBabyLog,
+  getBabyLogsSince,
+  addBabyWeight,
+  getBabyWeights,
+  BabyLogType,
 } from './db';
 import {
   getEventsForPeriod,
@@ -61,6 +67,137 @@ export async function loadBabyArrival(): Promise<void> {
 
 function getBabyArrival(): BabyArrival | null {
   return babyArrival;
+}
+
+/** Evie's date of birth (from the recorded arrival, falling back to config). */
+function babyDob(): string | null {
+  return babyArrival?.bornOn ?? config.family.babyBorn ?? null;
+}
+
+function babyDisplayName(): string {
+  return babyArrival?.name ?? config.family.babyName ?? 'the baby';
+}
+
+/** Age in whole days / weeks from DOB. */
+function babyAgeDays(): number | null {
+  const dob = babyDob();
+  if (!dob) return null;
+  const born = new Date(`${dob}T12:00:00`);
+  return Math.floor((Date.now() - born.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function humanSince(iso: string): string {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem === 0 ? `${hrs}h ago` : `${hrs}h ${rem}m ago`;
+}
+
+/**
+ * UK routine childhood immunisation schedule (NHS), as offsets from DOB.
+ * Returns the schedule with computed calendar dates.
+ */
+function immunisationSchedule(): Array<{ dueWeeks: number; label: string; date: string }> {
+  const dob = babyDob();
+  if (!dob) return [];
+  const born = new Date(`${dob}T12:00:00`);
+  const milestones: Array<{ weeks: number; label: string }> = [
+    { weeks: 8, label: '8-week jabs (6-in-1, rotavirus, MenB)' },
+    { weeks: 12, label: '12-week jabs (6-in-1, pneumococcal, rotavirus)' },
+    { weeks: 16, label: '16-week jabs (6-in-1, MenB)' },
+    { weeks: 52, label: '1-year jabs (Hib/MenC, MMR, pneumococcal, MenB)' },
+  ];
+  return milestones.map((m) => {
+    const d = new Date(born);
+    d.setDate(d.getDate() + m.weeks * 7);
+    return { dueWeeks: m.weeks, label: m.label, date: d.toISOString().slice(0, 10) };
+  });
+}
+
+/** If a jab is roughly a week away, return a ready-to-send reminder (with a dedupe key). */
+export function getDueImmunisationReminder(): { key: string; message: string } | null {
+  const schedule = immunisationSchedule();
+  if (schedule.length === 0) return null;
+  const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone }).format(new Date());
+  for (const s of schedule) {
+    const days = Math.round((new Date(s.date).getTime() - new Date(todayStr).getTime()) / (1000 * 60 * 60 * 24));
+    if (days >= 5 && days <= 8) {
+      const pretty = new Date(`${s.date}T12:00:00`).toLocaleDateString('en-GB', {
+        weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone,
+      });
+      return {
+        key: `jab:${s.date}`,
+        message: `💉 Heads up — ${babyDisplayName()}'s ${s.label} are due around ${pretty}. The GP surgery usually sends an invite, but worth booking if you've not heard.`,
+      };
+    }
+  }
+  return null;
+}
+
+/** Parse a spoken weight ('4.2kg', '9lb 4oz', '4200g') into grams, or null. */
+function parseWeightToGrams(input: string): number | null {
+  const s = input.toLowerCase().trim();
+  const lbOz = s.match(/(\d+(?:\.\d+)?)\s*(?:lb|lbs|pound|pounds)\s*(?:(\d+(?:\.\d+)?)\s*(?:oz|ounce|ounces))?/);
+  if (lbOz) {
+    const lb = parseFloat(lbOz[1]!);
+    const oz = lbOz[2] ? parseFloat(lbOz[2]!) : 0;
+    return Math.round((lb * 453.592) + (oz * 28.3495));
+  }
+  const kg = s.match(/(\d+(?:\.\d+)?)\s*kg/);
+  if (kg) return Math.round(parseFloat(kg[1]!) * 1000);
+  const g = s.match(/(\d+(?:\.\d+)?)\s*g/);
+  if (g) return Math.round(parseFloat(g[1]!));
+  const bare = s.match(/^(\d+(?:\.\d+)?)$/);
+  if (bare) {
+    const n = parseFloat(bare[1]!);
+    return n < 20 ? Math.round(n * 1000) : Math.round(n); // <20 assume kg, else grams
+  }
+  return null;
+}
+
+function formatGrams(grams: number): string {
+  const kg = (grams / 1000).toFixed(2);
+  const totalOz = grams / 28.3495;
+  const lb = Math.floor(totalOz / 16);
+  const oz = Math.round(totalOz - lb * 16);
+  return `${kg}kg (${lb}lb ${oz}oz)`;
+}
+
+/**
+ * Safety check for infant paracetamol / ibuprofen. Newborns should not be given
+ * these without medical advice; paracetamol is licensed from 2 months (and one
+ * post-8-week-jab dose from 2 months), ibuprofen from 3 months / 5kg.
+ * Returns a warning string, or null if nothing to flag.
+ */
+async function medicineSafetyNote(medicine: string): Promise<string | null> {
+  const med = medicine.toLowerCase();
+  const isParacetamol = /calpol|paracetamol|infant suspension/.test(med);
+  const isIbuprofen = /ibuprofen|nurofen/.test(med);
+  const ageDays = babyAgeDays();
+
+  if ((isParacetamol || isIbuprofen) && ageDays !== null) {
+    if (isParacetamol && ageDays < 61) {
+      return `⚠️ Evie is under 2 months — infant paracetamol should only be given on the advice of a GP, health visitor, or 111. Please check first.`;
+    }
+    if (isIbuprofen && ageDays < 92) {
+      return `⚠️ Evie is under 3 months — infant ibuprofen isn't suitable yet. Please check with a GP, health visitor, or 111.`;
+    }
+  }
+
+  // Interval check against the last recorded dose of the same medicine.
+  const last = await getLastBabyLog('medicine');
+  if (last && last.detail && last.detail.toLowerCase().includes(med.split(' ')[0] ?? med)) {
+    const minsSince = (Date.now() - new Date(last.logged_at).getTime()) / 60000;
+    if (isParacetamol && minsSince < 240) {
+      const wait = Math.ceil((240 - minsSince) / 60 * 10) / 10;
+      return `⚠️ Last ${last.detail} dose was ${humanSince(last.logged_at)}. Paracetamol doses must be at least 4 hours apart (max 4 in 24h) — wait about ${wait}h before the next.`;
+    }
+    if (isIbuprofen && minsSince < 360) {
+      return `⚠️ Last ${last.detail} dose was ${humanSince(last.logged_at)}. Ibuprofen doses must be at least 6–8 hours apart — please wait.`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -212,6 +349,65 @@ const tools: Anthropic.Tool[] = [
       },
       required: ['born_on'],
     },
+  },
+  {
+    name: 'log_baby_event',
+    description: "Log a newborn care event (feed, nappy, sleep, medicine, or pumped/expressed milk). Call this whenever Luke or Toni mention one, e.g. 'fed Evie 90ml', 'dirty nappy', 'she's asleep', 'gave her vitamin D'.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        type: { type: 'string', enum: ['feed', 'nappy', 'sleep', 'medicine', 'pump'], description: 'The kind of event' },
+        detail: { type: 'string', description: "For feed: 'left'/'right'/'bottle'/'breast'. For nappy: 'wet'/'dirty'/'both'. For sleep: 'asleep' or 'awake'. For medicine: the medicine name (e.g. 'Vitamin D', 'Calpol'). Optional otherwise." },
+        amount: { type: 'string', description: "Optional amount, e.g. '90ml' for a feed, '2.5ml' for medicine, '45 min' for a nap." },
+        time: { type: 'string', description: "Optional ISO datetime if the event wasn't just now (e.g. a 3am feed logged later). Omit for 'now'." },
+      },
+      required: ['type'],
+    },
+  },
+  {
+    name: 'get_baby_last',
+    description: "Get when the baby last did something (feed, nappy, sleep, medicine). Use for 'when did she last feed?', 'when was her last nappy?'.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        type: { type: 'string', enum: ['feed', 'nappy', 'sleep', 'medicine', 'pump'], description: 'What to look up' },
+      },
+      required: ['type'],
+    },
+  },
+  {
+    name: 'get_baby_day_summary',
+    description: "Summarise the baby's feeds, nappies, sleep and medicine over the last 24 hours (or a given day). Use for 'how's Evie done today?' or an overnight recap.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        date: { type: 'string', description: "Optional YYYY-MM-DD. Omit for the last 24 hours." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'log_baby_weight',
+    description: "Record the baby's weight from a weigh-in (health visitor / red book).",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        weight: { type: 'string', description: "Weight as said, e.g. '4.2kg', '9lb 4oz', '4200g'." },
+        date: { type: 'string', description: "Optional YYYY-MM-DD the weight was measured. Omit for today." },
+        note: { type: 'string', description: 'Optional note (e.g. centile, who weighed).' },
+      },
+      required: ['weight'],
+    },
+  },
+  {
+    name: 'get_baby_growth',
+    description: "Get the baby's recorded weights over time to see the trend.",
+    input_schema: { type: 'object' as const, properties: {}, required: [] },
+  },
+  {
+    name: 'get_immunisation_schedule',
+    description: "Get the baby's UK childhood immunisation schedule with dates computed from her date of birth, and how far away each is.",
+    input_schema: { type: 'object' as const, properties: {}, required: [] },
   },
   {
     name: 'get_baby_checklist',
@@ -526,6 +722,121 @@ async function executeTool(
         return `Recorded the baby's arrival${name ? ` — welcome, ${name}!` : ''} (born ${bornOn}). Pregnancy countdown and due-date reminders are now switched off. Congratulations to Luke and Toni! 🎉`;
       }
 
+      case 'log_baby_event': {
+        const type = toolInput['type'] as BabyLogType;
+        const detail = (toolInput['detail'] as string | undefined)?.trim() || null;
+        const amount = (toolInput['amount'] as string | undefined)?.trim() || null;
+        const at = toolInput['time']
+          ? parseInTimezone(toolInput['time'] as string, config.timezone)
+          : undefined;
+
+        let safety: string | null = null;
+        if (type === 'medicine' && detail) {
+          safety = await medicineSafetyNote(detail);
+        }
+
+        await addBabyLog(type, detail, amount, userName, at);
+
+        const name = babyDisplayName();
+        const bits = [detail, amount].filter(Boolean).join(', ');
+        let msg = `Logged: ${name} — ${type}${bits ? ` (${bits})` : ''}${at ? ` at ${at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: config.timezone })}` : ''}.`;
+
+        // Helpful context: gap since previous feed
+        if (type === 'feed') {
+          const since = await getBabyLogsSince(new Date(Date.now() - 36 * 3600 * 1000).toISOString());
+          const feeds = since.filter((l) => l.type === 'feed');
+          if (feeds.length >= 2) {
+            const prev = feeds[feeds.length - 2]!;
+            msg += ` (${humanSince(prev.logged_at).replace(' ago', '')} since the last feed)`;
+          }
+        }
+        if (safety) msg += `\n\n${safety}`;
+        return msg;
+      }
+
+      case 'get_baby_last': {
+        const type = toolInput['type'] as BabyLogType;
+        const last = await getLastBabyLog(type);
+        const name = babyDisplayName();
+        if (!last) return `No ${type} logged for ${name} yet.`;
+        const bits = [last.detail, last.amount].filter(Boolean).join(', ');
+        return `${name}'s last ${type} was ${humanSince(last.logged_at)}${bits ? ` (${bits})` : ''}.`;
+      }
+
+      case 'get_baby_day_summary': {
+        const name = babyDisplayName();
+        let sinceIso: string;
+        let label: string;
+        if (toolInput['date']) {
+          sinceIso = `${toolInput['date']}T00:00:00`;
+          label = `on ${toolInput['date']}`;
+        } else {
+          sinceIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+          label = 'in the last 24h';
+        }
+        const logs = await getBabyLogsSince(sinceIso);
+        if (logs.length === 0) return `Nothing logged for ${name} ${label} yet.`;
+
+        const feeds = logs.filter((l) => l.type === 'feed');
+        const nappies = logs.filter((l) => l.type === 'nappy');
+        const wet = nappies.filter((l) => (l.detail ?? '').includes('wet') || (l.detail ?? '').includes('both')).length;
+        const dirty = nappies.filter((l) => (l.detail ?? '').includes('dirty') || (l.detail ?? '').includes('both')).length;
+        const meds = logs.filter((l) => l.type === 'medicine');
+        const sleeps = logs.filter((l) => l.type === 'sleep');
+
+        const totalMl = feeds.reduce((sum, f) => {
+          const m = (f.amount ?? '').match(/(\d+)\s*ml/i);
+          return sum + (m ? parseInt(m[1]!, 10) : 0);
+        }, 0);
+
+        const lines = [
+          `👶 ${name} ${label}:`,
+          `• Feeds: ${feeds.length}${totalMl > 0 ? ` (~${totalMl}ml)` : ''}`,
+          `• Nappies: ${nappies.length}${nappies.length ? ` (${wet} wet, ${dirty} dirty)` : ''}`,
+          sleeps.length ? `• Sleep events logged: ${sleeps.length}` : '',
+          meds.length ? `• Medicine: ${meds.map((m) => m.detail).filter(Boolean).join(', ')}` : '',
+        ].filter(Boolean);
+        return lines.join('\n');
+      }
+
+      case 'log_baby_weight': {
+        const grams = parseWeightToGrams(toolInput['weight'] as string);
+        if (grams === null) return `Sorry, I couldn't read "${toolInput['weight']}" as a weight — try like "4.2kg" or "9lb 4oz".`;
+        const measuredOn = (toolInput['date'] as string | undefined) ||
+          new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone }).format(new Date());
+        const note = (toolInput['note'] as string | undefined)?.trim() || null;
+        await addBabyWeight(grams, measuredOn, note, userName);
+        return `Recorded ${babyDisplayName()}'s weight: ${formatGrams(grams)} on ${measuredOn}.`;
+      }
+
+      case 'get_baby_growth': {
+        const weights = await getBabyWeights();
+        const name = babyDisplayName();
+        if (weights.length === 0) return `No weights recorded for ${name} yet.`;
+        const rows = weights.map((w) => `• ${w.measured_on}: ${formatGrams(w.grams)}${w.note ? ` — ${w.note}` : ''}`);
+        let trend = '';
+        if (weights.length >= 2) {
+          const first = weights[0]!;
+          const last = weights[weights.length - 1]!;
+          const diff = last.grams - first.grams;
+          trend = `\nChange since ${first.measured_on}: ${diff >= 0 ? '+' : ''}${diff}g.`;
+        }
+        return `${name}'s weights:\n${rows.join('\n')}${trend}`;
+      }
+
+      case 'get_immunisation_schedule': {
+        const schedule = immunisationSchedule();
+        const name = babyDisplayName();
+        if (schedule.length === 0) return `No date of birth on record, so I can't work out ${name}'s jab dates.`;
+        const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone }).format(new Date());
+        const rows = schedule.map((s) => {
+          const days = Math.round((new Date(s.date).getTime() - new Date(todayStr).getTime()) / (1000 * 60 * 60 * 24));
+          const when = days < 0 ? 'done/overdue' : days === 0 ? 'today' : `in ${days} day${days === 1 ? '' : 's'}`;
+          return `• ${s.date} — ${s.label} (${when})`;
+        });
+        return `${name}'s NHS immunisation schedule:\n${rows.join('\n')}\n\nYou'll get an invite from the GP surgery — these dates are a guide.`;
+      }
+
       case 'get_baby_checklist': {
         const items = await getBabyChecklist();
         if (items.length === 0) return 'Baby checklist is empty — everything has been ticked off!';
@@ -731,6 +1042,19 @@ function buildSystemPrompt(): string {
 - As the due date gets closer, gently flag things like childcare cover for Poppy and Billy, hospital bag readiness, and last-minute prep. If Luke or Toni mention the baby has arrived, call record_baby_arrival straight away so you stop the countdown.`;
   }
 
+  const babyName = babyDisplayName();
+  const newbornSection = arrival ? `
+
+NEWBORN CARE & VIRTUAL NANNY (${babyName} is a newborn):
+- TRACKING: When Luke or Toni mention a feed, nappy, nap, dose of medicine, or expressed milk, call log_baby_event to record it. If they ask "when did she last feed/have a nappy?", call get_baby_last. For "how's she done today / overnight?", call get_baby_day_summary. Log weigh-ins with log_baby_weight and show trends with get_baby_growth. For jab timings, call get_immunisation_schedule.
+- MEDICINE SAFETY: Never suggest a paracetamol/ibuprofen dose or interval yourself. The log_baby_event tool returns a safety note — surface it clearly. For a baby this young, always steer them to a GP, health visitor, or 111 before giving pain/fever medicine.
+- REASSURANCE (you are a supportive nanny, not a doctor): You can share general, widely-accepted newborn guidance — safe sleep (on the back, in a clear flat cot, room temp ~16-20°C), rough feed frequency, normal nappy counts, soothing tips, cluster feeding, cradle cap, etc. Always frame it as general info, keep it calm and practical, and remind them you're not a substitute for a medical professional.
+- RED FLAGS — this is critical. If anything suggests a medical emergency or a poorly young baby, tell them plainly to contact the right service NOW rather than reassuring:
+  • 999 / A&E: trouble breathing, blue/grey/very pale, unresponsive or floppy, a fit/seizure, a spreading rash that doesn't fade under a glass.
+  • 111 or GP urgently: any fever in a baby under 3 months (38°C+), not feeding / far fewer wet nappies, persistent vomiting, unusually drowsy or inconsolable, or you're simply worried.
+  Never downplay these or tell them to "wait and see". When in doubt, say get it checked.
+- Keep the tone warm and steady — they're exhausted. Short, kind, practical.` : '';
+
   return `You are Rose, a family personal assistant living inside a Telegram group chat shared by Luke and Toni. You're like a brilliant friend who happens to be incredibly organised — warm, casual, occasionally witty, always helpful.
 
 Current date and time: ${dateStr} at ${timeStr} (${config.timezone})
@@ -742,7 +1066,7 @@ FAMILY:
 ${babyLines}
 - They have a dog — whenever Luke is away from home (day travel or overnight), dog walker coverage needs to be in place
 - Luke mainly works from home, but has occasional day trips and overnight stays for work
-
+${newbornSection}
 SCHOOL RUN & CHILDCARE:
 The regular weekly school run schedule for Poppy and Billy is:
 - Monday: Luke does drop-off and after-school club pick-up
@@ -1072,6 +1396,22 @@ export async function generateDailySummary(): Promise<string> {
     ? `Today's meals:\n${todayMeals.map(m => `- ${m.meal_type}: ${m.meal}`).join('\n')}`
     : '';
 
+  // Overnight newborn recap (best-effort — never let a missing table break the summary).
+  let babyRecap = '';
+  if (getBabyArrival()) {
+    try {
+      const logs = await getBabyLogsSince(new Date(Date.now() - 12 * 3600 * 1000).toISOString());
+      if (logs.length > 0) {
+        const feeds = logs.filter(l => l.type === 'feed').length;
+        const nappies = logs.filter(l => l.type === 'nappy').length;
+        const sleeps = logs.filter(l => l.type === 'sleep').length;
+        babyRecap = `${babyDisplayName()} overnight (last 12h): ${feeds} feed(s), ${nappies} nappy change(s)${sleeps ? `, ${sleeps} sleep note(s)` : ''}.`;
+      }
+    } catch (err) {
+      console.error('Baby recap fetch failed (table may not exist yet):', err);
+    }
+  }
+
   const prompt = `Generate a punchy good morning message for Luke and Toni. Use short bulleted lines with emojis. Group items under bold topic headers where relevant (e.g. **🎒 Kids**, **📅 Today**, **👀 Coming up**, **🌤 Weather**, **🍽 Food**). Keep the tone warm with light wit — like a witty friend who also happens to be extremely organised.
 
 Family: ${familyDescription()}.
@@ -1089,6 +1429,8 @@ ${todaySchoolRun ? `SCHOOL RUN TODAY: ${todaySchoolRun}. Include a **🚌 School
 ${mealSection ? `MEALS: ${mealSection}\nInclude a **🍽 Food** section with today's planned meals. Keep it to one line per meal. If only dinner is set, just mention dinner.` : ''}
 
 ${peSection ? `PE KIT ALERT: ${peSection}\nInclude this under the **🎒 Kids** section. Use exactly the day names given (today/tomorrow) — do not guess or invent.` : ''}
+
+${babyRecap ? `BABY OVERNIGHT: ${babyRecap}\nInclude a short **👶 ${babyDisplayName()}** line with this overnight recap. Keep it warm and brief.` : ''}
 
 ${todayIsHoliday ? `IMPORTANT: Today is during the school holidays. Do NOT mention PE kit, the school run, school uniform, breakfast club, or after-school clubs — there is no school. If anything, a cheerful "no school run to worry about today" is welcome, but keep it light.` : ''}
 

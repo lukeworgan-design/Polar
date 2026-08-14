@@ -308,6 +308,50 @@ bot.command('baby', async (ctx) => {
   await ctx.reply(`🍼 *Baby prep checklist* (${items.length} item${items.length === 1 ? '' : 's'} to go)\n\n${lines}`, { parse_mode: 'Markdown' });
 });
 
+// Handle /evie command — quick newborn status: last feed/nappy/sleep + 24h counts
+bot.command('evie', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  try {
+    await ctx.sendChatAction('typing');
+  } catch {
+    // ignore
+  }
+  try {
+    const { getLastBabyLog, getBabyLogsSince } = await import('./db');
+    const babyName = config.family.babyName || 'Baby';
+    const [lastFeed, lastNappy, lastSleep, dayLogs] = await Promise.all([
+      getLastBabyLog('feed'),
+      getLastBabyLog('nappy'),
+      getLastBabyLog('sleep'),
+      getBabyLogsSince(new Date(Date.now() - 24 * 3600 * 1000).toISOString()),
+    ]);
+
+    const since = (iso: string) => {
+      const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+      if (mins < 60) return `${mins} min ago`;
+      const h = Math.floor(mins / 60), m = mins % 60;
+      return m === 0 ? `${h}h ago` : `${h}h ${m}m ago`;
+    };
+
+    const feeds = dayLogs.filter(l => l.type === 'feed').length;
+    const nappies = dayLogs.filter(l => l.type === 'nappy').length;
+
+    const lines = [
+      `👶 *${babyName} right now*`,
+      '',
+      lastFeed ? `🍼 Last feed: ${since(lastFeed.logged_at)}${lastFeed.amount ? ` (${lastFeed.amount})` : ''}` : '🍼 No feeds logged yet',
+      lastNappy ? `👶 Last nappy: ${since(lastNappy.logged_at)}${lastNappy.detail ? ` (${lastNappy.detail})` : ''}` : '👶 No nappies logged yet',
+      lastSleep ? `😴 Last sleep note: ${since(lastSleep.logged_at)}${lastSleep.detail ? ` (${lastSleep.detail})` : ''}` : '',
+      '',
+      `📊 Last 24h: ${feeds} feed(s), ${nappies} nappy change(s)`,
+    ].filter(Boolean);
+    await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('Error in /evie:', err);
+    await ctx.reply("Couldn't pull that up — the baby tracker table may not be set up yet.");
+  }
+});
+
 // Handle /pregnancy command — manual trigger for the Monday pregnancy update
 bot.command('pregnancy', async (ctx) => {
   if (!isFromGroup(ctx)) return;
@@ -411,9 +455,12 @@ bot.command('help', async (ctx) => {
 
 🗓 */weekend* — What's actually on locally this weekend (searches for real events)
 🏫 */friday* — Friday school's-out check-in with local events and weather
-🍼 */baby* — Baby prep checklist
-🤰 */pregnancy* — This week's pregnancy update
 🗑️ */bin* — Which bin goes out tomorrow
+
+👶 *Baby tracking* — "Fed Evie 90ml", "dirty nappy", "she's asleep", "gave her vitamin D" — I'll log it. Ask "when did she last feed?" or "how's she done today?"
+⚖️ *Weigh-ins & jabs* — "Evie was 4.2kg today" / "when are her jabs?"
+🍼 */evie* — Quick status: last feed, nappy & sleep at a glance
+👩‍⚕️ *Newborn questions* — Ask me anything (I'll always point you to 111/999/GP for anything urgent)
 
 Just chat naturally — I'll figure out what you need! 😊`;
 
