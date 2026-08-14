@@ -290,4 +290,20 @@ export async function completeBabyChecklistItem(item: string): Promise<boolean> 
   return true;
 }
 
+// ── App Settings (generic key/value) ───────────────────────────────────────────
+// Requires a Supabase table:
+//   create table app_settings (key text primary key, value text, updated_at timestamptz default now());
+
+export async function getSetting(key: string): Promise<string | null> {
+  const { data, error } = await db.from('app_settings').select('value').eq('key', key).maybeSingle();
+  if (error) throw new Error(`DB getSetting failed: ${error.message}`);
+  return data?.value ?? null;
+}
+
+export async function setSetting(key: string, value: string): Promise<void> {
+  const { error } = await db.from('app_settings')
+    .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+  if (error) throw new Error(`DB setSetting failed: ${error.message}`);
+}
+
 export default db;

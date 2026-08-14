@@ -20,6 +20,8 @@ import {
   getBabyChecklist,
   addBabyChecklistItem,
   completeBabyChecklistItem,
+  getSetting,
+  setSetting,
 } from './db';
 import {
   getEventsForPeriod,
@@ -36,6 +38,30 @@ import {
 import { getWeatherForecast, formatDayWeather, formatWeekWeather } from './weather';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
+
+// ── Baby arrival state ──────────────────────────────────────────────────────────
+// Held in memory so the (synchronous) system prompt can read it, backed by the
+// app_settings table so it survives restarts. Seeded from env, hydrated from DB
+// at startup (loadBabyArrival), and updated live when Rose is told the baby is here.
+interface BabyArrival { bornOn: string; name: string | null }
+let babyArrival: BabyArrival | null =
+  config.family.babyBorn ? { bornOn: config.family.babyBorn, name: config.family.babyName } : null;
+
+export async function loadBabyArrival(): Promise<void> {
+  try {
+    const bornOn = await getSetting('baby_born_date');
+    if (bornOn) {
+      const name = await getSetting('baby_name');
+      babyArrival = { bornOn, name: name ?? config.family.babyName };
+    }
+  } catch (err) {
+    console.error('Failed to load baby arrival state:', err);
+  }
+}
+
+function getBabyArrival(): BabyArrival | null {
+  return babyArrival;
+}
 
 /**
  * Wrapper around anthropic.messages.create with exponential-backoff retry on
@@ -174,6 +200,18 @@ const tools: Anthropic.Tool[] = [
     name: 'clear_shopping_list',
     description: "Clear the entire shopping list (mark all items as completed). Use when the user confirms they've finished the shop, or asks to clear/empty the list.",
     input_schema: { type: 'object' as const, properties: {}, required: [] },
+  },
+  {
+    name: 'record_baby_arrival',
+    description: "Record that the baby has been born. Call this as soon as Luke or Toni say the baby has arrived. This stops all pregnancy/due-date/countdown messaging permanently.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        born_on: { type: 'string', description: "The baby's date of birth as YYYY-MM-DD. If they don't give a date, use today's date." },
+        name: { type: 'string', description: "The baby's name, if known (optional)" },
+      },
+      required: ['born_on'],
+    },
   },
   {
     name: 'get_baby_checklist',
@@ -479,6 +517,15 @@ async function executeTool(
           : 'The shopping list was already empty.';
       }
 
+      case 'record_baby_arrival': {
+        const bornOn = toolInput['born_on'] as string;
+        const name = (toolInput['name'] as string | undefined)?.trim() || null;
+        await setSetting('baby_born_date', bornOn);
+        if (name) await setSetting('baby_name', name);
+        babyArrival = { bornOn, name: name ?? babyArrival?.name ?? null };
+        return `Recorded the baby's arrival${name ? ` — welcome, ${name}!` : ''} (born ${bornOn}). Pregnancy countdown and due-date reminders are now switched off. Congratulations to Luke and Toni! 🎉`;
+      }
+
       case 'get_baby_checklist': {
         const items = await getBabyChecklist();
         if (items.length === 0) return 'Baby checklist is empty — everything has been ticked off!';
@@ -664,10 +711,25 @@ function buildSystemPrompt(): string {
   const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
 
   const children = config.family.children;
-  const babyDue = new Date(config.family.babyDue);
-  const babyDueStr = babyDue.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-  const daysUntilBaby = Math.ceil((babyDue.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-  const babyCountdown = daysUntilBaby > 0 ? `${daysUntilBaby} days to go` : 'any day now!';
+  const arrival = getBabyArrival();
+
+  let babyLines: string;
+  if (arrival) {
+    const bornDate = new Date(`${arrival.bornOn}T12:00:00`);
+    const bornStr = bornDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+    const ageDays = Math.max(0, Math.floor((now.getTime() - bornDate.getTime()) / (1000 * 60 * 60 * 24)));
+    const nameStr = arrival.name ? ` ${arrival.name}` : '';
+    babyLines = `- 🎉 THE BABY HAS ARRIVED: baby${nameStr} was born on ${bornStr} (${ageDays} day${ageDays === 1 ? '' : 's'} old). There is a newborn in the house.
+- The pregnancy is over. NEVER ask about the due date, labour, "twinges", hospital bag, or being overdue — that's all in the past. If it comes up, congratulate them warmly.
+- Be gentle and supportive of two knackered new parents: help with feeds/sleep tracking if asked, keep other reminders light, and don't pile on.`;
+  } else {
+    const babyDue = new Date(config.family.babyDue);
+    const babyDueStr = babyDue.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+    const daysUntilBaby = Math.ceil((babyDue.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const babyCountdown = daysUntilBaby > 0 ? `${daysUntilBaby} days to go` : 'any day now!';
+    babyLines = `- Baby due ${babyDueStr} — ${babyCountdown}
+- As the due date gets closer, gently flag things like childcare cover for Poppy and Billy, hospital bag readiness, and last-minute prep. If Luke or Toni mention the baby has arrived, call record_baby_arrival straight away so you stop the countdown.`;
+  }
 
   return `You are Rose, a family personal assistant living inside a Telegram group chat shared by Luke and Toni. You're like a brilliant friend who happens to be incredibly organised — warm, casual, occasionally witty, always helpful.
 
@@ -677,10 +739,9 @@ FAMILY:
 - Luke and Toni are the parents
 - Kids: ${children.map(c => `${c.name} (${ageFromDob(c.dob)})`).join(', ')}
 - Based in ${config.location}
-- Baby due ${babyDueStr} — ${babyCountdown}
+${babyLines}
 - They have a dog — whenever Luke is away from home (day travel or overnight), dog walker coverage needs to be in place
 - Luke mainly works from home, but has occasional day trips and overnight stays for work
-- As the due date gets closer, gently flag things like childcare cover for Poppy and Billy, hospital bag readiness, and last-minute prep
 
 SCHOOL RUN & CHILDCARE:
 The regular weekly school run schedule for Poppy and Billy is:
@@ -1435,6 +1496,7 @@ RULES:
 }
 
 export async function generateBabyChecklistReminder(): Promise<string> {
+  if (getBabyArrival()) return ''; // baby has arrived — no more prep nudges
   const dueDate = new Date(config.family.babyDue);
   const now = getLocalNow(config.timezone);
 
@@ -1468,6 +1530,7 @@ Write a short, warm nudge for Luke and Toni's family Telegram chat. Highlight 2�
 }
 
 export async function generatePregnancyUpdate(): Promise<string> {
+  if (getBabyArrival()) return ''; // baby has arrived — stop pregnancy updates
   const dueDate = new Date(config.family.babyDue);
   const now = getLocalNow(config.timezone);
 

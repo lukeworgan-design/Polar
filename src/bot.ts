@@ -2,7 +2,7 @@ import { createServer } from 'http';
 import { Telegraf, Context } from 'telegraf';
 import { Message } from 'telegraf/typings/core/types/typegram';
 import { config, getUserName } from './config';
-import { generateResponse, ImageData } from './ai';
+import { generateResponse, ImageData, loadBabyArrival } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
 
@@ -474,6 +474,9 @@ bot.catch((err, ctx) => {
 
 async function main(): Promise<void> {
   console.log('Starting Rose...');
+
+  // Hydrate persisted state (e.g. whether the baby has arrived) before serving.
+  await loadBabyArrival();
 
   initScheduler(sendToGroup);
 

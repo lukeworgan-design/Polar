@@ -14,6 +14,8 @@ export interface ChildConfig {
 export interface FamilyConfig {
   children: ChildConfig[];
   babyDue: string; // ISO date string
+  babyBorn: string | null; // ISO date string once the baby has arrived
+  babyName: string | null;
 }
 
 function requireEnv(key: string): string {
@@ -77,6 +79,11 @@ export const config = {
       { name: 'Billy', dob: process.env['BILLY_DOB'] || '2020-09-01' },
     ],
     babyDue: process.env['BABY_DUE_DATE'] || '2026-08-10',
+    // Once the baby is here, set BABY_BORN_DATE (YYYY-MM-DD) and optionally
+    // BABY_NAME. This switches Rose out of pregnancy/countdown mode — no more
+    // due-date nudges or "any twinges?" — and into newborn mode.
+    babyBorn: process.env['BABY_BORN_DATE'] || null,
+    babyName: process.env['BABY_NAME'] || null,
     // Optional manual holiday ranges [start, endExclusive]. The Family Google
     // Calendar is the primary source — Rose reads holiday/half-term/INSET events
     // from there. This list is just a belt-and-braces fallback; leave it empty
