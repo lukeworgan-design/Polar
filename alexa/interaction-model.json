@@ -38,7 +38,8 @@
             "what is coming up",
             "what's on this week",
             "what have we got coming up",
-            "what's coming up this week"
+            "what's coming up this week",
+            "what's on next week"
           ]
         },
         {
@@ -101,18 +102,75 @@
         },
         {
           "name": "AddEventIntent",
-          "slots": [{ "name": "Details", "type": "AMAZON.SearchQuery" }],
+          "slots": [
+            { "name": "Title", "type": "AMAZON.SearchQuery" },
+            { "name": "EventDate", "type": "AMAZON.DATE" },
+            { "name": "EventTime", "type": "AMAZON.TIME" }
+          ],
           "samples": [
-            "add {Details} to the calendar",
-            "add {Details} to the diary",
-            "put {Details} in the calendar",
-            "put {Details} in the diary",
-            "schedule {Details}",
-            "create an event {Details}"
+            "add an event to the calendar",
+            "add an event to the diary",
+            "add something to the calendar",
+            "add something to the diary",
+            "create a calendar event",
+            "create an event",
+            "add a new event",
+            "schedule an event",
+            "put an event in the diary",
+            "add an appointment",
+            "add {Title} to the calendar",
+            "put {Title} in the diary",
+            "schedule {Title}"
           ]
         }
       ],
       "types": []
-    }
+    },
+    "dialog": {
+      "intents": [
+        {
+          "name": "AddEventIntent",
+          "confirmationRequired": false,
+          "prompts": {},
+          "slots": [
+            {
+              "name": "Title",
+              "type": "AMAZON.SearchQuery",
+              "elicitationRequired": true,
+              "confirmationRequired": false,
+              "prompts": { "elicitation": "Elicit.Slot.Title" }
+            },
+            {
+              "name": "EventDate",
+              "type": "AMAZON.DATE",
+              "elicitationRequired": true,
+              "confirmationRequired": false,
+              "prompts": { "elicitation": "Elicit.Slot.EventDate" }
+            },
+            {
+              "name": "EventTime",
+              "type": "AMAZON.TIME",
+              "elicitationRequired": true,
+              "confirmationRequired": false,
+              "prompts": { "elicitation": "Elicit.Slot.EventTime" }
+            }
+          ]
+        }
+      ]
+    },
+    "prompts": [
+      {
+        "id": "Elicit.Slot.Title",
+        "variations": [{ "type": "PlainText", "value": "What's the event?" }]
+      },
+      {
+        "id": "Elicit.Slot.EventDate",
+        "variations": [{ "type": "PlainText", "value": "What day is it on?" }]
+      },
+      {
+        "id": "Elicit.Slot.EventTime",
+        "variations": [{ "type": "PlainText", "value": "What time? For example, 3 P M." }]
+      }
+    ]
   }
 }

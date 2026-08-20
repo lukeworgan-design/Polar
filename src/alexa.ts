@@ -2,7 +2,7 @@ import { config } from './config';
 import { getTodaysEvents, getUpcomingEvents, CalendarEvent } from './calendar';
 import { getMealPlan, getShoppingList, addShoppingItem, addTodo, addBabyLog } from './db';
 import { getFridayBinType, binLabel, nextFridayDate } from './bin';
-import { createCalendarEventFromText } from './ai';
+import { createCalendarEventStructured } from './ai';
 
 // ── Alexa request/response helpers ──────────────────────────────────────────────
 
@@ -141,9 +141,17 @@ async function handleLogFeed(amount: string | undefined): Promise<string> {
   return `Logged a feed for ${babyName()}${amount ? `, ${amount}` : ''}.`;
 }
 
-async function handleAddEvent(details: string | undefined): Promise<string> {
-  if (!details) return `What would you like me to add to the calendar? Try: add dentist on Tuesday at 3pm.`;
-  return createCalendarEventFromText(details);
+async function handleAddEvent(title: string | undefined, date: string | undefined, time: string | undefined): Promise<string> {
+  if (!title || !date) return `Sorry, I didn't catch the event. Try: add an event to the calendar.`;
+  return createCalendarEventStructured(title, date, time);
+}
+
+/** Alexa Dialog.Delegate response — lets Alexa collect the remaining slots. */
+function delegate(): AlexaResponse & { response: { directives: unknown[] } } {
+  return {
+    version: '1.0',
+    response: { directives: [{ type: 'Dialog.Delegate' }], shouldEndSession: false } as any,
+  } as any;
 }
 
 // ── Main entry ──────────────────────────────────────────────────────────────────
@@ -177,6 +185,13 @@ export async function handleAlexaRequest(event: any): Promise<AlexaResponse> {
   if (type === 'IntentRequest') {
     const intent = event.request.intent;
     const name: string = intent?.name ?? '';
+
+    // If a dialog is mid-way (slots still to fill), let Alexa keep collecting.
+    const dialogState = event.request.dialogState;
+    if (name === 'AddEventIntent' && dialogState && dialogState !== 'COMPLETED') {
+      return delegate() as AlexaResponse;
+    }
+
     try {
       switch (name) {
         case 'DinnerIntent': return speak(await handleDinner());
@@ -187,7 +202,9 @@ export async function handleAlexaRequest(event: any): Promise<AlexaResponse> {
         case 'AddShoppingIntent': return speak(await handleAddShopping(slotValue(intent, 'Item')));
         case 'ShoppingListIntent': return speak(await handleShoppingList());
         case 'AddTodoIntent': return speak(await handleAddTodo(slotValue(intent, 'Task')));
-        case 'AddEventIntent': return speak(await handleAddEvent(slotValue(intent, 'Details')));
+        case 'AddEventIntent': return speak(await handleAddEvent(
+          slotValue(intent, 'Title'), slotValue(intent, 'EventDate'), slotValue(intent, 'EventTime'),
+        ));
         case 'LogFeedIntent': return speak(await handleLogFeed(slotValue(intent, 'Amount')));
         case 'AMAZON.HelpIntent': return speak(HELP, false, `Try: what's for dinner?`);
         case 'AMAZON.StopIntent':

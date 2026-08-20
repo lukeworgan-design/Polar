@@ -1928,6 +1928,39 @@ Include:
   return textBlock?.text || '';
 }
 
+// ── Voice: create a calendar event from Alexa-resolved slots ───────────────────
+
+export async function createCalendarEventStructured(
+  summary: string,
+  dateStr: string,
+  timeStr?: string,
+): Promise<string> {
+  // If Alexa didn't resolve a concrete calendar date (e.g. "next week"), fall
+  // back to the free-text parser which reasons about relative dates.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return createCalendarEventFromText([summary, dateStr, timeStr].filter(Boolean).join(' '));
+  }
+  const spokenDate = new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-GB', {
+    weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC',
+  });
+  try {
+    if (timeStr && /^\d{2}:\d{2}/.test(timeStr)) {
+      const start = parseInTimezone(`${dateStr}T${timeStr.slice(0, 5)}:00`, config.timezone);
+      const end = new Date(start.getTime() + 60 * 60000);
+      await createEvent({ summary, start, end });
+      const t = start.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: config.timezone }).replace(':00', '').replace(' ', '');
+      return `Added ${summary} to the calendar on ${spokenDate} at ${t}.`;
+    }
+    const start = new Date(`${dateStr}T12:00:00Z`);
+    const end = new Date(start.getTime() + 24 * 60 * 60000);
+    await createEvent({ summary, start, end, allDay: true });
+    return `Added ${summary} to the calendar on ${spokenDate}.`;
+  } catch (err) {
+    console.error('createCalendarEventStructured failed:', err);
+    return `I understood the event but couldn't save it just now.`;
+  }
+}
+
 // ── Voice: create a calendar event from a free-text phrase (used by Alexa) ─────
 
 export async function createCalendarEventFromText(details: string): Promise<string> {
