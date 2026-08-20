@@ -183,11 +183,17 @@ export interface MealEntry {
 }
 
 export async function setMeal(date: string, mealType: MealType, meal: string, addedBy: string): Promise<void> {
-  const { error } = await db.from('meal_plan').upsert(
-    { date, meal_type: mealType, meal, added_by: addedBy },
-    { onConflict: 'date,meal_type' }
-  );
-  if (error) throw new Error(`DB setMeal failed: ${error.message}`);
+  // Delete-then-insert rather than upsert(onConflict), so this works even if the
+  // meal_plan table has no unique constraint on (date, meal_type).
+  const { error: delErr } = await db.from('meal_plan')
+    .delete()
+    .eq('date', date)
+    .eq('meal_type', mealType);
+  if (delErr) throw new Error(`DB setMeal (clear) failed: ${delErr.message}`);
+
+  const { error: insErr } = await db.from('meal_plan')
+    .insert({ date, meal_type: mealType, meal, added_by: addedBy });
+  if (insErr) throw new Error(`DB setMeal (insert) failed: ${insErr.message}`);
 }
 
 export async function getMealPlan(startDate: string, endDate: string): Promise<MealEntry[]> {
