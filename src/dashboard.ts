@@ -6,24 +6,40 @@ import { getWeatherForecast, DayForecast } from './weather';
 import { getMealPlan, getLastBabyLog, getUpcomingBirthdays } from './db';
 import { getFridayBinType } from './scheduler';
 import { getLocalEventsTicker } from './ai';
+import { getDetailedWeather, weatherEmojiForCode, DetailedWeather } from './weather';
 
-// A background photo can be supplied two ways:
-//   1. Commit an image to  assets/dashboard-bg.(jpg|jpeg|png|webp)  — Rose serves
-//      it at /dashboard-bg (no third-party host needed), OR
-//   2. Set DASHBOARD_BG_URL to any public image URL.
+// Background photos — a slideshow if more than one is supplied. Two ways:
+//   1. Commit images to  assets/dashboard-bg.(jpg|…)  and/or
+//      assets/dashboard-bg-1.jpg, dashboard-bg-2.jpg …  — served at /dashboard-bg/N
+//   2. Set DASHBOARD_BG_URL to one URL, or several comma-separated URLs.
 const BG_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'];
 
-export function localBgFile(): string | null {
+/** Ordered list of local background image file paths (dashboard-bg + dashboard-bg-N). */
+export function localBgFiles(): string[] {
+  const files: string[] = [];
   for (const ext of BG_EXTENSIONS) {
-    const p = join(process.cwd(), 'assets', `dashboard-bg.${ext}`);
-    if (existsSync(p)) return p;
+    const base = join(process.cwd(), 'assets', `dashboard-bg.${ext}`);
+    if (existsSync(base)) files.push(base);
   }
-  return null;
+  for (let n = 1; n <= 12; n++) {
+    for (const ext of BG_EXTENSIONS) {
+      const p = join(process.cwd(), 'assets', `dashboard-bg-${n}.${ext}`);
+      if (existsSync(p)) files.push(p);
+    }
+  }
+  return files;
 }
 
-function backgroundUrl(): string | null {
-  if (config.dashboardBgUrl) return config.dashboardBgUrl;
-  return localBgFile() ? '/dashboard-bg' : null;
+/** Back-compat: first local background file, if any. */
+export function localBgFile(): string | null {
+  return localBgFiles()[0] ?? null;
+}
+
+function backgroundUrls(): string[] {
+  if (config.dashboardBgUrl) {
+    return config.dashboardBgUrl.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  return localBgFiles().map((_, i) => `/dashboard-bg/${i}`);
 }
 
 // ── Per-TV options (from URL query) ─────────────────────────────────────────────
@@ -62,7 +78,7 @@ interface DashboardData {
   headerDate: string;
   today: DashEvent[];
   upcoming: DashEvent[];
-  weather: { today: string | null; tomorrow: string | null };
+  weather: DetailedWeather;
   meals: { tonight: string | null; upcoming: Array<{ day: string; meal: string }> };
   bin: { label: string; colorHex: string } | null;
   schoolRun: string | null;
@@ -195,11 +211,9 @@ export async function getDashboardData(): Promise<DashboardData> {
     console.error('Dashboard: calendar fetch failed:', err);
   }
 
-  let weather: { today: string | null; tomorrow: string | null } = { today: null, tomorrow: null };
+  let weather: DetailedWeather = { current: null, hourly: [], sunrise: null, sunset: null, uvMax: null, pollen: null };
   try {
-    const days = await getWeatherForecast(2);
-    if (days[0]) weather.today = fmtWeather(days[0]);
-    if (days[1]) weather.tomorrow = fmtWeather(days[1]);
+    weather = await getDetailedWeather();
   } catch (err) {
     console.error('Dashboard: weather fetch failed:', err);
   }
@@ -296,11 +310,26 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     ? `<ul class="events">${d.upcoming.map(eventRow).join('')}</ul>`
     : `<p class="empty">Clear for the next couple of weeks</p>`;
 
-  const weatherCard = (d.weather.today || d.weather.tomorrow)
+  const w = d.weather;
+  const hourlyStrip = w.hourly.length
+    ? `<div class="hours">${w.hourly.map((h) => `
+        <div class="hr">
+          <span class="hr-t">${esc(h.hour)}</span>
+          <span class="hr-e">${weatherEmojiForCode(h.code)}</span>
+          <span class="hr-d">${h.temp}°</span>
+          <span class="hr-r">${h.precipProb >= 10 ? `💧${h.precipProb}%` : ''}</span>
+        </div>`).join('')}</div>`
+    : '';
+  const uvBadge = w.uvMax != null ? `☀️ UV ${w.uvMax}` : '';
+  const pollenBadge = w.pollen ? `🌾 ${esc(w.pollen.type)} ${esc(w.pollen.level.toLowerCase())}` : '';
+  const sunBadge = (w.sunrise && w.sunset) ? `🌅 ${esc(w.sunrise)} · 🌇 ${esc(w.sunset)}` : '';
+  const weatherFooter = [uvBadge, pollenBadge, sunBadge].filter(Boolean).join('  ·  ');
+  const weatherCard = w.current
     ? `<div class="card">
          <h2>Weather</h2>
-         ${d.weather.today ? `<p class="big">${esc(d.weather.today)}</p>` : ''}
-         ${d.weather.tomorrow ? `<p class="sub">Tomorrow: ${esc(d.weather.tomorrow)}</p>` : ''}
+         <p class="big">${weatherEmojiForCode(w.current.code)} ${esc(w.current.description)}, ${w.current.temp}°C</p>
+         ${hourlyStrip}
+         ${weatherFooter ? `<p class="wfoot">${weatherFooter}</p>` : ''}
        </div>` : '';
 
   const schoolRunCard = d.schoolRun
@@ -340,9 +369,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   const sideCards = [weatherCard, mealsCard, schoolRunCard, binCard, countdownCard, babyCard]
     .filter(Boolean).join('\n');
 
-  const bg = opts.photo ? backgroundUrl() : null;
-  const bgLayer = bg
-    ? `<div class="bg" style="background-image:url('${esc(bg)}')"></div><div class="bg-tint"></div>`
+  const bgs = opts.photo ? backgroundUrls() : [];
+  const bgLayer = bgs.length
+    ? `${bgs.map((u, i) => `<div class="bg${i === 0 ? ' active' : ''}" style="background-image:url('${esc(u)}')"></div>`).join('')}<div class="bg-tint"></div>`
     : '';
 
   // Scrolling local-events ticker. Duration scales with content so it reads at a steady pace.
@@ -360,7 +389,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     .join('<span class="ticker-item">•</span>');
   const tickerSecs = Math.max(30, d.ticker.length * 9);
   const tickerBar = hasTicker
-    ? `<div class="ticker"><div class="ticker-lead">📣 What's on</div><div class="ticker-track" style="animation-duration:${tickerSecs}s">${tickerItems}</div></div>`
+    ? `<div class="ticker"><div class="ticker-lead">📣 What's on near you</div><div class="ticker-track" style="animation-duration:${tickerSecs}s">${tickerItems}</div></div>`
     : '';
 
   return `<!DOCTYPE html>
@@ -373,9 +402,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --bg: #0b1020; --panel: rgba(20,28,50,.58); --panel2: rgba(15,21,40,.5);
-    --text: #eef2ff; --muted: #b6c0dc; --accent: #7cc4ff; --accent2: #ffd479;
-    --stroke: rgba(255,255,255,.12); --dim: 1;
+    --bg: #0b1020; --panel: rgba(18,26,48,.4); --panel2: rgba(13,19,38,.32);
+    --text: #eef2ff; --muted: #c2cce6; --accent: #7cc4ff; --accent2: #ffd479;
+    --stroke: rgba(255,255,255,.14); --dim: 1;
   }
   html, body { height: 100%; }
   body {
@@ -387,10 +416,12 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   }
   /* Night dimming after 8pm */
   body[data-night="1"] {
-    --bg: #05070f; --panel: rgba(12,17,32,.66); --panel2: rgba(9,13,26,.6);
-    --text: #cdd6f0; --muted: #8a95b8; --accent: #5b9fd6; --accent2: #d8b26a; --dim: .72;
+    --bg: #05070f; --panel: rgba(12,17,32,.5); --panel2: rgba(9,13,26,.44);
+    --text: #cdd6f0; --muted: #9aa5c6; --accent: #5b9fd6; --accent2: #d8b26a; --dim: .72;
   }
-  .bg { position: fixed; inset: 0; background-size: cover; background-position: center; z-index: -2; }
+  .bg { position: fixed; inset: 0; background-size: cover; background-position: center; z-index: -3;
+    opacity: 0; transition: opacity 1.6s ease-in-out; }
+  .bg.active { opacity: 1; }
   .bg-tint { position: fixed; inset: 0; z-index: -1;
     background: linear-gradient(180deg, rgba(6,9,20,.42), rgba(6,9,20,.6)); }
   header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2.6vh; }
@@ -407,6 +438,13 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .dot { display: inline-block; width: 2.4vh; height: 2.4vh; border-radius: 50%; margin-right: 1vh;
     vertical-align: middle; box-shadow: 0 0 0 2px rgba(255,255,255,.15) inset; }
   .sub { font-size: 2.3vh; color: var(--muted); margin-top: .7vh; }
+  .hours { display: flex; justify-content: space-between; gap: .4vw; margin-top: 1.4vh; }
+  .hr { display: flex; flex-direction: column; align-items: center; gap: .3vh; flex: 1; }
+  .hr-t { font-size: 1.7vh; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .hr-e { font-size: 2.4vh; }
+  .hr-d { font-size: 2vh; font-weight: 700; }
+  .hr-r { font-size: 1.5vh; color: var(--accent); min-height: 1.5vh; }
+  .wfoot { font-size: 1.9vh; color: var(--muted); margin-top: 1.4vh; }
   .events { list-style: none; display: flex; flex-direction: column; gap: 1.3vh; overflow: hidden; }
   .events li { display: flex; align-items: baseline; gap: 1.2vw; }
   .ev-when { flex: 0 0 auto; min-width: 13vw; color: var(--accent2); font-weight: 700; font-size: 2.7vh; font-variant-numeric: tabular-nums; }
@@ -473,6 +511,18 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
       if (el) el.textContent = h + ':' + m;
     }
     tick(); setInterval(tick, 10000);
+
+    // Background photo slideshow — cross-fade every 18s if more than one image.
+    (function () {
+      var slides = document.querySelectorAll('.bg');
+      if (slides.length < 2) return;
+      var i = 0;
+      setInterval(function () {
+        slides[i].classList.remove('active');
+        i = (i + 1) % slides.length;
+        slides[i].classList.add('active');
+      }, 18000);
+    })();
   </script>
 </body>
 </html>`;

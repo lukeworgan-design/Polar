@@ -5,7 +5,7 @@ import { config, getUserName } from './config';
 import { generateResponse, ImageData, loadBabyArrival } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
-import { getDashboardData, renderDashboardPage, parseOptions, localBgFile } from './dashboard';
+import { getDashboardData, renderDashboardPage, parseOptions, localBgFiles } from './dashboard';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { createReadStream } from 'fs';
 import { extname } from 'path';
@@ -587,9 +587,12 @@ async function handleHttp(
     return;
   }
 
-  // Background photo committed to the repo (assets/dashboard-bg.*)
-  if (req.method === 'GET' && path === '/dashboard-bg') {
-    const file = localBgFile();
+  // Background photo(s) committed to the repo (assets/dashboard-bg[-N].*)
+  if (req.method === 'GET' && (path === '/dashboard-bg' || path.startsWith('/dashboard-bg/'))) {
+    const files = localBgFiles();
+    const idxStr = path.slice('/dashboard-bg/'.length);
+    const idx = idxStr && /^\d+$/.test(idxStr) ? parseInt(idxStr, 10) : 0;
+    const file = files[idx];
     if (!file) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('No background image. Commit one to assets/dashboard-bg.jpg');
