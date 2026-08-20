@@ -66,58 +66,55 @@
         {
           "name": "ShoppingListIntent",
           "samples": [
-            "what's on the family list",
-            "what's on the grocery list",
-            "read the family list",
-            "read the list",
-            "what's on the list",
-            "what do we need"
+            "what do we need",
+            "what do we need from the shop",
+            "what's on the groceries",
+            "read the groceries",
+            "what groceries do we need",
+            "what's in the shopping"
           ]
         },
         {
           "name": "AddShoppingIntent",
           "slots": [{ "name": "Item", "type": "AMAZON.SearchQuery" }],
           "samples": [
-            "add to the family list",
-            "add something to the family list",
-            "add to the list",
-            "add {Item} to the family list",
-            "add {Item} to the grocery list",
-            "add {Item} to the list",
-            "put {Item} on the family list",
-            "put {Item} on the list",
-            "we need {Item}"
+            "add to the groceries",
+            "add something to the groceries",
+            "we need {Item}",
+            "add {Item} to the groceries",
+            "add {Item} to the shopping",
+            "put {Item} on the groceries",
+            "buy {Item}"
           ]
         },
         {
           "name": "RemoveShoppingIntent",
           "slots": [{ "name": "Item", "type": "AMAZON.SearchQuery" }],
           "samples": [
-            "remove {Item} from the family list",
-            "remove {Item} from the list",
-            "take {Item} off the family list",
-            "take {Item} off the list",
-            "tick off {Item}",
-            "cross off {Item}"
+            "remove {Item} from the groceries",
+            "take {Item} off the groceries",
+            "we don't need {Item}",
+            "cross off {Item}",
+            "tick off {Item}"
           ]
         },
         {
           "name": "ClearShoppingIntent",
           "samples": [
-            "clear the family list",
-            "empty the family list",
-            "clear the list",
-            "start a new family list"
+            "clear the groceries",
+            "empty the groceries",
+            "clear the shopping",
+            "start a new shop"
           ]
         },
         {
           "name": "AddTodoIntent",
           "slots": [{ "name": "Task", "type": "AMAZON.SearchQuery" }],
           "samples": [
-            "add {Task} to the jobs list",
-            "add {Task} to the tasks",
+            "add {Task} to the jobs",
+            "add a job {Task}",
             "add job {Task}",
-            "put {Task} on the jobs list"
+            "put {Task} on the jobs"
           ]
         },
         {
@@ -222,7 +219,7 @@
       },
       {
         "id": "Elicit.Slot.RemoveItem",
-        "variations": [{ "type": "PlainText", "value": "What should I take off the list?" }]
+        "variations": [{ "type": "PlainText", "value": "What should I take off the groceries?" }]
       },
       {
         "id": "Elicit.Slot.Title",
