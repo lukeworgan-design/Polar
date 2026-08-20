@@ -76,10 +76,35 @@
           "name": "AddShoppingIntent",
           "slots": [{ "name": "Item", "type": "AMAZON.SearchQuery" }],
           "samples": [
+            "add to the shopping list",
+            "add something to the shopping list",
+            "add to the list",
             "add {Item} to the shopping list",
             "add {Item} to the list",
             "put {Item} on the shopping list",
-            "put {Item} on the list"
+            "put {Item} on the list",
+            "we need {Item}"
+          ]
+        },
+        {
+          "name": "RemoveShoppingIntent",
+          "slots": [{ "name": "Item", "type": "AMAZON.SearchQuery" }],
+          "samples": [
+            "remove {Item} from the shopping list",
+            "remove {Item} from the list",
+            "take {Item} off the shopping list",
+            "take {Item} off the list",
+            "tick off {Item}",
+            "cross off {Item}"
+          ]
+        },
+        {
+          "name": "ClearShoppingIntent",
+          "samples": [
+            "clear the shopping list",
+            "empty the shopping list",
+            "clear the list",
+            "start a new shopping list"
           ]
         },
         {
@@ -129,6 +154,34 @@
     "dialog": {
       "intents": [
         {
+          "name": "AddShoppingIntent",
+          "confirmationRequired": false,
+          "prompts": {},
+          "slots": [
+            {
+              "name": "Item",
+              "type": "AMAZON.SearchQuery",
+              "elicitationRequired": true,
+              "confirmationRequired": false,
+              "prompts": { "elicitation": "Elicit.Slot.ShopItem" }
+            }
+          ]
+        },
+        {
+          "name": "RemoveShoppingIntent",
+          "confirmationRequired": false,
+          "prompts": {},
+          "slots": [
+            {
+              "name": "Item",
+              "type": "AMAZON.SearchQuery",
+              "elicitationRequired": true,
+              "confirmationRequired": false,
+              "prompts": { "elicitation": "Elicit.Slot.RemoveItem" }
+            }
+          ]
+        },
+        {
           "name": "AddEventIntent",
           "confirmationRequired": false,
           "prompts": {},
@@ -159,6 +212,14 @@
       ]
     },
     "prompts": [
+      {
+        "id": "Elicit.Slot.ShopItem",
+        "variations": [{ "type": "PlainText", "value": "What would you like to add?" }]
+      },
+      {
+        "id": "Elicit.Slot.RemoveItem",
+        "variations": [{ "type": "PlainText", "value": "What should I take off the list?" }]
+      },
       {
         "id": "Elicit.Slot.Title",
         "variations": [{ "type": "PlainText", "value": "What's the event?" }]

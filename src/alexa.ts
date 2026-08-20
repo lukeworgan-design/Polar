@@ -1,6 +1,6 @@
 import { config } from './config';
 import { getTodaysEvents, getUpcomingEvents, CalendarEvent } from './calendar';
-import { getMealPlan, getShoppingList, addShoppingItem, addTodo, addBabyLog } from './db';
+import { getMealPlan, getShoppingList, addShoppingItem, removeShoppingItem, clearShoppingList, addTodo, addBabyLog } from './db';
 import { getFridayBinType, binLabel, nextFridayDate } from './bin';
 import { createCalendarEventStructured } from './ai';
 
@@ -118,10 +118,30 @@ function handleBabyAge(): string {
   return age ? `${babyName()} is ${age}.` : `I don't have a birth date on record.`;
 }
 
+function splitItems(s: string): string[] {
+  return s.split(/,| and /i).map((x) => x.trim()).filter(Boolean);
+}
+
 async function handleAddShopping(item: string | undefined): Promise<string> {
   if (!item) return `What would you like me to add to the shopping list?`;
-  await addShoppingItem(item, 'Alexa');
-  return `Added ${item} to the shopping list.`;
+  const items = splitItems(item);
+  for (const it of items) await addShoppingItem(it, 'Alexa');
+  return items.length === 1
+    ? `Added ${items[0]} to the shopping list.`
+    : `Added ${joinNaturally(items)} to the shopping list.`;
+}
+
+async function handleRemoveShopping(item: string | undefined): Promise<string> {
+  if (!item) return `What would you like me to remove from the shopping list?`;
+  const removed = await removeShoppingItem(item);
+  return removed
+    ? `Removed ${item} from the shopping list.`
+    : `I couldn't find ${item} on the shopping list.`;
+}
+
+async function handleClearShopping(): Promise<string> {
+  const count = await clearShoppingList();
+  return count > 0 ? `Cleared ${count} item${count === 1 ? '' : 's'} from the shopping list.` : `The shopping list was already empty.`;
 }
 
 async function handleShoppingList(): Promise<string> {
@@ -156,7 +176,7 @@ function delegate(): AlexaResponse & { response: { directives: unknown[] } } {
 
 // ── Main entry ──────────────────────────────────────────────────────────────────
 
-const HELP = `You can ask me what's for dinner, what's on today, what's coming up, when the bins go out, or how old ${config.family.babyName || 'the baby'} is. You can also add things — like: add milk to the shopping list, or add dentist on Tuesday at 3pm to the calendar.`;
+const HELP = `You can ask me what's for dinner, what's on today, what's coming up, or when the bins go out. For the shopping list, say: add milk and bread to the shopping list, remove milk, or what's on the shopping list. And to add to the calendar, say: add an event to the calendar.`;
 
 function slotValue(intent: any, name: string): string | undefined {
   const v = intent?.slots?.[name]?.value;
@@ -188,7 +208,7 @@ export async function handleAlexaRequest(event: any): Promise<AlexaResponse> {
 
     // If a dialog is mid-way (slots still to fill), let Alexa keep collecting.
     const dialogState = event.request.dialogState;
-    if (name === 'AddEventIntent' && dialogState && dialogState !== 'COMPLETED') {
+    if (dialogState && dialogState !== 'COMPLETED') {
       return delegate() as AlexaResponse;
     }
 
@@ -200,6 +220,8 @@ export async function handleAlexaRequest(event: any): Promise<AlexaResponse> {
         case 'BinIntent': return speak(handleBin());
         case 'BabyAgeIntent': return speak(handleBabyAge());
         case 'AddShoppingIntent': return speak(await handleAddShopping(slotValue(intent, 'Item')));
+        case 'RemoveShoppingIntent': return speak(await handleRemoveShopping(slotValue(intent, 'Item')));
+        case 'ClearShoppingIntent': return speak(await handleClearShopping());
         case 'ShoppingListIntent': return speak(await handleShoppingList());
         case 'AddTodoIntent': return speak(await handleAddTodo(slotValue(intent, 'Task')));
         case 'AddEventIntent': return speak(await handleAddEvent(
