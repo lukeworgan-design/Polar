@@ -41,7 +41,7 @@ interface DashboardData {
   today: DashEvent[];
   upcoming: DashEvent[];
   weather: { today: string | null; tomorrow: string | null };
-  dinner: string | null;
+  meals: { tonight: string | null; upcoming: Array<{ day: string; meal: string }> };
   bin: { label: string; colorHex: string } | null;
   schoolRun: string | null;
   countdowns: Countdown[];
@@ -181,11 +181,17 @@ export async function getDashboardData(): Promise<DashboardData> {
     console.error('Dashboard: weather fetch failed:', err);
   }
 
-  let dinner: string | null = null;
+  let meals: { tonight: string | null; upcoming: Array<{ day: string; meal: string }> } = { tonight: null, upcoming: [] };
   try {
-    const meals = await getMealPlan(todayStr, todayStr);
-    const d = meals.find((m) => m.meal_type === 'dinner');
-    dinner = d ? d.meal : null;
+    const end = new Date(now);
+    end.setDate(now.getDate() + 6);
+    const plan = await getMealPlan(todayStr, tzDateStr(end));
+    const dinners = plan.filter((m) => m.meal_type === 'dinner');
+    meals.tonight = dinners.find((m) => m.date === todayStr)?.meal ?? null;
+    meals.upcoming = dinners
+      .filter((m) => m.date > todayStr)
+      .slice(0, 5)
+      .map((m) => ({ day: fmtDay(m.date), meal: m.meal }));
   } catch (err) {
     console.error('Dashboard: meal fetch failed:', err);
   }
@@ -233,7 +239,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   }
 
   return {
-    headerDate, today, upcoming, weather, dinner, bin, schoolRun, countdowns, baby, night,
+    headerDate, today, upcoming, weather, meals, bin, schoolRun, countdowns, baby, night,
     generatedAt: fmtTime(now.toISOString()),
   };
 }
@@ -273,8 +279,14 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     ? `<div class="card"><h2>School run today</h2><p class="big">🚌 ${esc(d.schoolRun)}</p></div>`
     : '';
 
-  const dinnerCard = d.dinner
-    ? `<div class="card"><h2>Tonight's dinner</h2><p class="big">🍽 ${esc(d.dinner)}</p></div>`
+  const mealsCard = (d.meals.tonight || d.meals.upcoming.length)
+    ? `<div class="card">
+         <h2>Meals</h2>
+         <p class="big">🍽 Tonight: ${d.meals.tonight ? esc(d.meals.tonight) : 'not set yet'}</p>
+         ${d.meals.upcoming.length
+           ? `<ul class="meals">${d.meals.upcoming.map((m) => `<li><span class="d">${esc(m.day)}</span><span class="m">${esc(m.meal)}</span></li>`).join('')}</ul>`
+           : ''}
+       </div>`
     : '';
 
   const binCard = d.bin
@@ -297,7 +309,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     babyCard = `<div class="card"><h2>${esc(d.baby.name)}</h2><p class="big">👶 ${esc(d.baby.ageText)}</p>${details}</div>`;
   }
 
-  const sideCards = [weatherCard, schoolRunCard, dinnerCard, binCard, countdownCard, babyCard]
+  const sideCards = [weatherCard, mealsCard, schoolRunCard, binCard, countdownCard, babyCard]
     .filter(Boolean).join('\n');
 
   const bgLayer = (opts.photo && config.dashboardBgUrl)
@@ -356,6 +368,10 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .mini { list-style: none; display: flex; flex-direction: column; gap: 1vh; }
   .mini li { display: flex; justify-content: space-between; font-size: 2.5vh; font-weight: 600; }
   .mini .cd { color: var(--accent2); }
+  .meals { list-style: none; display: flex; flex-direction: column; gap: .9vh; margin-top: 1.2vh; }
+  .meals li { display: flex; gap: 1.2vw; font-size: 2.4vh; align-items: baseline; }
+  .meals .d { flex: 0 0 auto; min-width: 9vw; color: var(--accent2); font-weight: 700; }
+  .meals .m { font-weight: 600; }
   footer { position: fixed; bottom: 1.2vh; right: 2.2vw; font-size: 1.6vh; color: var(--muted); opacity: .6; }
 </style>
 </head>
