@@ -70,6 +70,9 @@ export const config = {
   location: process.env['FAMILY_LOCATION'] || 'Cheltenham, Gloucestershire',
   braveSearchApiKey: process.env['BRAVE_SEARCH_API_KEY'] || null,
   openaiApiKey: process.env['OPENAI_API_KEY'] || null,
+  // Secret token guarding the family TV dashboard (served at /dashboard?token=...).
+  // Set DASHBOARD_TOKEN in the environment to any long random string.
+  dashboardToken: process.env['DASHBOARD_TOKEN'] || null,
   family: {
     children: [
       // Set POPPY_DOB / BILLY_DOB (YYYY-MM-DD) in the environment to the real

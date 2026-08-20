@@ -5,6 +5,8 @@ import { config, getUserName } from './config';
 import { generateResponse, ImageData, loadBabyArrival } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
+import { getDashboardData, renderDashboardPage } from './dashboard';
+import type { IncomingMessage, ServerResponse } from 'http';
 
 const bot = new Telegraf(config.telegram.botToken);
 const GROUP_ID = parseInt(config.telegram.groupId, 10);
@@ -517,6 +519,54 @@ bot.catch((err, ctx) => {
   console.error('Bot error:', err);
 });
 
+// ── HTTP server (Telegram webhook + family TV dashboard) ───────────────────────
+
+const WEBHOOK_PATH = '/webhook';
+
+async function handleHttp(
+  req: IncomingMessage,
+  res: ServerResponse,
+  webhookHandler?: (req: IncomingMessage, res: ServerResponse) => void,
+): Promise<void> {
+  const url = new URL(req.url || '/', 'http://localhost');
+  const path = url.pathname;
+
+  // Telegram webhook
+  if (webhookHandler && req.method === 'POST' && path === WEBHOOK_PATH) {
+    webhookHandler(req, res);
+    return;
+  }
+
+  // Family TV dashboard
+  if (req.method === 'GET' && (path === '/dashboard' || path === '/dashboard/')) {
+    if (!config.dashboardToken) {
+      res.writeHead(503, { 'Content-Type': 'text/plain' });
+      res.end('Dashboard is not configured. Set DASHBOARD_TOKEN in the environment.');
+      return;
+    }
+    if (url.searchParams.get('token') !== config.dashboardToken) {
+      res.writeHead(401, { 'Content-Type': 'text/plain' });
+      res.end('Unauthorized');
+      return;
+    }
+    try {
+      const data = await getDashboardData();
+      const html = renderDashboardPage(data, config.dashboardToken);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(html);
+    } catch (err) {
+      console.error('Dashboard render error:', err);
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Dashboard temporarily unavailable.');
+    }
+    return;
+  }
+
+  // Health check / everything else
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('OK');
+}
+
 // ── Launch ────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -531,19 +581,19 @@ async function main(): Promise<void> {
   const port = parseInt(process.env['PORT'] || '3000', 10);
 
   if (domain) {
-    // Webhook mode — no polling conflicts, works with Railway rolling deploys
-    await bot.launch({
-      webhook: {
-        domain,
-        port,
-        path: '/webhook',
-      },
-    });
+    // Webhook mode — we run our own HTTP server so the dashboard and the
+    // Telegram webhook share one port.
+    const webhookHandler = bot.webhookCallback(WEBHOOK_PATH);
+    await bot.telegram.setWebhook(`https://${domain}${WEBHOOK_PATH}`);
+    createServer((req, res) => { void handleHttp(req, res, webhookHandler); }).listen(port);
     console.log(`Rose is running in webhook mode on port ${port} ✓`);
+    if (config.dashboardToken) {
+      console.log(`Dashboard: https://${domain}/dashboard?token=<DASHBOARD_TOKEN>`);
+    }
   } else {
     // No domain yet — bind to PORT so Railway can generate a public URL,
     // then fall back to long polling until next deploy.
-    createServer((req, res) => { res.writeHead(200); res.end('OK'); }).listen(port);
+    createServer((req, res) => { void handleHttp(req, res); }).listen(port);
     for (let attempt = 1; attempt <= 12; attempt++) {
       try {
         await bot.launch();
