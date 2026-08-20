@@ -19,6 +19,7 @@ import {
   generatePregnancyUpdate,
   generateBabyChecklistReminder,
   getDueImmunisationReminder,
+  refreshLocalEventsTicker,
 } from './ai';
 import {
   getPendingReminders,
@@ -173,6 +174,12 @@ export function initScheduler(sendFn: SendMessageFn): void {
       console.error('Error sending immunisation reminder:', err);
     }
   }, { timezone: config.timezone });
+
+  // Local events ticker for the TV dashboard — refresh every 6 hours, and once now.
+  cron.schedule('0 */6 * * *', () => {
+    refreshLocalEventsTicker().catch((err) => console.error('Ticker refresh error:', err));
+  }, { timezone: config.timezone });
+  refreshLocalEventsTicker().catch((err) => console.error('Initial ticker refresh error:', err));
 
   console.log('Scheduler initialised ✓');
 }

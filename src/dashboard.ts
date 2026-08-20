@@ -5,6 +5,7 @@ import { getTodaysEvents, getUpcomingEvents, CalendarEvent } from './calendar';
 import { getWeatherForecast, DayForecast } from './weather';
 import { getMealPlan, getLastBabyLog, getUpcomingBirthdays } from './db';
 import { getFridayBinType } from './scheduler';
+import { getLocalEventsTicker } from './ai';
 
 // A background photo can be supplied two ways:
 //   1. Commit an image to  assets/dashboard-bg.(jpg|jpeg|png|webp)  — Rose serves
@@ -67,6 +68,7 @@ interface DashboardData {
   schoolRun: string | null;
   countdowns: Countdown[];
   baby: { name: string; ageText: string; lastFeed: string | null; lastNappy: string | null } | null;
+  ticker: string[];
   night: boolean;
   generatedAt: string;
 }
@@ -263,7 +265,9 @@ export async function getDashboardData(): Promise<DashboardData> {
   }
 
   return {
-    headerDate, today, upcoming, weather, meals, bin, schoolRun, countdowns, baby, night,
+    headerDate, today, upcoming, weather, meals, bin, schoolRun, countdowns, baby,
+    ticker: getLocalEventsTicker(),
+    night,
     generatedAt: fmtTime(now.toISOString()),
   };
 }
@@ -341,6 +345,24 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     ? `<div class="bg" style="background-image:url('${esc(bg)}')"></div><div class="bg-tint"></div>`
     : '';
 
+  // Scrolling local-events ticker. Duration scales with content so it reads at a steady pace.
+  const hasTicker = d.ticker.length > 0;
+  const tickerItems = d.ticker
+    .map((t) => {
+      const dashIdx = t.indexOf('—');
+      if (dashIdx > 0) {
+        const tag = t.slice(0, dashIdx).trim();
+        const rest = t.slice(dashIdx + 1).trim();
+        return `<span class="ticker-item"><span class="ti-tag">${esc(tag)}</span>${esc(rest)}</span>`;
+      }
+      return `<span class="ticker-item">${esc(t)}</span>`;
+    })
+    .join('<span class="ticker-item">•</span>');
+  const tickerSecs = Math.max(30, d.ticker.length * 9);
+  const tickerBar = hasTicker
+    ? `<div class="ticker"><div class="ticker-lead">📣 What's on</div><div class="ticker-track" style="animation-duration:${tickerSecs}s">${tickerItems}</div></div>`
+    : '';
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -375,6 +397,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   header .date { font-size: 4vh; font-weight: 700; letter-spacing: .3px; }
   header .clock { font-size: 6vh; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
   .grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 2.2vh 2vw; height: 84vh; }
+  body.has-ticker .grid { height: 76vh; }
   .col { display: flex; flex-direction: column; gap: 2.2vh; min-height: 0; }
   .card { background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
     border: 1px solid var(--stroke); border-radius: 22px; padding: 2.4vh 1.7vw;
@@ -400,9 +423,21 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .meals .d { flex: 0 0 auto; min-width: 9vw; color: var(--accent2); font-weight: 700; }
   .meals .m { font-weight: 600; }
   footer { position: fixed; bottom: 1.2vh; right: 2.2vw; font-size: 1.6vh; color: var(--muted); opacity: .6; }
+  /* Local events ticker */
+  .ticker { position: fixed; left: 0; right: 0; bottom: 0; height: 7vh;
+    background: rgba(6,9,20,.82); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border-top: 1px solid var(--stroke); display: flex; align-items: center; overflow: hidden; }
+  .ticker-track { display: inline-flex; white-space: nowrap; padding-left: 100%;
+    animation: ticker linear infinite; }
+  .ticker-item { font-size: 2.8vh; font-weight: 600; margin: 0 3vw; }
+  .ticker-item .ti-tag { color: var(--accent2); font-weight: 800; margin-right: .6vw; }
+  .ticker-lead { position: absolute; left: 0; top: 0; bottom: 0; z-index: 2; display: flex; align-items: center;
+    padding: 0 1.6vw; background: rgba(6,9,20,.95); color: var(--accent); font-weight: 800; font-size: 2.6vh;
+    border-right: 1px solid var(--stroke); }
+  @keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-100%); } }
 </style>
 </head>
-<body${d.night ? ' data-night="1"' : ''}>
+<body class="${hasTicker ? 'has-ticker' : ''}"${d.night ? ' data-night="1"' : ''}>
   ${bgLayer}
   <header>
     <div class="date">${esc(d.headerDate)}</div>
@@ -426,7 +461,8 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     </div>
   </div>
 
-  <footer>Rose · updated ${esc(d.generatedAt)}</footer>
+  ${hasTicker ? '' : `<footer>Rose · updated ${esc(d.generatedAt)}</footer>`}
+  ${tickerBar}
 
   <script>
     function tick() {

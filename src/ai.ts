@@ -1928,6 +1928,59 @@ Include:
   return textBlock?.text || '';
 }
 
+// ── Local events ticker (for the TV dashboard) ────────────────────────────────
+// Refreshed periodically by the scheduler (not per dashboard render) so we don't
+// hammer the search API. Held in memory; empty until the first refresh.
+
+let localEventsTicker: string[] = [];
+
+export function getLocalEventsTicker(): string[] {
+  return localEventsTicker;
+}
+
+export async function refreshLocalEventsTicker(): Promise<void> {
+  try {
+    const { braveSearch, formatSearchResults } = await import('./search');
+    const now = getLocalNow(config.timezone);
+    const monthStr = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: config.timezone });
+
+    const [r1, r2] = await Promise.all([
+      braveSearch(`family events ${config.location} ${monthStr}`, 6),
+      braveSearch(`things to do with kids ${config.location} this month`, 6),
+    ]);
+    const seen = new Set<string>();
+    const results = [...r1, ...r2].filter((r) => {
+      if (seen.has(r.url)) return false;
+      seen.add(r.url);
+      return true;
+    });
+    if (results.length === 0) return;
+
+    const prompt = `From these web search results, extract up to 8 real, specific, upcoming family-friendly events in ${config.location}. One event per line, formatted exactly as "Date — Event name, Venue" (e.g. "Sat 23 Aug — Farmers' Market, The Promenade"). ONLY include events that have a genuine name and a date or venue in the results — never invent events or list permanent attractions without a specific dated happening. If only a few qualify, return only those. Output just the lines, no intro, no bullets.
+
+${formatSearchResults(results)}`;
+
+    const response = await createMessage({
+      model: config.anthropic.model,
+      max_tokens: 400,
+      system: 'You extract concise, factual event listings from search results. Output only the event lines, nothing else.',
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const text = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text')?.text || '';
+    const items = text
+      .split('\n')
+      .map((l) => l.replace(/^[-•*\d.\s]+/, '').trim())
+      .filter((l) => l.length > 4)
+      .slice(0, 8);
+    if (items.length) {
+      localEventsTicker = items;
+      console.log(`Local events ticker refreshed: ${items.length} items`);
+    }
+  } catch (err) {
+    console.error('refreshLocalEventsTicker failed:', err);
+  }
+}
+
 // ── Message intent detection ──────────────────────────────────────────────────
 
 export async function shouldRoseRespond(
