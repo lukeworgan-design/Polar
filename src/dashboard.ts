@@ -348,9 +348,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --bg: #0b1020; --panel: rgba(25,33,58,.92); --panel2: rgba(20,27,48,.92);
-    --text: #eef2ff; --muted: #9aa7c7; --accent: #7cc4ff; --accent2: #ffd479;
-    --stroke: rgba(255,255,255,.07); --dim: 1;
+    --bg: #0b1020; --panel: rgba(20,28,50,.58); --panel2: rgba(15,21,40,.5);
+    --text: #eef2ff; --muted: #b6c0dc; --accent: #7cc4ff; --accent2: #ffd479;
+    --stroke: rgba(255,255,255,.12); --dim: 1;
   }
   html, body { height: 100%; }
   body {
@@ -358,22 +358,24 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     padding: 3.2vh 3vw; overflow: hidden; -webkit-font-smoothing: antialiased; position: relative;
     filter: brightness(var(--dim));
+    text-shadow: 0 1px 3px rgba(0,0,0,.55);
   }
   /* Night dimming after 8pm */
   body[data-night="1"] {
-    --bg: #05070f; --panel: rgba(16,22,40,.9); --panel2: rgba(12,17,32,.9);
-    --text: #cdd6f0; --muted: #6b779a; --accent: #5b9fd6; --accent2: #d8b26a; --dim: .72;
+    --bg: #05070f; --panel: rgba(12,17,32,.66); --panel2: rgba(9,13,26,.6);
+    --text: #cdd6f0; --muted: #8a95b8; --accent: #5b9fd6; --accent2: #d8b26a; --dim: .72;
   }
   .bg { position: fixed; inset: 0; background-size: cover; background-position: center; z-index: -2; }
   .bg-tint { position: fixed; inset: 0; z-index: -1;
-    background: linear-gradient(180deg, rgba(6,9,20,.72), rgba(6,9,20,.86)); }
+    background: linear-gradient(180deg, rgba(6,9,20,.42), rgba(6,9,20,.6)); }
   header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2.6vh; }
   header .date { font-size: 4vh; font-weight: 700; letter-spacing: .3px; }
   header .clock { font-size: 6vh; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
   .grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 2.2vh 2vw; height: 84vh; }
   .col { display: flex; flex-direction: column; gap: 2.2vh; min-height: 0; }
   .card { background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
-    border: 1px solid var(--stroke); border-radius: 22px; padding: 2.4vh 1.7vw; backdrop-filter: blur(6px); }
+    border: 1px solid var(--stroke); border-radius: 22px; padding: 2.4vh 1.7vw;
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
   .card h2 { font-size: 2.4vh; text-transform: uppercase; letter-spacing: 1.6px; color: var(--muted); margin-bottom: 1.3vh; }
   .big { font-size: 3.4vh; font-weight: 700; line-height: 1.25; }
   .dot { display: inline-block; width: 2.4vh; height: 2.4vh; border-radius: 50%; margin-right: 1vh;
