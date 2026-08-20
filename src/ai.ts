@@ -701,8 +701,14 @@ async function executeTool(
       }
 
       case 'add_shopping_item': {
-        await addShoppingItem(toolInput['item'] as string, userName);
-        return `Added "${toolInput['item']}" to the shopping list.`;
+        const itemName = toolInput['item'] as string;
+        await addShoppingItem(itemName, userName);
+        // Verify it persisted.
+        const after = await getShoppingList();
+        if (!after.some((i) => i.item.toLowerCase() === itemName.toLowerCase())) {
+          return `⚠️ Tried to add "${itemName}" but it did NOT save to the shopping list. Tell the user it failed — do not claim success.`;
+        }
+        return `Added "${itemName}" to the shopping list. The list now has ${after.length} item(s).`;
       }
 
       case 'remove_shopping_item': {
@@ -714,8 +720,13 @@ async function executeTool(
 
       case 'clear_shopping_list': {
         const count = await clearShoppingList();
+        // Verify the list is actually empty now.
+        const remaining = await getShoppingList();
+        if (remaining.length > 0) {
+          return `⚠️ Tried to clear the shopping list but ${remaining.length} item(s) are still on it. Tell the user the clear did NOT work — do not claim success.`;
+        }
         return count > 0
-          ? `Cleared ${count} item(s) from the shopping list.`
+          ? `Cleared ${count} item(s) from the shopping list. It is now empty.`
           : 'The shopping list was already empty.';
       }
 
@@ -1133,6 +1144,8 @@ TOOLS:
 You have tools to read and write the Family Google Calendar, manage a shopping list, to-do list, reminders, birthdays, and meal plan. Use them whenever the user's request involves these. When you use a tool, integrate the result naturally into your response — don't just dump raw data.
 
 TASK & LIST HANDLING:
+- CRITICAL: You cannot change any list by yourself — the ONLY way to add, remove, or clear items is by calling the tools (add_shopping_item, remove_shopping_item, clear_shopping_list, add_todo, complete_todo). NEVER say you've cleared, added, removed, or "updated" a list unless you actually called the matching tool in this turn and it returned success. Do NOT invent or describe a "new list" from memory — if you want to show the resulting list, call get_shopping_list (or get_todo_list) AFTER your changes and read back exactly what it returns.
+- For a "clear and replace" request: first call clear_shopping_list, then call add_shopping_item once per new item, then (optionally) call get_shopping_list to confirm. Only report success after the tools have run.
 - When adding to the to-do list or shopping list, always clean up the text first: fix spelling, capitalise properly, and make it grammatically natural before saving. Examples: "luke haircut" → "Luke's haircut", "Billy hair cut" → "Billy's haircut", "mow lawn" → "Mow the lawn", "milk bread" → two items "Milk" and "Bread".
 - When displaying a to-do list, add a relevant emoji before each item to make it easy to scan at a glance. Pick something that fits the task — e.g. ✂️ for haircuts, 🌿 for garden tasks, 🛒 for shopping, 🧹 for chores, 📦 for errands.
 - When displaying the shopping list, use 🛒 or a fitting food/item emoji per line.
