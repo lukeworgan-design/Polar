@@ -83,7 +83,7 @@ interface DashboardData {
   bin: { label: string; colorHex: string } | null;
   schoolRun: string | null;
   countdowns: Countdown[];
-  baby: { name: string; ageText: string; lastFeed: string | null; lastNappy: string | null } | null;
+  baby: { name: string; ageText: string; fact: string | null } | null;
   ticker: string[];
   night: boolean;
   generatedAt: string;
@@ -149,6 +149,41 @@ function babyAgeText(dob: string): string {
   const weeks = Math.floor(days / 7);
   const remDays = days % 7;
   return `${weeks} week${weeks === 1 ? '' : 's'}${remDays ? ` ${remDays}d` : ''} old`;
+}
+
+// Baby developmental facts, each unlocked from a given age (days). We show one
+// age-appropriate fact per day, rotating so it feels fresh.
+const BABY_FACTS: Array<{ from: number; text: string }> = [
+  { from: 0, text: 'sees best about 20–30cm away — just right for gazing at your face.' },
+  { from: 0, text: 'already knows your voice and your smell.' },
+  { from: 1, text: 'has a strong grasp reflex — she\'ll curl her fingers around yours.' },
+  { from: 2, text: 'communicates entirely through crying for now — hungry, tired, or wanting a cuddle.' },
+  { from: 3, text: 'loves being held skin-to-skin — it steadies her heartbeat and temperature.' },
+  { from: 5, text: 'sleeps 14–17 hours a day, in short bursts around the clock.' },
+  { from: 7, text: 'prefers looking at high-contrast patterns and faces.' },
+  { from: 9, text: 'is having short, more alert windows between sleeps now.' },
+  { from: 12, text: 'is likely back to her birth weight around this point.' },
+  { from: 14, text: 'may briefly hold your gaze — early eye contact.' },
+  { from: 18, text: 'can be soothed by gentle rocking, white noise and swaddling.' },
+  { from: 21, text: 'is starting to track slow-moving objects with her eyes.' },
+  { from: 28, text: 'might start making little cooing and gurgling sounds soon.' },
+  { from: 35, text: 'is becoming more expressive — watch for those first almost-smiles.' },
+  { from: 42, text: 'may give her first real social smile around now — 6 weeks!' },
+  { from: 49, text: 'is holding her head up a little during tummy time.' },
+  { from: 56, text: 'follows objects and faces further across the room now.' },
+  { from: 70, text: 'is discovering her hands and might start batting at toys.' },
+  { from: 84, text: 'often laughs and coos back in little "conversations".' },
+  { from: 112, text: 'may be rolling from tummy to back around this stage.' },
+  { from: 140, text: 'is grabbing everything — and it\'s all heading for her mouth!' },
+  { from: 168, text: 'might be ready to start sitting with support soon.' },
+];
+
+function babyFactFor(ageDays: number, dayIndex: number): string | null {
+  const eligible = BABY_FACTS.filter((f) => f.from <= ageDays);
+  if (eligible.length === 0) return null;
+  // Prefer facts near her current age, rotating daily.
+  const recent = eligible.slice(-6);
+  return recent[dayIndex % recent.length]!.text;
 }
 
 function sinceText(iso: string): string {
@@ -268,14 +303,13 @@ export async function getDashboardData(): Promise<DashboardData> {
   let baby: DashboardData['baby'] = null;
   const dob = config.family.babyBorn;
   if (dob) {
-    baby = { name: config.family.babyName || 'Baby', ageText: babyAgeText(dob), lastFeed: null, lastNappy: null };
-    try {
-      const [feed, nappy] = await Promise.all([getLastBabyLog('feed'), getLastBabyLog('nappy')]);
-      baby.lastFeed = feed && !isStale(feed.logged_at, 12) ? sinceText(feed.logged_at) : null;
-      baby.lastNappy = nappy && !isStale(nappy.logged_at, 12) ? sinceText(nappy.logged_at) : null;
-    } catch (err) {
-      console.error('Dashboard: baby log fetch failed (table may not exist):', err);
-    }
+    const ageDays = Math.max(0, Math.floor((Date.now() - new Date(`${dob}T12:00:00`).getTime()) / 86400000));
+    const dayIndex = Math.floor(Date.now() / 86400000); // changes once per day
+    baby = {
+      name: config.family.babyName || 'Baby',
+      ageText: babyAgeText(dob),
+      fact: babyFactFor(ageDays, dayIndex),
+    };
   }
 
   return {
@@ -358,10 +392,8 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
 
   let babyCard = '';
   if (d.baby && opts.baby !== 'off') {
-    const details = opts.baby === 'full'
-      ? `<p class="sub">${d.baby.lastFeed ? `🍼 Fed ${esc(d.baby.lastFeed)}` : '🍼 No recent feed logged'}${
-          d.baby.lastNappy ? ` · 👶 Nappy ${esc(d.baby.lastNappy)}` : ''
-        }</p>`
+    const details = (opts.baby === 'full' && d.baby.fact)
+      ? `<p class="sub">💡 Today ${esc(d.baby.name)} ${esc(d.baby.fact)}</p>`
       : '';
     babyCard = `<div class="card"><h2>${esc(d.baby.name)}</h2><p class="big">👶 ${esc(d.baby.ageText)}</p>${details}</div>`;
   }
@@ -438,13 +470,19 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .dot { display: inline-block; width: 2.4vh; height: 2.4vh; border-radius: 50%; margin-right: 1vh;
     vertical-align: middle; box-shadow: 0 0 0 2px rgba(255,255,255,.15) inset; }
   .sub { font-size: 2.3vh; color: var(--muted); margin-top: .7vh; }
-  .hours { display: flex; justify-content: space-between; gap: .4vw; margin-top: 1.4vh; }
-  .hr { display: flex; flex-direction: column; align-items: center; gap: .3vh; flex: 1; }
-  .hr-t { font-size: 1.7vh; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .hr-e { font-size: 2.4vh; }
-  .hr-d { font-size: 2vh; font-weight: 700; }
-  .hr-r { font-size: 1.5vh; color: var(--accent); min-height: 1.5vh; }
-  .wfoot { font-size: 1.9vh; color: var(--muted); margin-top: 1.4vh; }
+  .hours { display: flex; justify-content: space-between; gap: .4vw; margin-top: 1vh; }
+  .hr { display: flex; flex-direction: column; align-items: center; gap: .2vh; flex: 1; }
+  .hr-t { font-size: 1.5vh; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .hr-e { font-size: 2.1vh; }
+  .hr-d { font-size: 1.8vh; font-weight: 700; }
+  .hr-r { font-size: 1.3vh; color: var(--accent); min-height: 1.3vh; }
+  .wfoot { font-size: 1.7vh; color: var(--muted); margin-top: 1vh; }
+  /* Compact the right-hand column so all cards fit without clipping */
+  .col.side { gap: 1.5vh; }
+  .side .card { padding: 1.7vh 1.4vw; }
+  .side .card h2 { margin-bottom: .8vh; }
+  .side .big { font-size: 3vh; }
+  .side .sub { font-size: 2vh; margin-top: .5vh; }
   .events { list-style: none; display: flex; flex-direction: column; gap: 1.3vh; overflow: hidden; }
   .events li { display: flex; align-items: baseline; gap: 1.2vw; }
   .ev-when { flex: 0 0 auto; min-width: 13vw; color: var(--accent2); font-weight: 700; font-size: 2.7vh; font-variant-numeric: tabular-nums; }

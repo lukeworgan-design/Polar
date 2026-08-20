@@ -127,7 +127,7 @@ export async function getDetailedWeather(): Promise<DetailedWeather> {
     const nowHour = new Date().toISOString().slice(0, 13); // approximate; we filter forward
     const nowIdx = Math.max(0, hTimes.findIndex((t) => t.slice(0, 13) >= nowHour));
     const hourly: HourForecast[] = [];
-    for (let i = nowIdx; i < hTimes.length && hourly.length < 7; i += 2) {
+    for (let i = nowIdx; i < hTimes.length && hourly.length < 5; i += 2) {
       hourly.push({
         hour: hTimes[i]!.slice(11, 13),
         temp: Math.round(hTemps[i] ?? 0),
