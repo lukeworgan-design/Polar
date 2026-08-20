@@ -403,7 +403,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
 
   const bgs = opts.photo ? backgroundUrls() : [];
   const bgLayer = bgs.length
-    ? `${bgs.map((u, i) => `<div class="bg${i === 0 ? ' active' : ''}" style="background-image:url('${esc(u)}')"></div>`).join('')}<div class="bg-tint"></div>`
+    ? `${bgs.map((u, i) => `<div class="bg${i === 0 ? ' active' : ''}"><div class="bg-blur" style="background-image:url('${esc(u)}')"></div><img class="bg-img" src="${esc(u)}" alt=""></div>`).join('')}<div class="bg-tint"></div>`
     : '';
 
   // Scrolling local-events ticker. Duration scales with content so it reads at a steady pace.
@@ -451,9 +451,11 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     --bg: #05070f; --panel: rgba(12,17,32,.5); --panel2: rgba(9,13,26,.44);
     --text: #cdd6f0; --muted: #9aa5c6; --accent: #5b9fd6; --accent2: #d8b26a; --dim: .72;
   }
-  .bg { position: fixed; inset: 0; background-size: cover; background-position: center; z-index: -3;
-    opacity: 0; transition: opacity 1.6s ease-in-out; }
+  .bg { position: fixed; inset: 0; z-index: -3; opacity: 0; transition: opacity 1.6s ease-in-out; }
   .bg.active { opacity: 1; }
+  .bg-blur { position: absolute; inset: 0; background-size: cover; background-position: center;
+    filter: blur(26px) brightness(.6); transform: scale(1.15); }
+  .bg-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
   .bg-tint { position: fixed; inset: 0; z-index: -1;
     background: linear-gradient(180deg, rgba(6,9,20,.42), rgba(6,9,20,.6)); }
   header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2.6vh; }
