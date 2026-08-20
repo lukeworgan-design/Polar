@@ -123,37 +123,37 @@ function splitItems(s: string): string[] {
 }
 
 async function handleAddShopping(item: string | undefined): Promise<string> {
-  if (!item) return `What would you like me to add to the shopping list?`;
+  if (!item) return `What would you like me to add to the family list?`;
   const items = splitItems(item);
   for (const it of items) await addShoppingItem(it, 'Alexa');
   return items.length === 1
-    ? `Added ${items[0]} to the shopping list.`
-    : `Added ${joinNaturally(items)} to the shopping list.`;
+    ? `Added ${items[0]} to the family list.`
+    : `Added ${joinNaturally(items)} to the family list.`;
 }
 
 async function handleRemoveShopping(item: string | undefined): Promise<string> {
-  if (!item) return `What would you like me to remove from the shopping list?`;
+  if (!item) return `What would you like me to take off the family list?`;
   const removed = await removeShoppingItem(item);
   return removed
-    ? `Removed ${item} from the shopping list.`
-    : `I couldn't find ${item} on the shopping list.`;
+    ? `Removed ${item} from the family list.`
+    : `I couldn't find ${item} on the family list.`;
 }
 
 async function handleClearShopping(): Promise<string> {
   const count = await clearShoppingList();
-  return count > 0 ? `Cleared ${count} item${count === 1 ? '' : 's'} from the shopping list.` : `The shopping list was already empty.`;
+  return count > 0 ? `Cleared ${count} item${count === 1 ? '' : 's'} from the family list.` : `The family list was already empty.`;
 }
 
 async function handleShoppingList(): Promise<string> {
   const list = await getShoppingList();
-  if (list.length === 0) return `The shopping list is empty.`;
-  return `There ${list.length === 1 ? 'is' : 'are'} ${list.length} thing${list.length === 1 ? '' : 's'} on the list: ${joinNaturally(list.map((i) => i.item))}.`;
+  if (list.length === 0) return `The family list is empty.`;
+  return `There ${list.length === 1 ? 'is' : 'are'} ${list.length} thing${list.length === 1 ? '' : 's'} on the family list: ${joinNaturally(list.map((i) => i.item))}.`;
 }
 
 async function handleAddTodo(task: string | undefined): Promise<string> {
-  if (!task) return `What should I add to the to-do list?`;
+  if (!task) return `What should I add to the jobs list?`;
   await addTodo(task, 'Alexa');
-  return `Added ${task} to the to-do list.`;
+  return `Added ${task} to the jobs list.`;
 }
 
 async function handleLogFeed(amount: string | undefined): Promise<string> {
@@ -176,7 +176,7 @@ function delegate(): AlexaResponse & { response: { directives: unknown[] } } {
 
 // ── Main entry ──────────────────────────────────────────────────────────────────
 
-const HELP = `You can ask me what's for dinner, what's on today, what's coming up, or when the bins go out. For the shopping list, say: add milk and bread to the shopping list, remove milk, or what's on the shopping list. And to add to the calendar, say: add an event to the calendar.`;
+const HELP = `You can ask me what's for dinner, what's on today, what's coming up, or when the bins go out. For the family shopping list, say: add milk and bread to the family list, remove milk, or what's on the family list. And to add to the calendar, say: add an event to the calendar.`;
 
 function slotValue(intent: any, name: string): string | undefined {
   const v = intent?.slots?.[name]?.value;

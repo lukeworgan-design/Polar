@@ -66,22 +66,25 @@
         {
           "name": "ShoppingListIntent",
           "samples": [
-            "what's on the shopping list",
-            "read the shopping list",
+            "what's on the family list",
+            "what's on the grocery list",
+            "read the family list",
+            "read the list",
             "what's on the list",
-            "what do we need from the shop"
+            "what do we need"
           ]
         },
         {
           "name": "AddShoppingIntent",
           "slots": [{ "name": "Item", "type": "AMAZON.SearchQuery" }],
           "samples": [
-            "add to the shopping list",
-            "add something to the shopping list",
+            "add to the family list",
+            "add something to the family list",
             "add to the list",
-            "add {Item} to the shopping list",
+            "add {Item} to the family list",
+            "add {Item} to the grocery list",
             "add {Item} to the list",
-            "put {Item} on the shopping list",
+            "put {Item} on the family list",
             "put {Item} on the list",
             "we need {Item}"
           ]
@@ -90,9 +93,9 @@
           "name": "RemoveShoppingIntent",
           "slots": [{ "name": "Item", "type": "AMAZON.SearchQuery" }],
           "samples": [
-            "remove {Item} from the shopping list",
+            "remove {Item} from the family list",
             "remove {Item} from the list",
-            "take {Item} off the shopping list",
+            "take {Item} off the family list",
             "take {Item} off the list",
             "tick off {Item}",
             "cross off {Item}"
@@ -101,19 +104,20 @@
         {
           "name": "ClearShoppingIntent",
           "samples": [
-            "clear the shopping list",
-            "empty the shopping list",
+            "clear the family list",
+            "empty the family list",
             "clear the list",
-            "start a new shopping list"
+            "start a new family list"
           ]
         },
         {
           "name": "AddTodoIntent",
           "slots": [{ "name": "Task", "type": "AMAZON.SearchQuery" }],
           "samples": [
-            "add {Task} to the to do list",
-            "add {Task} to the todo list",
-            "put {Task} on the to do list"
+            "add {Task} to the jobs list",
+            "add {Task} to the tasks",
+            "add job {Task}",
+            "put {Task} on the jobs list"
           ]
         },
         {
