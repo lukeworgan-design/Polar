@@ -548,6 +548,18 @@ bot.catch((err, ctx) => {
 
 const WEBHOOK_PATH = '/webhook';
 
+function readRequestBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => {
+      data += chunk;
+      if (data.length > 1_000_000) req.destroy(); // 1MB cap
+    });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
+}
+
 async function handleHttp(
   req: IncomingMessage,
   res: ServerResponse,
@@ -559,6 +571,26 @@ async function handleHttp(
   // Telegram webhook
   if (webhookHandler && req.method === 'POST' && path === WEBHOOK_PATH) {
     webhookHandler(req, res);
+    return;
+  }
+
+  // Alexa skill endpoint
+  if (req.method === 'POST' && path === '/alexa') {
+    try {
+      const body = await readRequestBody(req);
+      const event = JSON.parse(body);
+      const { handleAlexaRequest } = await import('./alexa');
+      const result = await handleAlexaRequest(event);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      console.error('Alexa endpoint error:', err);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        version: '1.0',
+        response: { outputSpeech: { type: 'PlainText', text: 'Sorry, something went wrong.' }, shouldEndSession: true },
+      }));
+    }
     return;
   }
 

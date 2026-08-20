@@ -1,0 +1,106 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "rose",
+      "intents": [
+        { "name": "AMAZON.CancelIntent", "samples": [] },
+        { "name": "AMAZON.HelpIntent", "samples": [] },
+        { "name": "AMAZON.StopIntent", "samples": [] },
+        { "name": "AMAZON.FallbackIntent", "samples": [] },
+        {
+          "name": "DinnerIntent",
+          "samples": [
+            "what's for dinner",
+            "what is for dinner",
+            "what's for dinner tonight",
+            "what are we having for dinner",
+            "what's for tea",
+            "what's for tea tonight",
+            "dinner"
+          ]
+        },
+        {
+          "name": "TodayIntent",
+          "samples": [
+            "what's on today",
+            "what is on today",
+            "what's happening today",
+            "what have we got on today",
+            "what are we doing today",
+            "today's schedule",
+            "what's on"
+          ]
+        },
+        {
+          "name": "UpcomingIntent",
+          "samples": [
+            "what's coming up",
+            "what is coming up",
+            "what's on this week",
+            "what have we got coming up",
+            "what's coming up this week"
+          ]
+        },
+        {
+          "name": "BinIntent",
+          "samples": [
+            "when's bin day",
+            "when is bin day",
+            "which bin goes out",
+            "which bin is it this week",
+            "what bin is it",
+            "when do the bins go out",
+            "bin day"
+          ]
+        },
+        {
+          "name": "BabyAgeIntent",
+          "samples": [
+            "how old is Evie",
+            "how old is the baby",
+            "what's Evie's age",
+            "how many days old is Evie"
+          ]
+        },
+        {
+          "name": "ShoppingListIntent",
+          "samples": [
+            "what's on the shopping list",
+            "read the shopping list",
+            "what's on the list",
+            "what do we need from the shop"
+          ]
+        },
+        {
+          "name": "AddShoppingIntent",
+          "slots": [{ "name": "Item", "type": "AMAZON.SearchQuery" }],
+          "samples": [
+            "add {Item} to the shopping list",
+            "add {Item} to the list",
+            "put {Item} on the shopping list",
+            "put {Item} on the list"
+          ]
+        },
+        {
+          "name": "AddTodoIntent",
+          "slots": [{ "name": "Task", "type": "AMAZON.SearchQuery" }],
+          "samples": [
+            "add {Task} to the to do list",
+            "add {Task} to the todo list",
+            "put {Task} on the to do list"
+          ]
+        },
+        {
+          "name": "LogFeedIntent",
+          "samples": [
+            "log a feed",
+            "log a feed for Evie",
+            "the baby had a feed",
+            "Evie had a feed"
+          ]
+        }
+      ],
+      "types": []
+    }
+  }
+}

@@ -99,6 +99,9 @@ export const config = {
   // URL — e.g. a family photo). Shown dimmed behind the cards. Leave unset for
   // the default gradient.
   dashboardBgUrl: process.env['DASHBOARD_BG_URL'] || null,
+  // Alexa skill ID (amzn1.ask.skill.…) — set ALEXA_SKILL_ID so the /alexa
+  // endpoint only answers requests from your own skill.
+  alexaSkillId: process.env['ALEXA_SKILL_ID'] || null,
   family: {
     children: [
       // Set POPPY_DOB / BILLY_DOB (YYYY-MM-DD) in the environment to the real
