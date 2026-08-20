@@ -232,7 +232,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   try {
     const [te, upcomingEvents] = await Promise.all([
       getTodaysEvents(),
-      getUpcomingEvents(14), // two-week look-ahead
+      getUpcomingEvents(21), // three-week look-ahead
     ]);
     todayEvents = te;
     const todayIds = new Set(te.map((e) => e.id));
@@ -240,7 +240,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     upcoming = upcomingEvents
       .filter((e) => !todayIds.has(e.id))
       .filter((e) => (e.start.length === 10 ? e.start : e.start.slice(0, 10)) > todayStr)
-      .slice(0, 10)
+      .slice(0, 16)
       .map((e) => toDashEvent(e, true));
   } catch (err) {
     console.error('Dashboard: calendar fetch failed:', err);
@@ -341,7 +341,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     : `<p class="empty">Nothing in the diary today 🎉</p>`;
 
   const upcomingList = d.upcoming.length
-    ? `<ul class="events">${d.upcoming.map(eventRow).join('')}</ul>`
+    ? `<ul class="events autoscroll">${d.upcoming.map(eventRow).join('')}</ul>`
     : `<p class="empty">Clear for the next couple of weeks</p>`;
 
   const w = d.weather;
@@ -434,9 +434,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --bg: #0b1020; --panel: rgba(18,26,48,.4); --panel2: rgba(13,19,38,.32);
-    --text: #eef2ff; --muted: #c2cce6; --accent: #7cc4ff; --accent2: #ffd479;
-    --stroke: rgba(255,255,255,.14); --dim: 1;
+    --bg: #0b1020; --panel: rgba(16,24,46,.26); --panel2: rgba(11,17,34,.18);
+    --text: #eef2ff; --muted: #c8d1e8; --accent: #8fceff; --accent2: #ffd479;
+    --stroke: rgba(255,255,255,.16); --dim: 1;
   }
   html, body { height: 100%; }
   body {
@@ -444,7 +444,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     padding: 3.2vh 3vw; overflow: hidden; -webkit-font-smoothing: antialiased; position: relative;
     filter: brightness(var(--dim));
-    text-shadow: 0 1px 3px rgba(0,0,0,.55);
+    text-shadow: 0 1px 4px rgba(0,0,0,.7);
   }
   /* Night dimming after 8pm */
   body[data-night="1"] {
@@ -490,7 +490,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .ev-when { flex: 0 0 auto; min-width: 13vw; color: var(--accent2); font-weight: 700; font-size: 2.7vh; font-variant-numeric: tabular-nums; }
   .ev-name { font-size: 2.9vh; font-weight: 600; display: flex; flex-direction: column; }
   .ev-loc { font-size: 2vh; color: var(--muted); font-weight: 400; }
-  .events-card { flex: 1; min-height: 0; overflow: hidden; }
+  .today-card { flex: 0 0 auto; }
+  .events-card { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .events-card .events { flex: 1; min-height: 0; overflow: hidden; }
   .empty { color: var(--muted); font-size: 2.8vh; padding: 1vh 0; }
   .side { overflow: hidden; }
   .mini { list-style: none; display: flex; flex-direction: column; gap: 1vh; }
@@ -524,7 +526,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
 
   <div class="grid">
     <div class="col">
-      <div class="card events-card">
+      <div class="card today-card">
         <h2>Today</h2>
         ${todayList}
       </div>
@@ -562,6 +564,24 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         i = (i + 1) % slides.length;
         slides[i].classList.add('active');
       }, 18000);
+    })();
+
+    // Gentle auto-scroll for any overflowing list (e.g. Coming up): drift down,
+    // pause, drift back up, loop — so nothing stays hidden.
+    (function () {
+      var lists = document.querySelectorAll('.autoscroll');
+      lists.forEach(function (el) {
+        if (el.scrollHeight <= el.clientHeight + 4) return; // fits — no scroll needed
+        var pos = 0, dir = 1, hold = 0;
+        setInterval(function () {
+          var max = el.scrollHeight - el.clientHeight;
+          if (hold > 0) { hold--; return; }
+          pos += dir * 0.4;
+          if (pos >= max) { pos = max; dir = -1; hold = 75; }
+          else if (pos <= 0) { pos = 0; dir = 1; hold = 75; }
+          el.scrollTop = pos;
+        }, 40);
+      });
     })();
   </script>
 </body>
