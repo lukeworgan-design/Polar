@@ -356,6 +356,29 @@ bot.command('evie', async (ctx) => {
   }
 });
 
+// Handle /ticker command — force-refresh and preview the dashboard events ticker
+bot.command('ticker', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  try {
+    await ctx.sendChatAction('typing');
+  } catch {
+    // ignore
+  }
+  try {
+    const { refreshLocalEventsTicker, getLocalEventsTicker } = await import('./ai');
+    await refreshLocalEventsTicker();
+    const items = getLocalEventsTicker();
+    if (items.length === 0) {
+      await ctx.reply("Couldn't find any local events right now — the search may have come back empty. Try again shortly.");
+      return;
+    }
+    await ctx.reply(`📣 *What's on* (now on the TV dashboard):\n\n${items.map((i) => `• ${i}`).join('\n')}`, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('Error in /ticker:', err);
+    await ctx.reply("Couldn't refresh the events ticker just now.");
+  }
+});
+
 // Handle /pregnancy command — manual trigger for the Monday pregnancy update
 bot.command('pregnancy', async (ctx) => {
   if (!isFromGroup(ctx)) return;

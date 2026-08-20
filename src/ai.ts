@@ -1944,26 +1944,46 @@ export async function refreshLocalEventsTicker(): Promise<void> {
     const now = getLocalNow(config.timezone);
     const monthStr = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: config.timezone });
 
-    const [r1, r2] = await Promise.all([
-      braveSearch(`family events ${config.location} ${monthStr}`, 6),
-      braveSearch(`things to do with kids ${config.location} this month`, 6),
-    ]);
+    // Detect whether we're in the school holidays so we can widen the net.
+    const holiday = config.family.schoolHolidays.some((h) => {
+      const today = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone }).format(new Date());
+      return today >= h.start && today < h.end;
+    });
+    const season = holiday ? 'school holidays' : monthStr;
+
+    const queries = [
+      `family days out with kids near ${config.location} ${season}`,
+      `things to do with children ${config.location} ${monthStr}`,
+      `${config.location} events for families ${monthStr}`,
+      `Gloucestershire kids activities soft play farm park lido ${season}`,
+      `what's on ${config.location} this week family`,
+    ];
+    const searches = await Promise.all(queries.map((q) => braveSearch(q, 6).catch(() => [])));
     const seen = new Set<string>();
-    const results = [...r1, ...r2].filter((r) => {
+    const results = searches.flat().filter((r) => {
       if (seen.has(r.url)) return false;
       seen.add(r.url);
       return true;
     });
     if (results.length === 0) return;
 
-    const prompt = `From these web search results, extract up to 8 real, specific, upcoming family-friendly events in ${config.location}. One event per line, formatted exactly as "Date — Event name, Venue" (e.g. "Sat 23 Aug — Farmers' Market, The Promenade"). ONLY include events that have a genuine name and a date or venue in the results — never invent events or list permanent attractions without a specific dated happening. If only a few qualify, return only those. Output just the lines, no intro, no bullets.
+    const prompt = `You're compiling a lively "What's on for families" ticker for a family with young kids (7, 5, and a newborn) in ${config.location}${holiday ? ', during the school summer holidays' : ''}.
 
+Using the search results below AND your own knowledge of real, well-known family attractions and activities in and around ${config.location} and Gloucestershire, produce 12–15 short items of things this family could actually do right now.
+
+Include a good MIX of:
+- Specific dated events from the search results (with a date and venue)
+- Popular local family attractions and seasonal activities that genuinely exist in the ${config.location} / Gloucestershire area — e.g. farm parks, soft play, lidos and outdoor pools, country parks, museums with kids' trails, steam railways, National Trust places, play areas.
+
+Format each item on its own line as: "Name — short detail (where)". Keep each under about 10 words. ONLY list real places/events — never invent a name, date, or venue. Favour things that are on or open during the holidays. Output ONLY the lines — no intro, no numbering, no closing remark.
+
+SEARCH RESULTS:
 ${formatSearchResults(results)}`;
 
     const response = await createMessage({
       model: config.anthropic.model,
-      max_tokens: 400,
-      system: 'You extract concise, factual event listings from search results. Output only the event lines, nothing else.',
+      max_tokens: 700,
+      system: 'You compile concise, accurate family "what\'s on" listings mixing dated events with real local attractions. Output only the listing lines.',
       messages: [{ role: 'user', content: prompt }],
     });
     const text = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text')?.text || '';
@@ -1971,7 +1991,7 @@ ${formatSearchResults(results)}`;
       .split('\n')
       .map((l) => l.replace(/^[-•*\d.\s]+/, '').trim())
       .filter((l) => l.length > 4)
-      .slice(0, 8);
+      .slice(0, 15);
     if (items.length) {
       localEventsTicker = items;
       console.log(`Local events ticker refreshed: ${items.length} items`);
