@@ -1940,25 +1940,21 @@ export function getLocalEventsTicker(): string[] {
 
 export async function refreshLocalEventsTicker(): Promise<void> {
   try {
-    const { braveSearch, formatSearchResults } = await import('./search');
+    const { braveSearch, formatSearchResults, fetchPageText } = await import('./search');
     const now = getLocalNow(config.timezone);
     const monthStr = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: config.timezone });
+    const todayLabel = now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone });
 
-    // Detect whether we're in the school holidays so we can widen the net.
-    const holiday = config.family.schoolHolidays.some((h) => {
-      const today = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone }).format(new Date());
-      return today >= h.start && today < h.end;
-    });
-    const season = holiday ? 'school holidays' : monthStr;
-
+    // Queries aimed at dated, one-off happenings (fetes, fun days, festivals,
+    // markets, workshops) — not permanent attractions. Nearby towns included.
     const queries = [
-      `family days out with kids near ${config.location} ${season}`,
-      `things to do with children ${config.location} ${monthStr}`,
-      `${config.location} events for families ${monthStr}`,
-      `Gloucestershire kids activities soft play farm park lido ${season}`,
-      `what's on ${config.location} this week family`,
+      `family fun day OR fete OR festival OR fair ${config.location} OR Winchcombe OR Tewkesbury OR Gloucester ${monthStr}`,
+      `things to do this weekend ${config.location} with kids`,
+      `Gloucestershire family events ${monthStr} what's on this week`,
+      `children's events workshops ${config.location} ${monthStr} tickets`,
+      `eventbrite family kids ${config.location} Gloucestershire`,
     ];
-    const searches = await Promise.all(queries.map((q) => braveSearch(q, 6).catch(() => [])));
+    const searches = await Promise.all(queries.map((q) => braveSearch(q, 6, { freshness: 'pm' }).catch(() => [])));
     const seen = new Set<string>();
     const results = searches.flat().filter((r) => {
       if (seen.has(r.url)) return false;
@@ -1967,34 +1963,53 @@ export async function refreshLocalEventsTicker(): Promise<void> {
     });
     if (results.length === 0) return;
 
-    const prompt = `You're compiling a lively "What's on for families" ticker for a family with young kids (7, 5, and a newborn) in ${config.location}${holiday ? ', during the school summer holidays' : ''}.
+    // Read a few promising event-listing pages so we get REAL dates, not just snippets.
+    const listingHints = ['event', 'whats-on', 'what-s-on', 'ticket', 'festival', 'funday', 'fun-day', 'fete', 'dayoutwiththekids', 'eventbrite', 'visit'];
+    const toFetch = results
+      .filter((r) => listingHints.some((h) => r.url.toLowerCase().includes(h)))
+      .slice(0, 4);
+    const pages = await Promise.all(
+      toFetch.map(async (r) => {
+        const text = await fetchPageText(r.url, 3500);
+        return text ? `PAGE: ${r.url}\n${text}` : '';
+      }),
+    );
+    const pageContext = pages.filter(Boolean).join('\n\n');
 
-Using the search results below AND your own knowledge of real, well-known family attractions and activities in and around ${config.location} and Gloucestershire, produce 12–15 short items of things this family could actually do right now.
+    const prompt = `Today is ${todayLabel}. You're compiling a "What's on for families" ticker for a family with young kids (7, 5 and a newborn) in and around ${config.location}, Gloucestershire.
 
-Include a good MIX of:
-- Specific dated events from the search results (with a date and venue)
-- Popular local family attractions and seasonal activities that genuinely exist in the ${config.location} / Gloucestershire area — e.g. farm parks, soft play, lidos and outdoor pools, country parks, museums with kids' trails, steam railways, National Trust places, play areas.
+Produce a list of SPECIFIC, DATED, one-off events happening in the NEXT 3 WEEKS — things like family fun days, fetes, festivals, fairs, markets, seasonal trails, children's workshops, shows, and community events. The whole point is timeliness: "Sun 24 Aug — Family Fun Day, Winchcombe", not permanent attractions.
 
-Format each item on its own line as: "Name — short detail (where)". Keep each under about 10 words. ONLY list real places/events — never invent a name, date, or venue. Favour things that are on or open during the holidays. Output ONLY the lines — no intro, no numbering, no closing remark.
+STRICT RULES:
+- ONLY include an event if a specific date (or clear "this weekend"/named day) appears in the sources below. If there's no date, LEAVE IT OUT.
+- Do NOT list permanent attractions, venues, museums, farm parks, soft play, lidos or "places to visit" — those are not events.
+- NEVER invent an event, date, or venue. Better to return few items than to make things up.
+- Prefer events within the next 3 weeks; ignore past dates (today is ${todayLabel}).
+
+Format each on its own line as: "Day D Mon — Event name, Town/Venue" (e.g. "Sun 24 Aug — Teddy Bears' Picnic, Pittville Park"). Up to 12 items. Output ONLY the lines — no intro, no numbering, no commentary.
 
 SEARCH RESULTS:
-${formatSearchResults(results)}`;
+${formatSearchResults(results)}
+
+${pageContext ? `EVENT PAGE CONTENT:\n${pageContext}` : ''}`;
 
     const response = await createMessage({
       model: config.anthropic.model,
       max_tokens: 700,
-      system: 'You compile concise, accurate family "what\'s on" listings mixing dated events with real local attractions. Output only the listing lines.',
+      system: 'You extract real, specifically-dated local events from web sources for a family listings ticker. You never invent events or dates, and you exclude permanent attractions. Output only the event lines.',
       messages: [{ role: 'user', content: prompt }],
     });
     const text = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text')?.text || '';
     const items = text
       .split('\n')
       .map((l) => l.replace(/^[-•*\d.\s]+/, '').trim())
-      .filter((l) => l.length > 4)
-      .slice(0, 15);
+      .filter((l) => l.length > 4 && l.includes('—'))
+      .slice(0, 12);
     if (items.length) {
       localEventsTicker = items;
-      console.log(`Local events ticker refreshed: ${items.length} items`);
+      console.log(`Local events ticker refreshed: ${items.length} dated items`);
+    } else {
+      console.log('Local events ticker: no dated events found this refresh');
     }
   } catch (err) {
     console.error('refreshLocalEventsTicker failed:', err);
