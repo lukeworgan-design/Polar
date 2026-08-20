@@ -1944,6 +1944,13 @@ export async function refreshLocalEventsTicker(): Promise<void> {
     const now = getLocalNow(config.timezone);
     const monthStr = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: config.timezone });
     const todayLabel = now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone });
+    // 22-day date reference so weekday↔date pairings are always correct.
+    const refBase = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0);
+    const dateReference = Array.from({ length: 22 }, (_, i) => {
+      const d = new Date(refBase);
+      d.setDate(refBase.getDate() + i);
+      return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: config.timezone });
+    }).join(', ');
 
     // Queries aimed at dated, one-off happenings (fetes, fun days, festivals,
     // markets, workshops) — not permanent attractions. Nearby towns included.
@@ -1987,6 +1994,9 @@ STRICT RULES:
 - Prefer events within the next 3 weeks; ignore past dates (today is ${todayLabel}).
 
 Format each on its own line as: "Day D Mon — Event name, Town/Venue" (e.g. "Sun 24 Aug — Teddy Bears' Picnic, Pittville Park"). Up to 12 items. Output ONLY the lines — no intro, no numbering, no commentary.
+
+DATE REFERENCE — these are the only valid dates (correct weekday↔date pairings). Use the weekday exactly as shown here for each date, and ignore any event whose date is NOT in this list (it's either past or too far off):
+${dateReference}
 
 SEARCH RESULTS:
 ${formatSearchResults(results)}
