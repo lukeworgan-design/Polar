@@ -207,7 +207,10 @@ export async function getDashboardData(): Promise<DashboardData> {
     const end = new Date(now);
     end.setDate(now.getDate() + 6);
     const plan = await getMealPlan(todayStr, tzDateStr(end));
-    const dinners = plan.filter((m) => m.meal_type === 'dinner');
+    // Normalise the stored date to YYYY-MM-DD in case it comes back as a timestamp.
+    const dinners = plan
+      .filter((m) => m.meal_type === 'dinner')
+      .map((m) => ({ date: String(m.date).slice(0, 10), meal: m.meal }));
     meals.tonight = dinners.find((m) => m.date === todayStr)?.meal ?? null;
     meals.upcoming = dinners
       .filter((m) => m.date > todayStr)

@@ -1,5 +1,7 @@
 import cron from 'node-cron';
 import { config } from './config';
+import { getFridayBinType } from './bin';
+export { getFridayBinType } from './bin';
 import {
   getUpcomingEvents,
   getEventsForPeriod,
@@ -254,24 +256,6 @@ async function checkUpcomingHolidayActivities(): Promise<void> {
     const message = await generateHolidayActivities(event.summary, startDate, endDate);
     if (message) await sendToGroup(message);
   }
-}
-
-/** Returns which bin type is due on the next Friday from now. */
-export function getFridayBinType(): 'general' | 'recycling' {
-  const now = new Date();
-  const dayOfWeek = now.getDay(); // 0=Sun … 4=Thu … 5=Fri
-  const daysUntilFriday = (5 - dayOfWeek + 7) % 7 || 7;
-  const nextFriday = new Date(now);
-  nextFriday.setHours(12, 0, 0, 0);
-  nextFriday.setDate(now.getDate() + daysUntilFriday);
-
-  const refDate = new Date(config.bin.referenceDate + 'T12:00:00');
-  const diffDays = Math.round((nextFriday.getTime() - refDate.getTime()) / (1000 * 60 * 60 * 24));
-  const diffWeeks = Math.round(diffDays / 7);
-
-  const sameAsRef = diffWeeks % 2 === 0;
-  if (sameAsRef) return config.bin.referenceType;
-  return config.bin.referenceType === 'general' ? 'recycling' : 'general';
 }
 
 async function sendBinReminder(): Promise<void> {

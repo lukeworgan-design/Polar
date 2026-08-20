@@ -42,6 +42,7 @@ import {
   CalendarEvent,
 } from './calendar';
 import { getWeatherForecast, formatDayWeather, formatWeekWeather } from './weather';
+import { getFridayBinType, binLabel, nextFridayDate } from './bin';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -545,6 +546,11 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'get_bin_day',
+    description: "Get which bin (green/general or blue/recycling) is going out next, and when. Use this for any bin question — 'what's bin day this week?', 'which bin goes out?', 'is it recycling this week?'. Bins are collected on Fridays in Cheltenham; do NOT look at the calendar for this.",
+    input_schema: { type: 'object' as const, properties: {}, required: [] },
+  },
+  {
     name: 'web_search',
     description: "Search the web for current information — use this for anything requiring up-to-date or local knowledge: businesses, opening hours, prices, news, events, venues, travel info, product recommendations, etc. Prefer this over guessing.",
     input_schema: {
@@ -947,6 +953,16 @@ async function executeTool(
         return d.toLocaleDateString('en-GB', {
           weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
         });
+      }
+
+      case 'get_bin_day': {
+        const type = getFridayBinType();
+        const { colour, label } = binLabel(type);
+        const friday = nextFridayDate();
+        const dayStr = friday.toLocaleDateString('en-GB', {
+          weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone,
+        });
+        return `Next bin collection is ${dayStr}: the ${label}. (${colour} bin out Thursday night.)`;
       }
 
       case 'web_search': {
