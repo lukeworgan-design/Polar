@@ -3,7 +3,7 @@ import { join } from 'path';
 import { config } from './config';
 import { getTodaysEvents, getUpcomingEvents, CalendarEvent } from './calendar';
 import { getWeatherForecast, DayForecast } from './weather';
-import { getMealPlan, getLastBabyLog, getUpcomingBirthdays } from './db';
+import { getMealPlan, getLastBabyLog, getUpcomingBirthdays, getShoppingList } from './db';
 import { getFridayBinType } from './scheduler';
 import { getLocalEventsTicker } from './ai';
 import { getDetailedWeather, weatherEmojiForCode, DetailedWeather } from './weather';
@@ -84,6 +84,7 @@ interface DashboardData {
   schoolRun: string | null;
   countdowns: Countdown[];
   baby: { name: string; ageText: string; fact: string | null } | null;
+  shopping: string[];
   ticker: string[];
   night: boolean;
   generatedAt: string;
@@ -312,8 +313,15 @@ export async function getDashboardData(): Promise<DashboardData> {
     };
   }
 
+  let shopping: string[] = [];
+  try {
+    shopping = (await getShoppingList()).map((i) => i.item);
+  } catch (err) {
+    console.error('Dashboard: shopping fetch failed:', err);
+  }
+
   return {
-    headerDate, today, upcoming, weather, meals, bin, schoolRun, countdowns, baby,
+    headerDate, today, upcoming, weather, meals, bin, schoolRun, countdowns, baby, shopping,
     ticker: getLocalEventsTicker(),
     night,
     generatedAt: fmtTime(now.toISOString()),
@@ -343,6 +351,16 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   const upcomingList = d.upcoming.length
     ? `<ul class="events autoscroll">${d.upcoming.map(eventRow).join('')}</ul>`
     : `<p class="empty">Clear for the next couple of weeks</p>`;
+
+  const SHOP_MAX = 15;
+  const shopShown = d.shopping.slice(0, SHOP_MAX);
+  const shopMore = d.shopping.length - shopShown.length;
+  const shoppingCard = `<div class="card shop-card">
+      <h2>🛒 Shopping${d.shopping.length ? ` (${d.shopping.length})` : ''}</h2>
+      ${d.shopping.length
+        ? `<ul class="shop-list">${shopShown.map((i) => `<li>${esc(i)}</li>`).join('')}${shopMore > 0 ? `<li class="more">+${shopMore} more…</li>` : ''}</ul>`
+        : `<p class="empty">All caught up — nothing on the list 🎉</p>`}
+    </div>`;
 
   const w = d.weather;
   const hourlyStrip = w.hourly.length
@@ -491,8 +509,15 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .ev-name { font-size: 2.9vh; font-weight: 600; display: flex; flex-direction: column; }
   .ev-loc { font-size: 2vh; color: var(--muted); font-weight: 400; }
   .today-card { flex: 0 0 auto; }
-  .events-card { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .events-card { flex: 1.7; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   .events-card .events { flex: 1; min-height: 0; overflow: hidden; }
+  .shop-card { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .shop-list { list-style: none; flex: 1; min-height: 0; overflow: hidden;
+    columns: 2; column-gap: 2vw; }
+  .shop-list li { font-size: 2.5vh; font-weight: 600; padding: .5vh 0; break-inside: avoid; }
+  .shop-list li::before { content: "•"; color: var(--accent2); margin-right: .8vw; }
+  .shop-list li.more { color: var(--muted); font-weight: 500; }
+  .shop-list li.more::before { content: ""; margin: 0; }
   .empty { color: var(--muted); font-size: 2.8vh; padding: 1vh 0; }
   .side { overflow: hidden; }
   .mini { list-style: none; display: flex; flex-direction: column; gap: 1vh; }
@@ -534,6 +559,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         <h2>Coming up</h2>
         ${upcomingList}
       </div>
+      ${shoppingCard}
     </div>
 
     <div class="col side">
