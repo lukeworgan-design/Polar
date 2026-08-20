@@ -1,8 +1,29 @@
+import { existsSync } from 'fs';
+import { join } from 'path';
 import { config } from './config';
 import { getTodaysEvents, getUpcomingEvents, CalendarEvent } from './calendar';
 import { getWeatherForecast, DayForecast } from './weather';
 import { getMealPlan, getLastBabyLog, getUpcomingBirthdays } from './db';
 import { getFridayBinType } from './scheduler';
+
+// A background photo can be supplied two ways:
+//   1. Commit an image to  assets/dashboard-bg.(jpg|jpeg|png|webp)  — Rose serves
+//      it at /dashboard-bg (no third-party host needed), OR
+//   2. Set DASHBOARD_BG_URL to any public image URL.
+const BG_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'];
+
+export function localBgFile(): string | null {
+  for (const ext of BG_EXTENSIONS) {
+    const p = join(process.cwd(), 'assets', `dashboard-bg.${ext}`);
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+function backgroundUrl(): string | null {
+  if (config.dashboardBgUrl) return config.dashboardBgUrl;
+  return localBgFile() ? '/dashboard-bg' : null;
+}
 
 // ── Per-TV options (from URL query) ─────────────────────────────────────────────
 // Each TV can tailor its own view via query params, e.g.
@@ -312,8 +333,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   const sideCards = [weatherCard, mealsCard, schoolRunCard, binCard, countdownCard, babyCard]
     .filter(Boolean).join('\n');
 
-  const bgLayer = (opts.photo && config.dashboardBgUrl)
-    ? `<div class="bg" style="background-image:url('${esc(config.dashboardBgUrl)}')"></div><div class="bg-tint"></div>`
+  const bg = opts.photo ? backgroundUrl() : null;
+  const bgLayer = bg
+    ? `<div class="bg" style="background-image:url('${esc(bg)}')"></div><div class="bg-tint"></div>`
     : '';
 
   return `<!DOCTYPE html>

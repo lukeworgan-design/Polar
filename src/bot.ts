@@ -5,8 +5,10 @@ import { config, getUserName } from './config';
 import { generateResponse, ImageData, loadBabyArrival } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
-import { getDashboardData, renderDashboardPage, parseOptions } from './dashboard';
+import { getDashboardData, renderDashboardPage, parseOptions, localBgFile } from './dashboard';
 import type { IncomingMessage, ServerResponse } from 'http';
+import { createReadStream } from 'fs';
+import { extname } from 'path';
 
 const bot = new Telegraf(config.telegram.botToken);
 const GROUP_ID = parseInt(config.telegram.groupId, 10);
@@ -559,6 +561,23 @@ async function handleHttp(
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('Dashboard temporarily unavailable.');
     }
+    return;
+  }
+
+  // Background photo committed to the repo (assets/dashboard-bg.*)
+  if (req.method === 'GET' && path === '/dashboard-bg') {
+    const file = localBgFile();
+    if (!file) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('No background image. Commit one to assets/dashboard-bg.jpg');
+      return;
+    }
+    const ext = extname(file).toLowerCase();
+    const contentType = ext === '.png' ? 'image/png'
+      : ext === '.webp' ? 'image/webp'
+      : 'image/jpeg';
+    res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=3600' });
+    createReadStream(file).pipe(res);
     return;
   }
 
