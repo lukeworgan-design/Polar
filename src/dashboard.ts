@@ -19,7 +19,7 @@ interface DashboardData {
   upcoming: DashEvent[];
   weather: { today: string | null; tomorrow: string | null };
   dinner: string | null;
-  bin: { colour: string; type: string } | null;
+  bin: { label: string; colorHex: string } | null;
   baby: { name: string; ageText: string; lastFeed: string | null; lastNappy: string | null } | null;
   generatedAt: string;
 }
@@ -87,7 +87,14 @@ function sinceText(iso: string): string {
   const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
   if (mins < 60) return `${mins} min ago`;
   const h = Math.floor(mins / 60), m = mins % 60;
-  return m === 0 ? `${h}h ago` : `${h}h ${m}m ago`;
+  if (h < 24) return m === 0 ? `${h}h ago` : `${h}h ${m}m ago`;
+  const days = Math.floor(h / 24);
+  return `${days}d ago`;
+}
+
+/** True if a log is stale enough that on a wall display we'd rather say "not logged recently". */
+function isStale(iso: string, maxHours: number): boolean {
+  return (Date.now() - new Date(iso).getTime()) / 3600000 > maxHours;
 }
 
 export async function getDashboardData(): Promise<DashboardData> {
@@ -133,12 +140,12 @@ export async function getDashboardData(): Promise<DashboardData> {
     console.error('Dashboard: meal fetch failed:', err);
   }
 
-  let bin: { colour: string; type: string } | null = null;
+  let bin: { label: string; colorHex: string } | null = null;
   try {
     const type = getFridayBinType();
     bin = type === 'general'
-      ? { colour: '🟢', type: 'Green (general waste)' }
-      : { colour: '🔵', type: 'Blue (recycling)' };
+      ? { label: 'Green — general waste', colorHex: '#2ec26a' }
+      : { label: 'Blue — recycling', colorHex: '#3aa0ff' };
   } catch (err) {
     console.error('Dashboard: bin calc failed:', err);
   }
@@ -154,8 +161,10 @@ export async function getDashboardData(): Promise<DashboardData> {
     };
     try {
       const [feed, nappy] = await Promise.all([getLastBabyLog('feed'), getLastBabyLog('nappy')]);
-      baby.lastFeed = feed ? sinceText(feed.logged_at) : null;
-      baby.lastNappy = nappy ? sinceText(nappy.logged_at) : null;
+      // On a wall display, a very old "last feed" reads oddly (means it's not
+      // being logged, not that she hasn't fed) — treat >12h as not-recent.
+      baby.lastFeed = feed && !isStale(feed.logged_at, 12) ? sinceText(feed.logged_at) : null;
+      baby.lastNappy = nappy && !isStale(nappy.logged_at, 12) ? sinceText(nappy.logged_at) : null;
     } catch (err) {
       console.error('Dashboard: baby log fetch failed (table may not exist):', err);
     }
@@ -209,15 +218,15 @@ export function renderDashboardPage(d: DashboardData, token: string): string {
     : '';
 
   const binCard = d.bin
-    ? `<div class="card bin"><h2>Next bin (Friday)</h2><p class="big">${d.bin.colour} ${esc(d.bin.type)}</p></div>`
+    ? `<div class="card bin"><h2>Next bin (Friday)</h2><p class="big"><span class="dot" style="background:${d.bin.colorHex}"></span>${esc(d.bin.label)}</p></div>`
     : '';
 
   const babyCard = d.baby
     ? `<div class="card baby">
          <h2>${esc(d.baby.name)}</h2>
          <p class="big">👶 ${esc(d.baby.ageText)}</p>
-         <p class="sub">${d.baby.lastFeed ? `🍼 Fed ${esc(d.baby.lastFeed)}` : '🍼 No feed logged'} · ${
-           d.baby.lastNappy ? `👶 Nappy ${esc(d.baby.lastNappy)}` : 'No nappy logged'
+         <p class="sub">${d.baby.lastFeed ? `🍼 Fed ${esc(d.baby.lastFeed)}` : '🍼 No recent feed logged'}${
+           d.baby.lastNappy ? ` · 👶 Nappy ${esc(d.baby.lastNappy)}` : ''
          }</p>
        </div>` : '';
 
@@ -249,6 +258,8 @@ export function renderDashboardPage(d: DashboardData, token: string): string {
     border: 1px solid rgba(255,255,255,.06); border-radius: 20px; padding: 2.2vh 1.6vw; }
   .card h2 { font-size: 2.3vh; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); margin-bottom: 1.2vh; }
   .big { font-size: 3.2vh; font-weight: 700; }
+  .dot { display: inline-block; width: 2.2vh; height: 2.2vh; border-radius: 50%; margin-right: 1vh;
+    vertical-align: middle; box-shadow: 0 0 0 2px rgba(255,255,255,.15) inset; }
   .sub { font-size: 2.2vh; color: var(--muted); margin-top: .6vh; }
   .events { list-style: none; display: flex; flex-direction: column; gap: 1.1vh; overflow: hidden; }
   .events li { display: flex; align-items: baseline; gap: 1.2vw; }
