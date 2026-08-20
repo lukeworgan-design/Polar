@@ -36,6 +36,28 @@ export function ageFromDob(dob: string): number {
   return age;
 }
 
+/** Normalise a date string to YYYY-MM-DD. Accepts YYYY-MM-DD as-is and UK
+ *  DD/MM/YY(YY) (with / - or . separators); falls back if it can't parse. */
+export function normalizeIsoDate(input: string, fallback: string): string {
+  const s = (input || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = s.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2}|\d{4})$/);
+  if (m) {
+    const dd = m[1]!.padStart(2, '0');
+    const mm = m[2]!.padStart(2, '0');
+    const year = m[3]!.length === 2 ? `20${m[3]}` : m[3]!;
+    return `${year}-${mm}-${dd}`;
+  }
+  return fallback;
+}
+
+/** Normalise a bin type from free-form input to 'general' | 'recycling'. */
+export function normalizeBinType(input: string): 'general' | 'recycling' {
+  const s = (input || '').trim().toLowerCase();
+  if (s.includes('recycl') || s.includes('blue')) return 'recycling';
+  return 'general';
+}
+
 export const config = {
   telegram: {
     botToken: requireEnv('TELEGRAM_BOT_TOKEN'),
@@ -103,8 +125,8 @@ export const config = {
   // Set BIN_REFERENCE_DATE to any known Friday collection date (YYYY-MM-DD) and
   // BIN_REFERENCE_TYPE to the bin that went out that day ('general' or 'recycling').
   bin: {
-    referenceDate: process.env['BIN_REFERENCE_DATE'] || '2026-06-05',
-    referenceType: (process.env['BIN_REFERENCE_TYPE'] || 'general') as 'general' | 'recycling',
+    referenceDate: normalizeIsoDate(process.env['BIN_REFERENCE_DATE'] || '', '2026-06-05'),
+    referenceType: normalizeBinType(process.env['BIN_REFERENCE_TYPE'] || 'general'),
   },
 };
 
