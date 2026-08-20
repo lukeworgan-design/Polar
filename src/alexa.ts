@@ -38,6 +38,23 @@ function speakEvent(e: CalendarEvent): string {
   return allDay ? e.summary : `${e.summary} at ${fmtTime(e.start)}`;
 }
 
+/**
+ * Spoken weekday + date for an event. For all-day events (date-only strings)
+ * the weekday is a pure calendar fact — computed in UTC so it can never slip a
+ * day. For timed events we use the family timezone on the actual instant.
+ */
+function spokenDay(iso: string): string {
+  if (iso.length === 10) {
+    const [y, mo, da] = iso.split('-').map(Number);
+    return new Date(Date.UTC(y!, mo! - 1, da!)).toLocaleDateString('en-GB', {
+      weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC',
+    });
+  }
+  return new Date(iso).toLocaleDateString('en-GB', {
+    weekday: 'long', day: 'numeric', month: 'long', timeZone: tz(),
+  });
+}
+
 function joinNaturally(items: string[]): string {
   if (items.length === 0) return '';
   if (items.length === 1) return items[0]!;
@@ -84,11 +101,7 @@ async function handleUpcoming(): Promise<string> {
     .filter((e) => (e.start.length === 10 ? e.start : e.start.slice(0, 10)) > today)
     .slice(0, 5);
   if (upcoming.length === 0) return `Nothing coming up in the next week.`;
-  const list = joinNaturally(upcoming.map((e) => {
-    const day = new Date(e.start.length === 10 ? `${e.start}T12:00:00` : e.start)
-      .toLocaleDateString('en-GB', { weekday: 'long', timeZone: tz() });
-    return `${speakEvent(e)} on ${day}`;
-  }));
+  const list = joinNaturally(upcoming.map((e) => `${speakEvent(e)} on ${spokenDay(e.start)}`));
   return `Coming up: ${list}.`;
 }
 
