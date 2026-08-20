@@ -5,7 +5,7 @@ import { config, getUserName } from './config';
 import { generateResponse, ImageData, loadBabyArrival } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
-import { getDashboardData, renderDashboardPage } from './dashboard';
+import { getDashboardData, renderDashboardPage, parseOptions } from './dashboard';
 import type { IncomingMessage, ServerResponse } from 'http';
 
 const bot = new Telegraf(config.telegram.botToken);
@@ -551,7 +551,7 @@ async function handleHttp(
     }
     try {
       const data = await getDashboardData();
-      const html = renderDashboardPage(data, config.dashboardToken);
+      const html = renderDashboardPage(data, parseOptions(url.searchParams));
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
     } catch (err) {

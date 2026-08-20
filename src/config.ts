@@ -73,6 +73,10 @@ export const config = {
   // Secret token guarding the family TV dashboard (served at /dashboard?token=...).
   // Set DASHBOARD_TOKEN in the environment to any long random string.
   dashboardToken: process.env['DASHBOARD_TOKEN'] || null,
+  // Optional full-screen background image URL for the dashboard (a public image
+  // URL — e.g. a family photo). Shown dimmed behind the cards. Leave unset for
+  // the default gradient.
+  dashboardBgUrl: process.env['DASHBOARD_BG_URL'] || null,
   family: {
     children: [
       // Set POPPY_DOB / BILLY_DOB (YYYY-MM-DD) in the environment to the real

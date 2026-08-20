@@ -1,8 +1,26 @@
 import { config } from './config';
 import { getTodaysEvents, getUpcomingEvents, CalendarEvent } from './calendar';
 import { getWeatherForecast, DayForecast } from './weather';
-import { getMealPlan, getLastBabyLog } from './db';
+import { getMealPlan, getLastBabyLog, getUpcomingBirthdays } from './db';
 import { getFridayBinType } from './scheduler';
+
+// ── Per-TV options (from URL query) ─────────────────────────────────────────────
+// Each TV can tailor its own view via query params, e.g.
+//   ?token=…&baby=off      → hide Evie's panel entirely (e.g. living-room TV)
+//   ?token=…&baby=age      → show only her age, not feed/nappy details
+//   ?token=…&photo=off     → force the plain gradient background
+export interface DashboardOptions {
+  baby: 'full' | 'age' | 'off';
+  photo: boolean;
+}
+
+export function parseOptions(params: URLSearchParams): DashboardOptions {
+  const baby = params.get('baby');
+  return {
+    baby: baby === 'off' ? 'off' : baby === 'age' ? 'age' : 'full',
+    photo: params.get('photo') !== 'off',
+  };
+}
 
 // ── Data gathering ──────────────────────────────────────────────────────────────
 
@@ -13,6 +31,11 @@ interface DashEvent {
   allDay: boolean;
 }
 
+interface Countdown {
+  name: string;
+  detail: string;
+}
+
 interface DashboardData {
   headerDate: string;
   today: DashEvent[];
@@ -20,12 +43,23 @@ interface DashboardData {
   weather: { today: string | null; tomorrow: string | null };
   dinner: string | null;
   bin: { label: string; colorHex: string } | null;
+  schoolRun: string | null;
+  countdowns: Countdown[];
   baby: { name: string; ageText: string; lastFeed: string | null; lastNappy: string | null } | null;
+  night: boolean;
   generatedAt: string;
 }
 
 function tzDateStr(d: Date): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone }).format(d);
+}
+
+function tzHour(d: Date): number {
+  return parseInt(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hour12: false, timeZone: config.timezone }).format(d), 10);
+}
+
+function tzWeekday(d: Date): string {
+  return new Intl.DateTimeFormat('en-GB', { weekday: 'long', timeZone: config.timezone }).format(d);
 }
 
 function fmtTime(iso: string): string {
@@ -35,7 +69,8 @@ function fmtTime(iso: string): string {
 }
 
 function fmtDay(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-GB', {
+  const d = iso.length === 10 ? new Date(`${iso}T12:00:00`) : new Date(iso);
+  return d.toLocaleDateString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short', timeZone: config.timezone,
   });
 }
@@ -44,17 +79,11 @@ function toDashEvent(e: CalendarEvent, withDay: boolean): DashEvent {
   const allDay = e.start.length === 10;
   let when: string;
   if (allDay) {
-    when = withDay ? fmtDayAllDay(e.start) : 'All day';
+    when = withDay ? fmtDay(e.start) : 'All day';
   } else {
     when = withDay ? `${fmtDay(e.start)} · ${fmtTime(e.start)}` : fmtTime(e.start);
   }
   return { summary: e.summary, when, location: e.location ?? null, allDay };
-}
-
-function fmtDayAllDay(dateStr: string): string {
-  return new Date(`${dateStr}T12:00:00`).toLocaleDateString('en-GB', {
-    weekday: 'short', day: 'numeric', month: 'short', timeZone: config.timezone,
-  });
 }
 
 function weatherEmoji(desc: string): string {
@@ -88,13 +117,30 @@ function sinceText(iso: string): string {
   if (mins < 60) return `${mins} min ago`;
   const h = Math.floor(mins / 60), m = mins % 60;
   if (h < 24) return m === 0 ? `${h}h ago` : `${h}h ${m}m ago`;
-  const days = Math.floor(h / 24);
-  return `${days}d ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }
 
-/** True if a log is stale enough that on a wall display we'd rather say "not logged recently". */
 function isStale(iso: string, maxHours: number): boolean {
   return (Date.now() - new Date(iso).getTime()) / 3600000 > maxHours;
+}
+
+// School-run rota (mirrors Rose's system prompt). Suppressed during school holidays.
+const SCHOOL_RUN: Record<string, string> = {
+  Monday: 'Luke: drop-off + after-school pick-up',
+  Tuesday: 'Grandma has both — sorted',
+  Wednesday: 'Breakfast club drop, Granddad picks up',
+  Thursday: 'Luke drops, Toni picks up',
+  Friday: 'Toni has both — sorted',
+};
+
+const HOLIDAY_KEYWORDS = ['holiday', 'half term', 'inset', 'teacher training', 'training day', 'school closed'];
+
+function isSchoolHoliday(todayStr: string, todayEvents: CalendarEvent[]): boolean {
+  const calRanges = todayEvents
+    .filter((e) => HOLIDAY_KEYWORDS.some((k) => e.summary.toLowerCase().includes(k)))
+    .map((e) => ({ start: e.start.slice(0, 10), end: e.end.slice(0, 10) }));
+  const ranges = [...calRanges, ...config.family.schoolHolidays];
+  return ranges.some((r) => (todayStr >= r.start && todayStr < r.end) || todayStr === r.start);
 }
 
 export async function getDashboardData(): Promise<DashboardData> {
@@ -103,20 +149,24 @@ export async function getDashboardData(): Promise<DashboardData> {
     weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone,
   });
   const todayStr = tzDateStr(now);
+  const hour = tzHour(now);
+  const night = hour >= 20 || hour < 6;
 
   let today: DashEvent[] = [];
   let upcoming: DashEvent[] = [];
+  let todayEvents: CalendarEvent[] = [];
   try {
-    const [todayEvents, upcomingEvents] = await Promise.all([
+    const [te, upcomingEvents] = await Promise.all([
       getTodaysEvents(),
-      getUpcomingEvents(7),
+      getUpcomingEvents(14), // two-week look-ahead
     ]);
-    const todayIds = new Set(todayEvents.map((e) => e.id));
-    today = todayEvents.map((e) => toDashEvent(e, false));
+    todayEvents = te;
+    const todayIds = new Set(te.map((e) => e.id));
+    today = te.map((e) => toDashEvent(e, false));
     upcoming = upcomingEvents
       .filter((e) => !todayIds.has(e.id))
       .filter((e) => (e.start.length === 10 ? e.start : e.start.slice(0, 10)) > todayStr)
-      .slice(0, 7)
+      .slice(0, 10)
       .map((e) => toDashEvent(e, true));
   } catch (err) {
     console.error('Dashboard: calendar fetch failed:', err);
@@ -150,19 +200,31 @@ export async function getDashboardData(): Promise<DashboardData> {
     console.error('Dashboard: bin calc failed:', err);
   }
 
+  // School run today (weekday and not a holiday)
+  let schoolRun: string | null = null;
+  const weekday = tzWeekday(now);
+  if (SCHOOL_RUN[weekday] && !isSchoolHoliday(todayStr, todayEvents)) {
+    schoolRun = SCHOOL_RUN[weekday]!;
+  }
+
+  // Countdowns: upcoming birthdays in the next 30 days
+  let countdowns: Countdown[] = [];
+  try {
+    const bdays = await getUpcomingBirthdays(30);
+    countdowns = bdays.slice(0, 4).map((b) => ({
+      name: `${b.name}${b.relation ? ` (${b.relation})` : ''}`,
+      detail: b.days_until === 0 ? 'Today! 🎂' : b.days_until === 1 ? 'Tomorrow 🎂' : `in ${b.days_until} days`,
+    }));
+  } catch (err) {
+    console.error('Dashboard: birthdays fetch failed:', err);
+  }
+
   let baby: DashboardData['baby'] = null;
   const dob = config.family.babyBorn;
   if (dob) {
-    baby = {
-      name: config.family.babyName || 'Baby',
-      ageText: babyAgeText(dob),
-      lastFeed: null,
-      lastNappy: null,
-    };
+    baby = { name: config.family.babyName || 'Baby', ageText: babyAgeText(dob), lastFeed: null, lastNappy: null };
     try {
       const [feed, nappy] = await Promise.all([getLastBabyLog('feed'), getLastBabyLog('nappy')]);
-      // On a wall display, a very old "last feed" reads oddly (means it's not
-      // being logged, not that she hasn't fed) — treat >12h as not-recent.
       baby.lastFeed = feed && !isStale(feed.logged_at, 12) ? sinceText(feed.logged_at) : null;
       baby.lastNappy = nappy && !isStale(nappy.logged_at, 12) ? sinceText(nappy.logged_at) : null;
     } catch (err) {
@@ -171,13 +233,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   }
 
   return {
-    headerDate,
-    today,
-    upcoming,
-    weather,
-    dinner,
-    bin,
-    baby,
+    headerDate, today, upcoming, weather, dinner, bin, schoolRun, countdowns, baby, night,
     generatedAt: fmtTime(now.toISOString()),
   };
 }
@@ -197,38 +253,56 @@ function eventRow(e: DashEvent): string {
 /** How often the TV reloads the page (seconds). */
 const REFRESH_SECONDS = 90;
 
-export function renderDashboardPage(d: DashboardData, token: string): string {
+export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): string {
   const todayList = d.today.length
     ? `<ul class="events">${d.today.map(eventRow).join('')}</ul>`
     : `<p class="empty">Nothing in the diary today 🎉</p>`;
 
   const upcomingList = d.upcoming.length
     ? `<ul class="events">${d.upcoming.map(eventRow).join('')}</ul>`
-    : `<p class="empty">Clear for the next week</p>`;
+    : `<p class="empty">Clear for the next couple of weeks</p>`;
 
   const weatherCard = (d.weather.today || d.weather.tomorrow)
-    ? `<div class="card weather">
+    ? `<div class="card">
          <h2>Weather</h2>
          ${d.weather.today ? `<p class="big">${esc(d.weather.today)}</p>` : ''}
          ${d.weather.tomorrow ? `<p class="sub">Tomorrow: ${esc(d.weather.tomorrow)}</p>` : ''}
        </div>` : '';
 
+  const schoolRunCard = d.schoolRun
+    ? `<div class="card"><h2>School run today</h2><p class="big">🚌 ${esc(d.schoolRun)}</p></div>`
+    : '';
+
   const dinnerCard = d.dinner
-    ? `<div class="card dinner"><h2>Tonight's dinner</h2><p class="big">🍽 ${esc(d.dinner)}</p></div>`
+    ? `<div class="card"><h2>Tonight's dinner</h2><p class="big">🍽 ${esc(d.dinner)}</p></div>`
     : '';
 
   const binCard = d.bin
-    ? `<div class="card bin"><h2>Next bin (Friday)</h2><p class="big"><span class="dot" style="background:${d.bin.colorHex}"></span>${esc(d.bin.label)}</p></div>`
+    ? `<div class="card"><h2>Next bin (Friday)</h2><p class="big"><span class="dot" style="background:${d.bin.colorHex}"></span>${esc(d.bin.label)}</p></div>`
     : '';
 
-  const babyCard = d.baby
-    ? `<div class="card baby">
-         <h2>${esc(d.baby.name)}</h2>
-         <p class="big">👶 ${esc(d.baby.ageText)}</p>
-         <p class="sub">${d.baby.lastFeed ? `🍼 Fed ${esc(d.baby.lastFeed)}` : '🍼 No recent feed logged'}${
-           d.baby.lastNappy ? ` · 👶 Nappy ${esc(d.baby.lastNappy)}` : ''
-         }</p>
-       </div>` : '';
+  const countdownCard = d.countdowns.length
+    ? `<div class="card"><h2>Coming birthdays</h2><ul class="mini">${
+        d.countdowns.map((c) => `<li><span>${esc(c.name)}</span><span class="cd">${esc(c.detail)}</span></li>`).join('')
+      }</ul></div>`
+    : '';
+
+  let babyCard = '';
+  if (d.baby && opts.baby !== 'off') {
+    const details = opts.baby === 'full'
+      ? `<p class="sub">${d.baby.lastFeed ? `🍼 Fed ${esc(d.baby.lastFeed)}` : '🍼 No recent feed logged'}${
+          d.baby.lastNappy ? ` · 👶 Nappy ${esc(d.baby.lastNappy)}` : ''
+        }</p>`
+      : '';
+    babyCard = `<div class="card"><h2>${esc(d.baby.name)}</h2><p class="big">👶 ${esc(d.baby.ageText)}</p>${details}</div>`;
+  }
+
+  const sideCards = [weatherCard, schoolRunCard, dinnerCard, binCard, countdownCard, babyCard]
+    .filter(Boolean).join('\n');
+
+  const bgLayer = (opts.photo && config.dashboardBgUrl)
+    ? `<div class="bg" style="background-image:url('${esc(config.dashboardBgUrl)}')"></div><div class="bg-tint"></div>`
+    : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -240,40 +314,53 @@ export function renderDashboardPage(d: DashboardData, token: string): string {
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --bg: #0b1020; --panel: #151c32; --panel2: #1b2440;
+    --bg: #0b1020; --panel: rgba(25,33,58,.92); --panel2: rgba(20,27,48,.92);
     --text: #eef2ff; --muted: #9aa7c7; --accent: #7cc4ff; --accent2: #ffd479;
+    --stroke: rgba(255,255,255,.07); --dim: 1;
   }
   html, body { height: 100%; }
   body {
-    background: radial-gradient(1200px 800px at 80% -10%, #1a2340 0%, var(--bg) 60%);
+    background: radial-gradient(1400px 900px at 80% -10%, #1a2340 0%, var(--bg) 60%);
     color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    padding: 3vh 3vw; overflow: hidden; -webkit-font-smoothing: antialiased;
+    padding: 3.2vh 3vw; overflow: hidden; -webkit-font-smoothing: antialiased; position: relative;
+    filter: brightness(var(--dim));
   }
-  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2.4vh; }
-  header .date { font-size: 3.4vh; font-weight: 700; letter-spacing: .3px; }
-  header .clock { font-size: 5.2vh; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
-  .grid { display: grid; grid-template-columns: 1.35fr 1fr; grid-template-rows: auto auto; gap: 2vh 2vw; height: 84vh; }
-  .col { display: flex; flex-direction: column; gap: 2vh; min-height: 0; }
+  /* Night dimming after 8pm */
+  body[data-night="1"] {
+    --bg: #05070f; --panel: rgba(16,22,40,.9); --panel2: rgba(12,17,32,.9);
+    --text: #cdd6f0; --muted: #6b779a; --accent: #5b9fd6; --accent2: #d8b26a; --dim: .72;
+  }
+  .bg { position: fixed; inset: 0; background-size: cover; background-position: center; z-index: -2; }
+  .bg-tint { position: fixed; inset: 0; z-index: -1;
+    background: linear-gradient(180deg, rgba(6,9,20,.72), rgba(6,9,20,.86)); }
+  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2.6vh; }
+  header .date { font-size: 4vh; font-weight: 700; letter-spacing: .3px; }
+  header .clock { font-size: 6vh; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 2.2vh 2vw; height: 84vh; }
+  .col { display: flex; flex-direction: column; gap: 2.2vh; min-height: 0; }
   .card { background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
-    border: 1px solid rgba(255,255,255,.06); border-radius: 20px; padding: 2.2vh 1.6vw; }
-  .card h2 { font-size: 2.3vh; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); margin-bottom: 1.2vh; }
-  .big { font-size: 3.2vh; font-weight: 700; }
-  .dot { display: inline-block; width: 2.2vh; height: 2.2vh; border-radius: 50%; margin-right: 1vh;
+    border: 1px solid var(--stroke); border-radius: 22px; padding: 2.4vh 1.7vw; backdrop-filter: blur(6px); }
+  .card h2 { font-size: 2.4vh; text-transform: uppercase; letter-spacing: 1.6px; color: var(--muted); margin-bottom: 1.3vh; }
+  .big { font-size: 3.4vh; font-weight: 700; line-height: 1.25; }
+  .dot { display: inline-block; width: 2.4vh; height: 2.4vh; border-radius: 50%; margin-right: 1vh;
     vertical-align: middle; box-shadow: 0 0 0 2px rgba(255,255,255,.15) inset; }
-  .sub { font-size: 2.2vh; color: var(--muted); margin-top: .6vh; }
-  .events { list-style: none; display: flex; flex-direction: column; gap: 1.1vh; overflow: hidden; }
+  .sub { font-size: 2.3vh; color: var(--muted); margin-top: .7vh; }
+  .events { list-style: none; display: flex; flex-direction: column; gap: 1.3vh; overflow: hidden; }
   .events li { display: flex; align-items: baseline; gap: 1.2vw; }
-  .ev-when { flex: 0 0 auto; min-width: 12vw; color: var(--accent2); font-weight: 700; font-size: 2.5vh; font-variant-numeric: tabular-nums; }
-  .ev-name { font-size: 2.7vh; font-weight: 600; display: flex; flex-direction: column; }
-  .ev-loc { font-size: 1.9vh; color: var(--muted); font-weight: 400; }
+  .ev-when { flex: 0 0 auto; min-width: 13vw; color: var(--accent2); font-weight: 700; font-size: 2.7vh; font-variant-numeric: tabular-nums; }
+  .ev-name { font-size: 2.9vh; font-weight: 600; display: flex; flex-direction: column; }
+  .ev-loc { font-size: 2vh; color: var(--muted); font-weight: 400; }
   .events-card { flex: 1; min-height: 0; overflow: hidden; }
-  .empty { color: var(--muted); font-size: 2.6vh; padding: 1vh 0; }
-  .side { display: grid; grid-template-columns: 1fr 1fr; gap: 2vh 1vw; align-content: start; }
-  .side .card.full { grid-column: 1 / -1; }
-  footer { position: fixed; bottom: 1vh; right: 2vw; font-size: 1.6vh; color: var(--muted); opacity: .6; }
+  .empty { color: var(--muted); font-size: 2.8vh; padding: 1vh 0; }
+  .side { overflow: hidden; }
+  .mini { list-style: none; display: flex; flex-direction: column; gap: 1vh; }
+  .mini li { display: flex; justify-content: space-between; font-size: 2.5vh; font-weight: 600; }
+  .mini .cd { color: var(--accent2); }
+  footer { position: fixed; bottom: 1.2vh; right: 2.2vw; font-size: 1.6vh; color: var(--muted); opacity: .6; }
 </style>
 </head>
-<body>
+<body${d.night ? ' data-night="1"' : ''}>
+  ${bgLayer}
   <header>
     <div class="date">${esc(d.headerDate)}</div>
     <div class="clock" id="clock">--:--</div>
@@ -292,17 +379,13 @@ export function renderDashboardPage(d: DashboardData, token: string): string {
     </div>
 
     <div class="col side">
-      ${weatherCard}
-      ${dinnerCard}
-      ${binCard ? `<div class="full">${binCard}</div>` : ''}
-      ${babyCard ? `<div class="full">${babyCard}</div>` : ''}
+      ${sideCards}
     </div>
   </div>
 
   <footer>Rose · updated ${esc(d.generatedAt)}</footer>
 
   <script>
-    // Live ticking clock (page also hard-refreshes every ${REFRESH_SECONDS}s for fresh data)
     function tick() {
       var now = new Date();
       var h = String(now.getHours()).padStart(2, '0');
