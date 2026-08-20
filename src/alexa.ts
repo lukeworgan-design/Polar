@@ -2,6 +2,7 @@ import { config } from './config';
 import { getTodaysEvents, getUpcomingEvents, CalendarEvent } from './calendar';
 import { getMealPlan, getShoppingList, addShoppingItem, addTodo, addBabyLog } from './db';
 import { getFridayBinType, binLabel, nextFridayDate } from './bin';
+import { createCalendarEventFromText } from './ai';
 
 // ── Alexa request/response helpers ──────────────────────────────────────────────
 
@@ -140,9 +141,14 @@ async function handleLogFeed(amount: string | undefined): Promise<string> {
   return `Logged a feed for ${babyName()}${amount ? `, ${amount}` : ''}.`;
 }
 
+async function handleAddEvent(details: string | undefined): Promise<string> {
+  if (!details) return `What would you like me to add to the calendar? Try: add dentist on Tuesday at 3pm.`;
+  return createCalendarEventFromText(details);
+}
+
 // ── Main entry ──────────────────────────────────────────────────────────────────
 
-const HELP = `You can ask me what's for dinner, what's on today, what's coming up, when the bins go out, or how old ${config.family.babyName || 'the baby'} is. You can also say: add milk to the shopping list.`;
+const HELP = `You can ask me what's for dinner, what's on today, what's coming up, when the bins go out, or how old ${config.family.babyName || 'the baby'} is. You can also add things — like: add milk to the shopping list, or add dentist on Tuesday at 3pm to the calendar.`;
 
 function slotValue(intent: any, name: string): string | undefined {
   const v = intent?.slots?.[name]?.value;
@@ -181,6 +187,7 @@ export async function handleAlexaRequest(event: any): Promise<AlexaResponse> {
         case 'AddShoppingIntent': return speak(await handleAddShopping(slotValue(intent, 'Item')));
         case 'ShoppingListIntent': return speak(await handleShoppingList());
         case 'AddTodoIntent': return speak(await handleAddTodo(slotValue(intent, 'Task')));
+        case 'AddEventIntent': return speak(await handleAddEvent(slotValue(intent, 'Details')));
         case 'LogFeedIntent': return speak(await handleLogFeed(slotValue(intent, 'Amount')));
         case 'AMAZON.HelpIntent': return speak(HELP, false, `Try: what's for dinner?`);
         case 'AMAZON.StopIntent':

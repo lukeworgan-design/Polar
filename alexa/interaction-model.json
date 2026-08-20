@@ -98,6 +98,18 @@
             "the baby had a feed",
             "Evie had a feed"
           ]
+        },
+        {
+          "name": "AddEventIntent",
+          "slots": [{ "name": "Details", "type": "AMAZON.SearchQuery" }],
+          "samples": [
+            "add {Details} to the calendar",
+            "add {Details} to the diary",
+            "put {Details} in the calendar",
+            "put {Details} in the diary",
+            "schedule {Details}",
+            "create an event {Details}"
+          ]
         }
       ],
       "types": []

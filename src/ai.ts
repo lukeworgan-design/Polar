@@ -1928,6 +1928,74 @@ Include:
   return textBlock?.text || '';
 }
 
+// ── Voice: create a calendar event from a free-text phrase (used by Alexa) ─────
+
+export async function createCalendarEventFromText(details: string): Promise<string> {
+  const now = getLocalNow(config.timezone);
+  const dateStr = now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone });
+  const refBase = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0);
+  const dateReference = Array.from({ length: 21 }, (_, i) => {
+    const d = new Date(refBase);
+    d.setDate(refBase.getDate() + i);
+    return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: config.timezone })} = ${d.toLocaleDateString('en-CA', { timeZone: config.timezone })}`;
+  }).join(', ');
+
+  const prompt = `Today is ${dateStr} (${config.timezone}). Extract a SINGLE calendar event from this spoken request and reply with ONLY a JSON object, no other text.
+
+Request: "${details}"
+
+JSON shape: {"summary": string, "date": "YYYY-MM-DD", "start_time": "HH:mm" or null, "duration_minutes": number}
+Rules:
+- Interpret relative dates ("tomorrow", "next Tuesday") against today using the DATE REFERENCE below.
+- If a time is given, set start_time (24h) and a sensible duration_minutes (default 60).
+- If no time is given, set start_time to null (an all-day event).
+- Clean up the summary into a tidy title (e.g. "dentist" → "Dentist appointment" only if clearly implied; otherwise keep it short and natural).
+- If you cannot determine a date at all, reply with {"error": "no date"}.
+
+DATE REFERENCE: ${dateReference}`;
+
+  const response = await createMessage({
+    model: config.anthropic.model,
+    max_tokens: 200,
+    system: 'You output only a single JSON object describing a calendar event. No prose.',
+    messages: [{ role: 'user', content: prompt }],
+  });
+  const text = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text')?.text ?? '';
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return `Sorry, I couldn't work out that event. Try including a day and time.`;
+
+  let parsed: { summary?: string; date?: string; start_time?: string | null; duration_minutes?: number; error?: string };
+  try {
+    parsed = JSON.parse(match[0]);
+  } catch {
+    return `Sorry, I couldn't work out that event. Try including a day and time.`;
+  }
+  if (parsed.error || !parsed.date || !parsed.summary) {
+    return `Sorry, I couldn't work out when that should be. Try saying something like: add dentist on Tuesday at 3pm.`;
+  }
+
+  const summary = parsed.summary;
+  const spokenDate = new Date(`${parsed.date}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+
+  try {
+    if (parsed.start_time) {
+      const start = parseInTimezone(`${parsed.date}T${parsed.start_time}:00`, config.timezone);
+      const end = new Date(start.getTime() + (parsed.duration_minutes || 60) * 60000);
+      await createEvent({ summary, start, end });
+      const timeStr = start.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: config.timezone }).replace(':00', '').replace(' ', '');
+      return `Added ${summary} to the calendar on ${spokenDate} at ${timeStr}.`;
+    }
+    // All-day: use noon UTC anchors so the date can't slip.
+    const start = new Date(`${parsed.date}T12:00:00Z`);
+    const end = new Date(start.getTime() + 24 * 60 * 60000);
+    await createEvent({ summary, start, end, allDay: true });
+    return `Added ${summary} to the calendar on ${spokenDate}.`;
+  } catch (err) {
+    console.error('createCalendarEventFromText: createEvent failed:', err);
+    return `I understood the event but couldn't save it to the calendar just now.`;
+  }
+}
+
 // ── Local events ticker (for the TV dashboard) ────────────────────────────────
 // Refreshed periodically by the scheduler (not per dashboard render) so we don't
 // hammer the search API. Held in memory; empty until the first refresh.
