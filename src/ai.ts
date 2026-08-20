@@ -927,13 +927,17 @@ async function executeTool(
       }
 
       case 'set_meal': {
-        await setMeal(
-          toolInput['date'] as string,
-          toolInput['meal_type'] as MealType,
-          toolInput['meal'] as string,
-          userName
-        );
-        return `Set ${toolInput['meal_type']} on ${toolInput['date']} to "${toolInput['meal']}".`;
+        const mealDate = toolInput['date'] as string;
+        const mealType = toolInput['meal_type'] as MealType;
+        const mealName = toolInput['meal'] as string;
+        await setMeal(mealDate, mealType, mealName, userName);
+        // Verify it actually persisted — read the row straight back.
+        const check = await getMealPlan(mealDate, mealDate);
+        const saved = check.find((m) => m.meal_type === mealType && m.meal === mealName);
+        if (!saved) {
+          return `⚠️ Tried to save ${mealType} on ${mealDate} ("${mealName}") but it did NOT persist to the database. Tell the user the save failed and to try again — do NOT claim it was saved.`;
+        }
+        return `Saved and verified: ${mealType} on ${mealDate} = "${mealName}".`;
       }
 
       case 'clear_meal': {
