@@ -34,7 +34,7 @@ export async function initRing(): Promise<void> {
   } catch {
     // app_settings may not exist yet — that's fine
   }
-  token = token || config.ringRefreshToken;
+  token = (token || config.ringRefreshToken || '').trim();
   if (!token) {
     console.log('Ring: no RING_REFRESH_TOKEN set — doorbell snapshots disabled.');
     return;
