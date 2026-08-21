@@ -476,8 +476,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .bg-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
   .bg-tint { position: fixed; inset: 0; z-index: -1;
     background: linear-gradient(180deg, rgba(6,9,20,.42), rgba(6,9,20,.6)); }
-  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2.6vh; }
-  header .date { font-size: 4vh; font-weight: 700; letter-spacing: .3px; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2.4vh; }
+  header .title { font-size: 4.4vh; font-weight: 800; letter-spacing: .3px; line-height: 1.05; }
+  header .date { font-size: 2.8vh; font-weight: 600; color: var(--muted); margin-top: .4vh; }
   header .clock { font-size: 6vh; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
   .grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 2.2vh 2vw; height: 84vh; }
   body.has-ticker .grid { height: 76vh; }
@@ -552,12 +553,24 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   #doorbell img { max-width: 82vw; max-height: 74vh; border-radius: 18px; border: 3px solid rgba(255,255,255,.25);
     box-shadow: 0 20px 60px rgba(0,0,0,.6); }
   #doorbell .db-time { font-size: 2.6vh; color: var(--muted); margin-top: 1.6vh; }
+  /* Motion toast (small, corner) */
+  #motion { position: fixed; right: 2vw; bottom: 9vh; z-index: 40; display: none;
+    align-items: center; gap: 1vw; padding: 1.6vh 1.6vw; border-radius: 16px;
+    background: rgba(20,28,50,.9); border: 1px solid var(--stroke); backdrop-filter: blur(10px);
+    box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+  #motion.show { display: flex; animation: dbin .3s ease-out; }
+  #motion .m-ic { font-size: 3.4vh; }
+  #motion .m-txt { font-size: 2.4vh; font-weight: 700; }
+  #motion .m-sub { font-size: 1.9vh; color: var(--muted); font-weight: 500; }
 </style>
 </head>
 <body class="${hasTicker ? 'has-ticker' : ''}"${d.night ? ' data-night="1"' : ''}>
   ${bgLayer}
   <header>
-    <div class="date">${esc(d.headerDate)}</div>
+    <div class="head-left">
+      <div class="title">${esc(config.dashboardTitle)}</div>
+      <div class="date">${esc(d.headerDate)}</div>
+    </div>
     <div class="clock" id="clock">--:--</div>
   </header>
 
@@ -590,6 +603,14 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     </div>
   </div>
 
+  <div id="motion">
+    <span class="m-ic">👀</span>
+    <div>
+      <div class="m-txt">Movement outside</div>
+      <div class="m-sub" id="motion-sub"></div>
+    </div>
+  </div>
+
   <script>
     function tick() {
       var now = new Date();
@@ -619,12 +640,20 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
       var overlay = document.getElementById('doorbell');
       var img = document.getElementById('db-img');
       var timeEl = document.getElementById('db-time');
+      var motionEl = document.getElementById('motion');
+      var motionSub = document.getElementById('motion-sub');
       var shownAt = null;
+      function fmt(iso) {
+        var d = new Date(iso);
+        return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+      }
       function poll() {
         fetch('/doorbell-status?token=' + encodeURIComponent(token), { cache: 'no-store' })
           .then(function (r) { return r.json(); })
           .then(function (s) {
-            if (s && s.active) {
+            if (!s) return;
+            // Doorbell press → full-screen overlay (takes priority over motion)
+            if (s.active) {
               if (s.at !== shownAt) {
                 shownAt = s.at;
                 if (s.hasImage) {
@@ -633,14 +662,20 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
                 } else {
                   img.style.display = 'none';
                 }
-                var d = new Date(s.at);
-                timeEl.textContent = (s.camera ? s.camera + ' · ' : '') +
-                  d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+                timeEl.textContent = (s.camera ? s.camera + ' · ' : '') + fmt(s.at);
               }
               overlay.classList.add('show');
+              motionEl.classList.remove('show');
             } else {
               overlay.classList.remove('show');
               shownAt = null;
+              // Motion → small corner toast (only when no active press)
+              if (s.motionActive) {
+                motionSub.textContent = (s.motionCamera ? s.motionCamera + ' · ' : '') + fmt(s.motionAt);
+                motionEl.classList.add('show');
+              } else {
+                motionEl.classList.remove('show');
+              }
             }
           })
           .catch(function () { /* ignore transient errors */ });

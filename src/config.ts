@@ -95,6 +95,8 @@ export const config = {
   // Secret token guarding the family TV dashboard (served at /dashboard?token=...).
   // Set DASHBOARD_TOKEN in the environment to any long random string.
   dashboardToken: process.env['DASHBOARD_TOKEN'] || null,
+  // Title shown at the top of the dashboard. Set DASHBOARD_TITLE to rename it.
+  dashboardTitle: process.env['DASHBOARD_TITLE'] || 'The Worgan Family',
   // Optional full-screen background image URL for the dashboard (a public image
   // URL — e.g. a family photo). Shown dimmed behind the cards. Leave unset for
   // the default gradient.

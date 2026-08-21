@@ -7,19 +7,30 @@ import { getSetting, setSetting } from './db';
 
 let latestDing: { at: number; camera: string } | null = null;
 let latestSnapshot: Buffer | null = null;
+let latestMotion: { at: number; camera: string } | null = null;
 let started = false;
 let ringCameras: any[] = [];
 
-export function getDoorbellStatus(): { active: boolean; at: string | null; agoSeconds: number | null; camera: string | null; hasImage: boolean } {
-  if (!latestDing) return { active: false, at: null, agoSeconds: null, camera: null, hasImage: false };
-  const agoSeconds = Math.round((Date.now() - latestDing.at) / 1000);
+const DING_WINDOW_S = 90;
+const MOTION_WINDOW_S = 25;
+
+export function getDoorbellStatus(): {
+  active: boolean; at: string | null; agoSeconds: number | null; camera: string | null; hasImage: boolean;
+  motionActive: boolean; motionAt: string | null; motionCamera: string | null;
+} {
+  const dingAgo = latestDing ? Math.round((Date.now() - latestDing.at) / 1000) : null;
+  const motionAgo = latestMotion ? Math.round((Date.now() - latestMotion.at) / 1000) : null;
   return {
-    // Show the banner on any recent ding — even if the snapshot didn't come through.
-    active: agoSeconds <= 90,
-    at: new Date(latestDing.at).toISOString(),
-    agoSeconds,
-    camera: latestDing.camera,
+    // Ding: full-screen banner on any recent press, even if the snapshot didn't come through.
+    active: dingAgo != null && dingAgo <= DING_WINDOW_S,
+    at: latestDing ? new Date(latestDing.at).toISOString() : null,
+    agoSeconds: dingAgo,
+    camera: latestDing?.camera ?? null,
     hasImage: latestSnapshot != null,
+    // Motion: small corner toast, shorter window.
+    motionActive: motionAgo != null && motionAgo <= MOTION_WINDOW_S,
+    motionAt: latestMotion ? new Date(latestMotion.at).toISOString() : null,
+    motionCamera: latestMotion?.camera ?? null,
   };
 }
 
@@ -126,13 +137,24 @@ export async function initRing(): Promise<void> {
         console.log(`Ring: doorbell pressed on "${cam.name}"`);
         await recordDing(cam.name, cam);
       });
-      // Fallback + diagnostics: log every push notification and treat a "ding" as a press.
+      // Motion — lightweight (no snapshot fetch, to avoid Ring's rate limits).
+      if (cam.onMotionDetected && cam.onMotionDetected.subscribe) {
+        cam.onMotionDetected.subscribe((motion: any) => {
+          if (motion) {
+            latestMotion = { at: Date.now(), camera: cam.name };
+            console.log(`Ring: motion detected on "${cam.name}"`);
+          }
+        });
+      }
+      // Fallback + diagnostics: log every push notification and route ding/motion.
       if (cam.onNewNotification && cam.onNewNotification.subscribe) {
         cam.onNewNotification.subscribe(async (notification: any) => {
-          const kind = notification?.subtype ?? notification?.ding?.subtype ?? notification?.action ?? 'unknown';
+          const kind = String(notification?.subtype ?? notification?.ding?.subtype ?? notification?.action ?? 'unknown').toLowerCase();
           console.log(`Ring: notification on "${cam.name}" — kind: ${kind}`);
-          if (String(kind).toLowerCase().includes('ding')) {
+          if (kind.includes('ding')) {
             await recordDing(cam.name, cam);
+          } else if (kind.includes('motion')) {
+            latestMotion = { at: Date.now(), camera: cam.name };
           }
         });
       }
