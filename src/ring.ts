@@ -41,9 +41,16 @@ export async function initRing(): Promise<void> {
   }
 
   try {
-    // Imported lazily so the app still boots if the package/token is absent.
-    const { RingApi } = await import('ring-client-api');
-    const ringApi = new RingApi({ refreshToken: token, cameraStatusPollingSeconds: 20 });
+    // Loaded lazily and untyped (non-literal specifier) so the build never
+    // depends on the heavy ring-client-api package — it's an optional dep.
+    const specifier = 'ring-client-api';
+    const ringModule: any = await import(specifier).catch(() => null);
+    if (!ringModule || !ringModule.RingApi) {
+      console.log('Ring: ring-client-api not available — doorbell snapshots disabled.');
+      return;
+    }
+    const { RingApi } = ringModule;
+    const ringApi: any = new RingApi({ refreshToken: token, cameraStatusPollingSeconds: 20 });
 
     // Persist rotated refresh tokens so restarts keep working.
     ringApi.onRefreshTokenUpdated.subscribe(async ({ newRefreshToken }: { newRefreshToken: string }) => {
@@ -54,7 +61,7 @@ export async function initRing(): Promise<void> {
       }
     });
 
-    const cameras = await ringApi.getCameras();
+    const cameras: any[] = await ringApi.getCameras();
     if (cameras.length === 0) {
       console.log('Ring: connected but found no cameras.');
       return;
@@ -73,7 +80,7 @@ export async function initRing(): Promise<void> {
     }
 
     started = true;
-    console.log(`Ring: listening for doorbell presses on ${cameras.length} camera(s): ${cameras.map((c) => c.name).join(', ')}`);
+    console.log(`Ring: listening for doorbell presses on ${cameras.length} camera(s): ${cameras.map((c: any) => c.name).join(', ')}`);
   } catch (err) {
     console.error('Ring: failed to initialise (bad token or API change?):', err);
   }
