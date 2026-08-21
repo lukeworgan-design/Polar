@@ -540,6 +540,18 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     padding: 0 1.6vw; background: rgba(6,9,20,.95); color: var(--accent); font-weight: 800; font-size: 2.6vh;
     border-right: 1px solid var(--stroke); }
   @keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-100%); } }
+  /* Doorbell overlay */
+  #doorbell { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center;
+    background: rgba(3,5,12,.86); backdrop-filter: blur(6px); }
+  #doorbell.show { display: flex; animation: dbin .3s ease-out; }
+  @keyframes dbin { from { opacity: 0; } to { opacity: 1; } }
+  #doorbell .db-card { text-align: center; max-width: 82vw; }
+  #doorbell .db-title { font-size: 5vh; font-weight: 800; color: var(--accent2); margin-bottom: 2vh; }
+  #doorbell .db-title .pulse { display: inline-block; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.25); } }
+  #doorbell img { max-width: 82vw; max-height: 74vh; border-radius: 18px; border: 3px solid rgba(255,255,255,.25);
+    box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  #doorbell .db-time { font-size: 2.6vh; color: var(--muted); margin-top: 1.6vh; }
 </style>
 </head>
 <body class="${hasTicker ? 'has-ticker' : ''}"${d.night ? ' data-night="1"' : ''}>
@@ -570,6 +582,14 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   ${hasTicker ? '' : `<footer>Rose · updated ${esc(d.generatedAt)}</footer>`}
   ${tickerBar}
 
+  <div id="doorbell">
+    <div class="db-card">
+      <div class="db-title"><span class="pulse">🔔</span> Someone's at the door</div>
+      <img id="db-img" alt="Doorbell snapshot">
+      <div class="db-time" id="db-time"></div>
+    </div>
+  </div>
+
   <script>
     function tick() {
       var now = new Date();
@@ -590,6 +610,37 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         i = (i + 1) % slides.length;
         slides[i].classList.add('active');
       }, 18000);
+    })();
+
+    // Doorbell: poll every 3s; when the bell was pressed recently, flash the
+    // latest snapshot full-screen. Hides once the ding window passes.
+    (function () {
+      var token = new URLSearchParams(location.search).get('token') || '';
+      var overlay = document.getElementById('doorbell');
+      var img = document.getElementById('db-img');
+      var timeEl = document.getElementById('db-time');
+      var shownAt = null;
+      function poll() {
+        fetch('/doorbell-status?token=' + encodeURIComponent(token), { cache: 'no-store' })
+          .then(function (r) { return r.json(); })
+          .then(function (s) {
+            if (s && s.active) {
+              if (s.at !== shownAt) {
+                shownAt = s.at;
+                img.src = '/doorbell.jpg?token=' + encodeURIComponent(token) + '&t=' + encodeURIComponent(s.at);
+                var d = new Date(s.at);
+                timeEl.textContent = (s.camera ? s.camera + ' · ' : '') +
+                  d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+              }
+              overlay.classList.add('show');
+            } else {
+              overlay.classList.remove('show');
+              shownAt = null;
+            }
+          })
+          .catch(function () { /* ignore transient errors */ });
+      }
+      setInterval(poll, 3000); poll();
     })();
 
     // Gentle auto-scroll for any overflowing list (e.g. Coming up): drift down,

@@ -102,6 +102,9 @@ export const config = {
   // Alexa skill ID (amzn1.ask.skill.…) — set ALEXA_SKILL_ID so the /alexa
   // endpoint only answers requests from your own skill.
   alexaSkillId: process.env['ALEXA_SKILL_ID'] || null,
+  // Ring doorbell — set RING_REFRESH_TOKEN (generated with ring-auth-cli) to
+  // show a snapshot on the dashboard when the bell is pressed.
+  ringRefreshToken: process.env['RING_REFRESH_TOKEN'] || null,
   family: {
     children: [
       // Set POPPY_DOB / BILLY_DOB (YYYY-MM-DD) in the environment to the real

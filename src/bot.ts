@@ -6,6 +6,7 @@ import { generateResponse, ImageData, loadBabyArrival } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
 import { getDashboardData, renderDashboardPage, parseOptions, localBgFiles } from './dashboard';
+import { initRing, getDoorbellStatus, getDoorbellSnapshot } from './ring';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { createReadStream } from 'fs';
 import { extname } from 'path';
@@ -619,6 +620,26 @@ async function handleHttp(
     return;
   }
 
+  // Ring doorbell — status (polled fast by the dashboard) and latest snapshot
+  if (req.method === 'GET' && path === '/doorbell-status') {
+    if (url.searchParams.get('token') !== config.dashboardToken) {
+      res.writeHead(401); res.end('Unauthorized'); return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(getDoorbellStatus()));
+    return;
+  }
+  if (req.method === 'GET' && path === '/doorbell.jpg') {
+    if (url.searchParams.get('token') !== config.dashboardToken) {
+      res.writeHead(401); res.end('Unauthorized'); return;
+    }
+    const snap = getDoorbellSnapshot();
+    if (!snap) { res.writeHead(404); res.end('No snapshot'); return; }
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
+    res.end(snap);
+    return;
+  }
+
   // Background photo(s) committed to the repo (assets/dashboard-bg[-N].*)
   if (req.method === 'GET' && (path === '/dashboard-bg' || path.startsWith('/dashboard-bg/'))) {
     const files = localBgFiles();
@@ -651,6 +672,9 @@ async function main(): Promise<void> {
 
   // Hydrate persisted state (e.g. whether the baby has arrived) before serving.
   await loadBabyArrival();
+
+  // Start listening for Ring doorbell presses (no-op if no token configured).
+  initRing().catch((err) => console.error('Ring init error:', err));
 
   initScheduler(sendToGroup);
 
