@@ -8,20 +8,47 @@ import { getSetting, setSetting } from './db';
 let latestDing: { at: number; camera: string } | null = null;
 let latestSnapshot: Buffer | null = null;
 let started = false;
+let ringCameras: any[] = [];
 
-export function getDoorbellStatus(): { active: boolean; at: string | null; agoSeconds: number | null; camera: string | null } {
-  if (!latestDing) return { active: false, at: null, agoSeconds: null, camera: null };
+export function getDoorbellStatus(): { active: boolean; at: string | null; agoSeconds: number | null; camera: string | null; hasImage: boolean } {
+  if (!latestDing) return { active: false, at: null, agoSeconds: null, camera: null, hasImage: false };
   const agoSeconds = Math.round((Date.now() - latestDing.at) / 1000);
   return {
-    active: agoSeconds <= 90 && latestSnapshot != null,
+    // Show the banner on any recent ding — even if the snapshot didn't come through.
+    active: agoSeconds <= 90,
     at: new Date(latestDing.at).toISOString(),
     agoSeconds,
     camera: latestDing.camera,
+    hasImage: latestSnapshot != null,
   };
 }
 
 export function getDoorbellSnapshot(): Buffer | null {
   return latestSnapshot;
+}
+
+/** Record a ding now and try to grab a snapshot — used by real presses and the test endpoint. */
+async function recordDing(cameraName: string, cam?: any): Promise<void> {
+  latestDing = { at: Date.now(), camera: cameraName };
+  const target = cam ?? ringCameras[0];
+  if (target) {
+    try {
+      latestSnapshot = await target.getSnapshot();
+      console.log('Ring: snapshot captured.');
+    } catch (err) {
+      console.error('Ring: snapshot failed:', err);
+    }
+  }
+}
+
+/** Manually trigger the doorbell overlay (for testing the dashboard side). */
+export async function triggerTestDing(): Promise<string> {
+  if (ringCameras.length === 0) {
+    latestDing = { at: Date.now(), camera: 'Test' };
+    return 'Test ding fired, but no Ring camera is connected (banner will show without a photo).';
+  }
+  await recordDing(`${ringCameras[0].name} (test)`, ringCameras[0]);
+  return `Test ding fired for "${ringCameras[0].name}"${latestSnapshot ? ' with a snapshot' : ' (snapshot failed)'}. Check the dashboard.`;
 }
 
 export async function initRing(): Promise<void> {
@@ -91,17 +118,24 @@ export async function initRing(): Promise<void> {
       console.log('Ring: connected but found no cameras.');
       return;
     }
+    ringCameras = cameras;
 
     for (const cam of cameras) {
+      // Primary: dedicated doorbell-press event.
       cam.onDoorbellPressed.subscribe(async () => {
         console.log(`Ring: doorbell pressed on "${cam.name}"`);
-        latestDing = { at: Date.now(), camera: cam.name };
-        try {
-          latestSnapshot = await cam.getSnapshot();
-        } catch (err) {
-          console.error('Ring: snapshot failed:', err);
-        }
+        await recordDing(cam.name, cam);
       });
+      // Fallback + diagnostics: log every push notification and treat a "ding" as a press.
+      if (cam.onNewNotification && cam.onNewNotification.subscribe) {
+        cam.onNewNotification.subscribe(async (notification: any) => {
+          const kind = notification?.subtype ?? notification?.ding?.subtype ?? notification?.action ?? 'unknown';
+          console.log(`Ring: notification on "${cam.name}" — kind: ${kind}`);
+          if (String(kind).toLowerCase().includes('ding')) {
+            await recordDing(cam.name, cam);
+          }
+        });
+      }
     }
 
     started = true;

@@ -627,7 +627,12 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
             if (s && s.active) {
               if (s.at !== shownAt) {
                 shownAt = s.at;
-                img.src = '/doorbell.jpg?token=' + encodeURIComponent(token) + '&t=' + encodeURIComponent(s.at);
+                if (s.hasImage) {
+                  img.style.display = '';
+                  img.src = '/doorbell.jpg?token=' + encodeURIComponent(token) + '&t=' + encodeURIComponent(s.at);
+                } else {
+                  img.style.display = 'none';
+                }
                 var d = new Date(s.at);
                 timeEl.textContent = (s.camera ? s.camera + ' · ' : '') +
                   d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });

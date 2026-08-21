@@ -6,7 +6,7 @@ import { generateResponse, ImageData, loadBabyArrival } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
 import { getDashboardData, renderDashboardPage, parseOptions, localBgFiles } from './dashboard';
-import { initRing, getDoorbellStatus, getDoorbellSnapshot } from './ring';
+import { initRing, getDoorbellStatus, getDoorbellSnapshot, triggerTestDing } from './ring';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { createReadStream } from 'fs';
 import { extname } from 'path';
@@ -617,6 +617,17 @@ async function handleHttp(
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('Dashboard temporarily unavailable.');
     }
+    return;
+  }
+
+  // Ring doorbell — manual test trigger to check the dashboard overlay works
+  if (req.method === 'GET' && path === '/doorbell-test') {
+    if (url.searchParams.get('token') !== config.dashboardToken) {
+      res.writeHead(401); res.end('Unauthorized'); return;
+    }
+    const msg = await triggerTestDing();
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end(msg);
     return;
   }
 
