@@ -71,12 +71,14 @@ async function recordDing(cameraName: string, cam?: any): Promise<void> {
       latestSnapshot = await target.getSnapshot();
       console.log('Ring: snapshot captured.');
       // Ask Claude to describe who's at the door (best-effort).
-      try {
-        const { describeDoorbellImage } = await import('./ai');
-        latestDingDescription = await describeDoorbellImage(latestSnapshot);
-        if (latestDingDescription) console.log(`Ring: door description — ${latestDingDescription}`);
-      } catch (err) {
-        console.error('Ring: description failed:', err);
+      if (latestSnapshot) {
+        try {
+          const { describeDoorbellImage } = await import('./ai');
+          latestDingDescription = await describeDoorbellImage(latestSnapshot);
+          if (latestDingDescription) console.log(`Ring: door description — ${latestDingDescription}`);
+        } catch (err) {
+          console.error('Ring: description failed:', err);
+        }
       }
     } catch (err) {
       console.error('Ring: snapshot failed:', err);
