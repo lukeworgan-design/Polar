@@ -62,20 +62,39 @@ async function recordMotion(cam: any): Promise<void> {
 }
 
 /** Record a ding now and try to grab a snapshot — used by real presses and the test endpoint. */
-async function recordDing(cameraName: string, cam?: any): Promise<void> {
+/** Pull any human-readable AI/text description Ring includes in a push notification. */
+function extractRingDescription(n: any): string | null {
+  if (!n) return null;
+  const candidates = [
+    n?.aps?.alert?.body,
+    n?.android_config?.body,
+    n?.description,
+    n?.ding?.description,
+    n?.data?.description,
+    n?.event?.description,
+    n?.body,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim() && !/is at your front door|motion detected/i.test(c)) return c.trim();
+  }
+  return null;
+}
+
+async function recordDing(cameraName: string, cam?: any, ringDescription?: string): Promise<void> {
   latestDing = { at: Date.now(), camera: cameraName };
-  latestDingDescription = null;
+  // Prefer Ring's own summary (it can name familiar faces); Claude vision is the fallback.
+  latestDingDescription = ringDescription && ringDescription.trim() ? ringDescription.trim() : null;
+  if (latestDingDescription) console.log(`Ring: using Ring's description — ${latestDingDescription}`);
   const target = cam ?? ringCameras[0];
   if (target) {
     try {
       latestSnapshot = await target.getSnapshot();
       console.log('Ring: snapshot captured.');
-      // Ask Claude to describe who's at the door (best-effort).
-      if (latestSnapshot) {
+      if (!latestDingDescription && latestSnapshot) {
         try {
           const { describeDoorbellImage } = await import('./ai');
           latestDingDescription = await describeDoorbellImage(latestSnapshot);
-          if (latestDingDescription) console.log(`Ring: door description — ${latestDingDescription}`);
+          if (latestDingDescription) console.log(`Ring: Claude description — ${latestDingDescription}`);
         } catch (err) {
           console.error('Ring: description failed:', err);
         }
@@ -184,9 +203,12 @@ export async function initRing(): Promise<void> {
       if (cam.onNewNotification && cam.onNewNotification.subscribe) {
         cam.onNewNotification.subscribe(async (notification: any) => {
           const kind = String(notification?.subtype ?? notification?.ding?.subtype ?? notification?.action ?? 'unknown').toLowerCase();
-          console.log(`Ring: notification on "${cam.name}" — kind: ${kind}`);
+          const ringDesc = extractRingDescription(notification);
+          console.log(`Ring: notification on "${cam.name}" — kind: ${kind}${ringDesc ? `, desc: ${ringDesc}` : ''}`);
+          // One-off structure dump to discover where Ring puts its AI text.
+          try { console.log('Ring: notification payload:', JSON.stringify(notification).slice(0, 600)); } catch { /* ignore */ }
           if (kind.includes('ding')) {
-            await recordDing(cam.name, cam);
+            await recordDing(cam.name, cam, ringDesc ?? undefined);
           } else if (kind.includes('motion')) {
             await recordMotion(cam);
           }
