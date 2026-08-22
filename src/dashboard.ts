@@ -552,7 +552,8 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.25); } }
   #doorbell img { max-width: 82vw; max-height: 74vh; border-radius: 18px; border: 3px solid rgba(255,255,255,.25);
     box-shadow: 0 20px 60px rgba(0,0,0,.6); }
-  #doorbell .db-time { font-size: 2.6vh; color: var(--muted); margin-top: 1.6vh; }
+  #doorbell .db-desc { font-size: 3vh; font-weight: 600; margin-top: 1.6vh; color: var(--text); }
+  #doorbell .db-time { font-size: 2.6vh; color: var(--muted); margin-top: .8vh; }
   /* Motion toast (small, corner) */
   #motion { position: fixed; right: 2vw; bottom: 9vh; z-index: 40; display: none;
     align-items: center; gap: 1vw; padding: 1.6vh 1.6vw; border-radius: 16px;
@@ -599,6 +600,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     <div class="db-card">
       <div class="db-title"><span class="pulse">🔔</span> Someone's at the door</div>
       <img id="db-img" alt="Doorbell snapshot">
+      <div class="db-desc" id="db-desc"></div>
       <div class="db-time" id="db-time"></div>
     </div>
   </div>
@@ -639,12 +641,13 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
       var token = new URLSearchParams(location.search).get('token') || '';
       var overlay = document.getElementById('doorbell');
       var img = document.getElementById('db-img');
+      var descEl = document.getElementById('db-desc');
       var timeEl = document.getElementById('db-time');
       var motionEl = document.getElementById('motion');
       var motionSub = document.getElementById('motion-sub');
       var motionImg = document.getElementById('motion-img');
-      var shownAt = null;
-      var motionShownAt = null;
+      var shownAt = null, dbImgSet = false;
+      var motionShownAt = null, motionImgSet = false;
       function fmt(iso) {
         var d = new Date(iso);
         return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
@@ -657,36 +660,37 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
             // Doorbell press → full-screen overlay (takes priority over motion)
             if (s.active) {
               if (s.at !== shownAt) {
-                shownAt = s.at;
-                if (s.hasImage) {
-                  img.style.display = '';
-                  img.src = '/doorbell.jpg?token=' + encodeURIComponent(token) + '&t=' + encodeURIComponent(s.at);
-                } else {
-                  img.style.display = 'none';
-                }
+                shownAt = s.at; dbImgSet = false;
+                img.style.display = 'none';
+                descEl.textContent = '';
                 timeEl.textContent = (s.camera ? s.camera + ' · ' : '') + fmt(s.at);
               }
+              // Attach the snapshot as soon as it's ready (arrives a moment after the ding).
+              if (s.hasImage && !dbImgSet) {
+                img.src = '/doorbell.jpg?token=' + encodeURIComponent(token) + '&t=' + encodeURIComponent(s.at);
+                img.style.display = ''; dbImgSet = true;
+              }
+              if (s.description) descEl.textContent = s.description;
               overlay.classList.add('show');
               motionEl.classList.remove('show');
             } else {
               overlay.classList.remove('show');
-              shownAt = null;
+              shownAt = null; dbImgSet = false;
               // Motion → small corner toast (only when no active press)
               if (s.motionActive) {
                 if (s.motionAt !== motionShownAt) {
-                  motionShownAt = s.motionAt;
+                  motionShownAt = s.motionAt; motionImgSet = false;
+                  motionImg.style.display = 'none';
                   motionSub.textContent = (s.motionCamera ? s.motionCamera + ' · ' : '') + fmt(s.motionAt);
-                  if (s.motionHasImage) {
-                    motionImg.style.display = '';
-                    motionImg.src = '/motion.jpg?token=' + encodeURIComponent(token) + '&t=' + encodeURIComponent(s.motionAt);
-                  } else {
-                    motionImg.style.display = 'none';
-                  }
+                }
+                if (s.motionHasImage && !motionImgSet) {
+                  motionImg.src = '/motion.jpg?token=' + encodeURIComponent(token) + '&t=' + encodeURIComponent(s.motionAt);
+                  motionImg.style.display = ''; motionImgSet = true;
                 }
                 motionEl.classList.add('show');
               } else {
                 motionEl.classList.remove('show');
-                motionShownAt = null;
+                motionShownAt = null; motionImgSet = false;
               }
             }
           })

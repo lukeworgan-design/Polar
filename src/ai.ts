@@ -2004,6 +2004,30 @@ DATE REFERENCE: ${dateReference}`;
   }
 }
 
+// ── Doorbell snapshot description (vision) ─────────────────────────────────────
+
+/** One short, factual line describing who/what is at the door in a JPEG snapshot. */
+export async function describeDoorbellImage(jpeg: Buffer): Promise<string> {
+  try {
+    const b64 = jpeg.toString('base64');
+    const resp = await createMessage({
+      model: config.anthropic.model,
+      max_tokens: 60,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } },
+          { type: 'text', text: "This is a snapshot from a front-door camera. In ONE short, factual sentence, say who or what is at the door — e.g. 'A delivery driver holding a parcel', 'A woman with a pushchair', 'Two children'. If no person is visible, say so briefly (e.g. 'No one at the door — just the driveway'). No preamble, no quotes." },
+        ],
+      }],
+    });
+    return resp.content.find((b): b is Anthropic.TextBlock => b.type === 'text')?.text?.trim() || '';
+  } catch (err) {
+    console.error('describeDoorbellImage failed:', err);
+    return '';
+  }
+}
+
 // ── Local events ticker (for the TV dashboard) ────────────────────────────────
 // Refreshed periodically by the scheduler (not per dashboard render) so we don't
 // hammer the search API. Held in memory; empty until the first refresh.

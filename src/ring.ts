@@ -7,6 +7,7 @@ import { getSetting, setSetting } from './db';
 
 let latestDing: { at: number; camera: string } | null = null;
 let latestSnapshot: Buffer | null = null;
+let latestDingDescription: string | null = null;
 let latestMotion: { at: number; camera: string } | null = null;
 let motionSnapshot: Buffer | null = null;
 let lastMotionSnapAt = 0;
@@ -18,7 +19,7 @@ const MOTION_WINDOW_S = 40;
 const MOTION_SNAP_THROTTLE_MS = 45_000; // don't grab a motion snapshot more than once per 45s
 
 export function getDoorbellStatus(): {
-  active: boolean; at: string | null; agoSeconds: number | null; camera: string | null; hasImage: boolean;
+  active: boolean; at: string | null; agoSeconds: number | null; camera: string | null; hasImage: boolean; description: string | null;
   motionActive: boolean; motionAt: string | null; motionCamera: string | null; motionHasImage: boolean;
 } {
   const dingAgo = latestDing ? Math.round((Date.now() - latestDing.at) / 1000) : null;
@@ -30,6 +31,7 @@ export function getDoorbellStatus(): {
     agoSeconds: dingAgo,
     camera: latestDing?.camera ?? null,
     hasImage: latestSnapshot != null,
+    description: latestDingDescription,
     // Motion: small corner toast, shorter window.
     motionActive: motionAgo != null && motionAgo <= MOTION_WINDOW_S,
     motionAt: latestMotion ? new Date(latestMotion.at).toISOString() : null,
@@ -62,11 +64,20 @@ async function recordMotion(cam: any): Promise<void> {
 /** Record a ding now and try to grab a snapshot — used by real presses and the test endpoint. */
 async function recordDing(cameraName: string, cam?: any): Promise<void> {
   latestDing = { at: Date.now(), camera: cameraName };
+  latestDingDescription = null;
   const target = cam ?? ringCameras[0];
   if (target) {
     try {
       latestSnapshot = await target.getSnapshot();
       console.log('Ring: snapshot captured.');
+      // Ask Claude to describe who's at the door (best-effort).
+      try {
+        const { describeDoorbellImage } = await import('./ai');
+        latestDingDescription = await describeDoorbellImage(latestSnapshot);
+        if (latestDingDescription) console.log(`Ring: door description — ${latestDingDescription}`);
+      } catch (err) {
+        console.error('Ring: description failed:', err);
+      }
     } catch (err) {
       console.error('Ring: snapshot failed:', err);
     }
