@@ -746,8 +746,15 @@ async function main(): Promise<void> {
     }
   }
 
-  process.once('SIGINT', () => { console.log('Shutting down...'); bot.stop('SIGINT'); });
-  process.once('SIGTERM', () => { console.log('Shutting down...'); bot.stop('SIGTERM'); });
+  const shutdown = (signal: string) => {
+    console.log('Shutting down...');
+    // In webhook mode we run our own server (no bot.launch()), so bot.stop()
+    // throws "Bot is not running!" — swallow it so shutdown stays clean.
+    try { bot.stop(signal); } catch { /* not running — fine */ }
+    process.exit(0);
+  };
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 main().catch((err) => {
