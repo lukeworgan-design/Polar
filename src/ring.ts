@@ -8,15 +8,18 @@ import { getSetting, setSetting } from './db';
 let latestDing: { at: number; camera: string } | null = null;
 let latestSnapshot: Buffer | null = null;
 let latestMotion: { at: number; camera: string } | null = null;
+let motionSnapshot: Buffer | null = null;
+let lastMotionSnapAt = 0;
 let started = false;
 let ringCameras: any[] = [];
 
 const DING_WINDOW_S = 90;
-const MOTION_WINDOW_S = 25;
+const MOTION_WINDOW_S = 40;
+const MOTION_SNAP_THROTTLE_MS = 45_000; // don't grab a motion snapshot more than once per 45s
 
 export function getDoorbellStatus(): {
   active: boolean; at: string | null; agoSeconds: number | null; camera: string | null; hasImage: boolean;
-  motionActive: boolean; motionAt: string | null; motionCamera: string | null;
+  motionActive: boolean; motionAt: string | null; motionCamera: string | null; motionHasImage: boolean;
 } {
   const dingAgo = latestDing ? Math.round((Date.now() - latestDing.at) / 1000) : null;
   const motionAgo = latestMotion ? Math.round((Date.now() - latestMotion.at) / 1000) : null;
@@ -31,11 +34,29 @@ export function getDoorbellStatus(): {
     motionActive: motionAgo != null && motionAgo <= MOTION_WINDOW_S,
     motionAt: latestMotion ? new Date(latestMotion.at).toISOString() : null,
     motionCamera: latestMotion?.camera ?? null,
+    motionHasImage: motionSnapshot != null,
   };
 }
 
 export function getDoorbellSnapshot(): Buffer | null {
   return latestSnapshot;
+}
+
+export function getMotionSnapshot(): Buffer | null {
+  return motionSnapshot;
+}
+
+/** Record motion; grab a small snapshot but throttled to avoid Ring rate limits. */
+async function recordMotion(cam: any): Promise<void> {
+  latestMotion = { at: Date.now(), camera: cam.name };
+  if (Date.now() - lastMotionSnapAt > MOTION_SNAP_THROTTLE_MS) {
+    lastMotionSnapAt = Date.now();
+    try {
+      motionSnapshot = await cam.getSnapshot();
+    } catch (err) {
+      console.error('Ring: motion snapshot failed:', err);
+    }
+  }
 }
 
 /** Record a ding now and try to grab a snapshot — used by real presses and the test endpoint. */
@@ -137,12 +158,12 @@ export async function initRing(): Promise<void> {
         console.log(`Ring: doorbell pressed on "${cam.name}"`);
         await recordDing(cam.name, cam);
       });
-      // Motion — lightweight (no snapshot fetch, to avoid Ring's rate limits).
+      // Motion — grabs a throttled snapshot so the toast can show a small thumbnail.
       if (cam.onMotionDetected && cam.onMotionDetected.subscribe) {
-        cam.onMotionDetected.subscribe((motion: any) => {
+        cam.onMotionDetected.subscribe(async (motion: any) => {
           if (motion) {
-            latestMotion = { at: Date.now(), camera: cam.name };
             console.log(`Ring: motion detected on "${cam.name}"`);
+            await recordMotion(cam);
           }
         });
       }
@@ -154,7 +175,7 @@ export async function initRing(): Promise<void> {
           if (kind.includes('ding')) {
             await recordDing(cam.name, cam);
           } else if (kind.includes('motion')) {
-            latestMotion = { at: Date.now(), camera: cam.name };
+            await recordMotion(cam);
           }
         });
       }

@@ -2046,10 +2046,31 @@ DATE REFERENCE: ${dateReference}`;
 // Refreshed periodically by the scheduler (not per dashboard render) so we don't
 // hammer the search API. Held in memory; empty until the first refresh.
 
-let localEventsTicker: string[] = [];
+interface TickerItem { text: string; date: string } // date = YYYY-MM-DD
+let tickerItems: TickerItem[] = [];
 
+/** Returns upcoming ticker lines (future-dated, soonest first). */
 export function getLocalEventsTicker(): string[] {
-  return localEventsTicker;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone }).format(new Date());
+  return tickerItems
+    .filter((i) => i.date >= today)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((i) => i.text);
+}
+
+/** Parse "Sun 24 Aug — …" into a YYYY-MM-DD date (assuming the near future). */
+function parseTickerDate(text: string, now: Date): string | null {
+  const m = text.match(/(\d{1,2})\s+([A-Za-z]{3,})/);
+  if (!m) return null;
+  const day = parseInt(m[1]!, 10);
+  const monIdx = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    .indexOf(m[2]!.slice(0, 3).toLowerCase());
+  if (monIdx < 0 || day < 1 || day > 31) return null;
+  const todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  let d = Date.UTC(now.getFullYear(), monIdx, day);
+  // If it lands well in the past, it's next year's date (year-boundary safety).
+  if (d < todayUTC - 30 * 86400000) d = Date.UTC(now.getFullYear() + 1, monIdx, day);
+  return new Date(d).toISOString().slice(0, 10);
 }
 
 export async function refreshLocalEventsTicker(): Promise<void> {
@@ -2124,17 +2145,27 @@ ${pageContext ? `EVENT PAGE CONTENT:\n${pageContext}` : ''}`;
       messages: [{ role: 'user', content: prompt }],
     });
     const text = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text')?.text || '';
-    const items = text
+    const freshLines = text
       .split('\n')
       .map((l) => l.replace(/^[-•*\d.\s]+/, '').trim())
       .filter((l) => l.length > 4 && l.includes('—'))
       .slice(0, 12);
-    if (items.length) {
-      localEventsTicker = items;
-      console.log(`Local events ticker refreshed: ${items.length} dated items`);
-    } else {
-      console.log('Local events ticker: no dated events found this refresh');
+
+    // Merge with what we already have so a thin search doesn't empty the ticker.
+    // Dedupe by normalised text; drop past-dated items; keep the soonest ~20.
+    const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone }).format(new Date());
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+    const merged = new Map<string, TickerItem>();
+    for (const item of tickerItems) merged.set(norm(item.text), item);
+    for (const line of freshLines) {
+      const date = parseTickerDate(line, now);
+      if (date) merged.set(norm(line), { text: line, date });
     }
+    tickerItems = [...merged.values()]
+      .filter((i) => i.date >= todayStr)
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(0, 20);
+    console.log(`Local events ticker: +${freshLines.length} found, ${tickerItems.length} upcoming after merge.`);
   } catch (err) {
     console.error('refreshLocalEventsTicker failed:', err);
   }

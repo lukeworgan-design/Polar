@@ -559,9 +559,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     background: rgba(20,28,50,.9); border: 1px solid var(--stroke); backdrop-filter: blur(10px);
     box-shadow: 0 12px 40px rgba(0,0,0,.5); }
   #motion.show { display: flex; animation: dbin .3s ease-out; }
-  #motion .m-ic { font-size: 3.4vh; }
+  #motion img { width: 16vw; max-height: 12vh; object-fit: cover; border-radius: 10px; display: none; }
   #motion .m-txt { font-size: 2.4vh; font-weight: 700; }
-  #motion .m-sub { font-size: 1.9vh; color: var(--muted); font-weight: 500; }
+  #motion .m-sub { font-size: 1.9vh; color: var(--muted); font-weight: 500; margin-top: .4vh; }
 </style>
 </head>
 <body class="${hasTicker ? 'has-ticker' : ''}"${d.night ? ' data-night="1"' : ''}>
@@ -604,9 +604,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   </div>
 
   <div id="motion">
-    <span class="m-ic">👀</span>
+    <img id="motion-img" alt="">
     <div>
-      <div class="m-txt">Movement outside</div>
+      <div class="m-txt">👀 Movement outside</div>
       <div class="m-sub" id="motion-sub"></div>
     </div>
   </div>
@@ -642,7 +642,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
       var timeEl = document.getElementById('db-time');
       var motionEl = document.getElementById('motion');
       var motionSub = document.getElementById('motion-sub');
+      var motionImg = document.getElementById('motion-img');
       var shownAt = null;
+      var motionShownAt = null;
       function fmt(iso) {
         var d = new Date(iso);
         return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
@@ -671,10 +673,20 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
               shownAt = null;
               // Motion → small corner toast (only when no active press)
               if (s.motionActive) {
-                motionSub.textContent = (s.motionCamera ? s.motionCamera + ' · ' : '') + fmt(s.motionAt);
+                if (s.motionAt !== motionShownAt) {
+                  motionShownAt = s.motionAt;
+                  motionSub.textContent = (s.motionCamera ? s.motionCamera + ' · ' : '') + fmt(s.motionAt);
+                  if (s.motionHasImage) {
+                    motionImg.style.display = '';
+                    motionImg.src = '/motion.jpg?token=' + encodeURIComponent(token) + '&t=' + encodeURIComponent(s.motionAt);
+                  } else {
+                    motionImg.style.display = 'none';
+                  }
+                }
                 motionEl.classList.add('show');
               } else {
                 motionEl.classList.remove('show');
+                motionShownAt = null;
               }
             }
           })

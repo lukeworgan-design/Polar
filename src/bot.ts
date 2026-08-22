@@ -6,7 +6,7 @@ import { generateResponse, ImageData, loadBabyArrival } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
 import { getDashboardData, renderDashboardPage, parseOptions, localBgFiles } from './dashboard';
-import { initRing, getDoorbellStatus, getDoorbellSnapshot, triggerTestDing } from './ring';
+import { initRing, getDoorbellStatus, getDoorbellSnapshot, getMotionSnapshot, triggerTestDing } from './ring';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { createReadStream } from 'fs';
 import { extname } from 'path';
@@ -645,6 +645,16 @@ async function handleHttp(
       res.writeHead(401); res.end('Unauthorized'); return;
     }
     const snap = getDoorbellSnapshot();
+    if (!snap) { res.writeHead(404); res.end('No snapshot'); return; }
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
+    res.end(snap);
+    return;
+  }
+  if (req.method === 'GET' && path === '/motion.jpg') {
+    if (url.searchParams.get('token') !== config.dashboardToken) {
+      res.writeHead(401); res.end('Unauthorized'); return;
+    }
+    const snap = getMotionSnapshot();
     if (!snap) { res.writeHead(404); res.end('No snapshot'); return; }
     res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
     res.end(snap);
