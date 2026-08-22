@@ -1590,32 +1590,24 @@ Write it conversationally — not just "Reminder: X". Reference school run conte
 }
 
 export async function generateFridayCheckin(): Promise<string> {
-  const { braveSearch, formatSearchResults } = await import('./search');
-
   const now = getLocalNow(config.timezone);
   const todayStr = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone });
-  const monthYear = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: config.timezone });
+  const todayISO = localIso(now);
 
   const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
   const tomorrowStr = tomorrow.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone });
+  const tomorrowISO = localIso(tomorrow);
   const tomorrowStart = new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 0, 0, 0);
   const tomorrowEnd = new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 23, 59, 59);
 
-  const [todayEvents, saturdayEvents, weatherDays, results1, results2] = await Promise.all([
+  await refreshLocalEventsTicker().catch(() => {});
+  const [todayEvents, saturdayEvents, weatherDays] = await Promise.all([
     getTodaysEvents(),
     getEventsForPeriod(tomorrowStart, tomorrowEnd),
     getWeatherForecast(2),
-    braveSearch(`things to do ${config.location} this Friday evening ${todayStr}`, 5),
-    braveSearch(`events ${config.location} this weekend ${monthYear}`, 5),
   ]);
-
-  const seen = new Set<string>();
-  const allResults = [...results1, ...results2].filter(r => {
-    if (seen.has(r.url)) return false;
-    seen.add(r.url);
-    return true;
-  });
-  const searchContext = allResults.length > 0 ? formatSearchResults(allResults) : 'No local event results found.';
+  const localEvents = getUpcomingLocalEvents(todayISO, tomorrowISO);
+  const eventsText = localEvents.length > 0 ? localEvents.map(e => `- ${e}`).join('\n') : 'None found for today/tomorrow.';
 
   const todayWeather = weatherDays.length > 0 ? formatDayWeather(weatherDays[0]) : '';
   const satWeather = weatherDays.length > 1 ? formatDayWeather(weatherDays[1]) : '';
@@ -1631,8 +1623,8 @@ ${formatEventsForAI(todayEvents) || 'Nothing in the calendar this afternoon'}
 Saturday calendar:
 ${formatEventsForAI(saturdayEvents) || 'Nothing in the calendar'}
 
-Local events from web search:
-${searchContext}
+Confirmed, dated local events (Fri/Sat) — use ONLY these, never invent or add permanent attractions:
+${eventsText}
 
 Weekend weather:
 ${todayWeather ? `Friday: ${todayWeather}` : ''}
@@ -1640,7 +1632,7 @@ ${satWeather ? `Saturday: ${satWeather}` : ''}
 
 RULES:
 - Open with energy — "School's out!" or similar
-- Pick 2–3 specific local events from the search results if they have real specifics (name, time, venue). If nothing specific, skip and say so briefly.
+- Mention 2–3 of the dated local events above (name, time, venue). If there are none, just say it's a quiet one — don't pad.
 - Mention Saturday calendar events if there are any
 - Weave in weather naturally
 - Short and punchy — WhatsApp energy, not a newsletter`;
@@ -1657,31 +1649,22 @@ RULES:
 }
 
 export async function generateWeekendCheckin(day: 'saturday' | 'sunday'): Promise<string> {
-  const { braveSearch, formatSearchResults } = await import('./search');
-
   const now = getLocalNow(config.timezone);
   const dateStr = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone });
-  const monthYear = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: config.timezone });
-  const dayName = day === 'saturday' ? 'Saturday' : 'Sunday';
+  // Saturday: cover today + tomorrow (Sun). Sunday: just today.
+  const todayISO = localIso(now);
+  const toISO = day === 'saturday' ? localIso(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)) : todayISO;
 
-  const [todos, todayEvents, weatherDays, results1, results2] = await Promise.all([
+  await refreshLocalEventsTicker().catch(() => {});
+  const [todos, todayEvents, weatherDays] = await Promise.all([
     getTodos(),
     getTodaysEvents(),
     getWeatherForecast(day === 'saturday' ? 2 : 1),
-    braveSearch(`events ${config.location} ${dayName} ${dateStr}`, 5),
-    braveSearch(`what's on ${config.location} ${monthYear}`, 4),
   ]);
-
-  // Deduplicate by URL
-  const seen = new Set<string>();
-  const eventResults = [...results1, ...results2].filter(r => {
-    if (seen.has(r.url)) return false;
-    seen.add(r.url);
-    return true;
-  });
-  const searchContext = eventResults.length > 0
-    ? formatSearchResults(eventResults)
-    : 'No local event results found.';
+  const localEvents = getUpcomingLocalEvents(todayISO, toISO);
+  const searchContext = localEvents.length > 0
+    ? localEvents.map(e => `- ${e}`).join('\n')
+    : 'No dated local events found for this window.';
 
   const todoText = todos.length > 0
     ? todos.map((t) => `- ${t.task}${t.due_date ? ` (due: ${t.due_date})` : ''}`).join('\n')
@@ -1701,7 +1684,7 @@ Today's calendar:
 ${formatEventsForAI(todayEvents)}
 ${weatherNote}
 
-Local events search results for today (${dateStr}):
+Confirmed, dated local events (already researched — use ONLY these, never invent or add attractions):
 ${searchContext}
 
 RULES FOR THIS MESSAGE:
@@ -1719,7 +1702,7 @@ Today's calendar:
 ${formatEventsForAI(todayEvents)}
 ${weatherNote}
 
-Local events search results for today (${dateStr}):
+Confirmed, dated local events (already researched — use ONLY these, never invent or add attractions):
 ${searchContext}
 
 RULES FOR THIS MESSAGE:
@@ -1808,56 +1791,35 @@ Write a friendly, practical message suggesting 3–5 specific activities or plac
 }
 
 export async function generateWeekendEvents(): Promise<string> {
-  const { braveSearch, formatSearchResults } = await import('./search');
-
   const now = getLocalNow(config.timezone);
   const dayOfWeek = now.getDay();
-  const sat = new Date(now);
-  sat.setDate(now.getDate() + (6 - dayOfWeek));
+  const sat = new Date(now.getFullYear(), now.getMonth(), now.getDate() + (6 - dayOfWeek));
+  const sun = new Date(sat.getFullYear(), sat.getMonth(), sat.getDate() + 1);
+  const satISO = localIso(sat);
+  const sunISO = localIso(sun);
   const satStr = sat.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: config.timezone });
 
-  const query1 = `events ${config.location} weekend ${satStr}`;
-  const query2 = `what's on ${config.location} this weekend family`;
-  const [results1, results2, weatherDays] = await Promise.all([
-    braveSearch(query1, 5),
-    braveSearch(query2, 4),
-    getWeatherForecast(7),
-  ]);
+  // Refresh the curated, dated events list, then pull just this weekend's.
+  await refreshLocalEventsTicker().catch(() => {});
+  const events = getUpcomingLocalEvents(satISO, sunISO);
+  if (events.length === 0) return ''; // genuinely nothing dated on — stay quiet
 
-  // Deduplicate by URL
-  const seenUrls = new Set<string>();
-  const results = [...results1, ...results2].filter(r => {
-    if (seenUrls.has(r.url)) return false;
-    seenUrls.add(r.url);
-    return true;
-  });
-  const searchContext = formatSearchResults(results);
-
-  if (results.length === 0) return '';
-
-  // Find Saturday and Sunday in the forecast
-  const satDate = sat.toISOString().slice(0, 10);
-  const sunDate = new Date(sat.getTime() + 86400000).toISOString().slice(0, 10);
-  const satWeather = weatherDays.find(d => d.date === satDate);
-  const sunWeather = weatherDays.find(d => d.date === sunDate);
+  const weatherDays = await getWeatherForecast(7);
+  const satWeather = weatherDays.find(d => d.date === satISO);
+  const sunWeather = weatherDays.find(d => d.date === sunISO);
   const weatherSection = [
     satWeather ? `Saturday: ${formatDayWeather(satWeather)}` : '',
     sunWeather ? `Sunday: ${formatDayWeather(sunWeather)}` : '',
   ].filter(Boolean).join('\n');
 
-  const prompt = `It's Wednesday. You're letting Luke and Toni know what's actually happening this coming weekend (${satStr}) in ${config.location}.
+  const prompt = `It's Wednesday. Let Luke and Toni know what's actually on this coming weekend (${satStr}) in ${config.location}.
 
-Search results for local events:
+These are the confirmed, specifically-dated local family events (already researched and verified). Use ONLY these — do NOT invent anything, add permanent attractions, or pad with generic days out:
+${events.map(e => `- ${e}`).join('\n')}
 
-${searchContext}
+${weatherSection ? `Weekend weather:\n${weatherSection}\n\nFactor the weather in — dry days favour the outdoor ones; if it's wet, lead with indoor or flag they'll need to wrap up.` : ''}
 
-${weatherSection ? `Weekend weather forecast:\n${weatherSection}\n\nFactor the weather into your suggestions — if Saturday's dry, outdoor events first; if it's wet, lead with indoor ones or flag that they'll need to wrap up.` : ''}
-
-RULES:
-- Only mention events that appear in the search results with a specific name, date/time, or venue. Do NOT invent, generalise, or suggest permanent attractions (museums, parks, etc.) unless a specific event is happening there this weekend with actual details.
-- If the results are thin or vague, be honest: "Not loads on this weekend — might be a quiet one" is better than padding with generic days out.
-- Aim for 2–4 specific things. Sound like a PA who's actually done the research, not a search engine summary.
-- Keep it short and warm.`;
+Write a short, warm weekend round-up — group by day if it helps, mention times/venues, sound like a PA who's done the research. WhatsApp-length, not a newsletter.`;
 
   const response = await createMessage({
     model: config.anthropic.model,
@@ -2056,6 +2018,19 @@ export function getLocalEventsTicker(): string[] {
     .filter((i) => i.date >= today)
     .sort((a, b) => a.date.localeCompare(b.date))
     .map((i) => i.text);
+}
+
+/** Curated, dated local events whose date falls in [fromISO, toISO] (inclusive). */
+export function getUpcomingLocalEvents(fromISO: string, toISO: string): string[] {
+  return tickerItems
+    .filter((i) => i.date >= fromISO && i.date <= toISO)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((i) => i.text);
+}
+
+/** YYYY-MM-DD from a getLocalNow()-style date (components are already local). */
+function localIso(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 /** Parse "Sun 24 Aug — …" into a YYYY-MM-DD date (assuming the near future). */
