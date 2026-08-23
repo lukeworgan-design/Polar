@@ -83,6 +83,7 @@ interface DashboardData {
   bin: { label: string; colorHex: string } | null;
   schoolRun: string | null;
   countdowns: Countdown[];
+  dailyFun: { header: string; text: string };
   baby: { name: string; ageText: string; fact: string | null } | null;
   shopping: string[];
   ticker: string[];
@@ -186,6 +187,32 @@ function babyFactFor(ageDays: number, dayIndex: number): string | null {
   const recent = eligible.slice(-6);
   return recent[dayIndex % recent.length]!.text;
 }
+
+// A daily rotating giggle / fun fact for the family (kid-friendly).
+const DAILY_FUN: Array<{ header: string; text: string }> = [
+  { header: '😄 Joke of the day', text: 'Why did the scarecrow win an award? Because he was outstanding in his field!' },
+  { header: '😄 Joke of the day', text: 'What do you call a fish with no eyes? A fsh!' },
+  { header: '😄 Joke of the day', text: 'Why did the bicycle fall over? Because it was two-tired!' },
+  { header: '😄 Joke of the day', text: 'What do you call a bear with no teeth? A gummy bear!' },
+  { header: '😄 Joke of the day', text: 'Why can\'t you give Elsa a balloon? Because she\'ll let it go!' },
+  { header: '😄 Joke of the day', text: 'What do you call cheese that isn\'t yours? Nacho cheese!' },
+  { header: '😄 Joke of the day', text: 'Why did the banana go to the doctor? It wasn\'t peeling well!' },
+  { header: '😄 Joke of the day', text: 'What\'s orange and sounds like a parrot? A carrot!' },
+  { header: '😄 Joke of the day', text: 'Why do bees have sticky hair? Because they use honeycombs!' },
+  { header: '😄 Joke of the day', text: 'What did one wall say to the other? "Meet you at the corner!"' },
+  { header: '😄 Joke of the day', text: 'How does the ocean say hello? It waves!' },
+  { header: '😄 Joke of the day', text: 'Why was the maths book sad? It had too many problems!' },
+  { header: '💡 Did you know?', text: 'A group of flamingos is called a "flamboyance".' },
+  { header: '💡 Did you know?', text: 'Octopuses have three hearts and blue blood.' },
+  { header: '💡 Did you know?', text: 'Honey never goes off — jars found in ancient tombs are still edible!' },
+  { header: '💡 Did you know?', text: 'A day on Venus is longer than a year on Venus.' },
+  { header: '💡 Did you know?', text: 'Bananas are berries, but strawberries aren\'t!' },
+  { header: '💡 Did you know?', text: 'Cows have best friends and get stressed when they\'re apart.' },
+  { header: '💡 Did you know?', text: 'The Eiffel Tower can grow over 15cm taller in summer as the metal expands.' },
+  { header: '💡 Did you know?', text: 'A newborn baby\'s stomach is only about the size of a cherry on day one.' },
+  { header: '💡 Did you know?', text: 'Sea otters hold hands while sleeping so they don\'t drift apart.' },
+  { header: '💡 Did you know?', text: 'Wombat poo is cube-shaped!' },
+];
 
 function sinceText(iso: string): string {
   const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
@@ -295,17 +322,39 @@ export async function getDashboardData(): Promise<DashboardData> {
     schoolRun = SCHOOL_RUN[weekday]!;
   }
 
-  // Countdowns: upcoming birthdays in the next 30 days
-  let countdowns: Countdown[] = [];
+  // Countdowns: birthdays + Evie milestones + back-to-school, soonest first.
+  const raw: Array<{ name: string; days: number; emoji: string }> = [];
   try {
-    const bdays = await getUpcomingBirthdays(30);
-    countdowns = bdays.slice(0, 4).map((b) => ({
-      name: `${b.name}${b.relation ? ` (${b.relation})` : ''}`,
-      detail: b.days_until === 0 ? 'Today! 🎂' : b.days_until === 1 ? 'Tomorrow 🎂' : `in ${b.days_until} days`,
-    }));
+    const bdays = await getUpcomingBirthdays(45);
+    for (const b of bdays) raw.push({ name: `${b.name}${b.relation ? ` (${b.relation})` : ''}`, days: b.days_until, emoji: '🎂' });
   } catch (err) {
     console.error('Dashboard: birthdays fetch failed:', err);
   }
+  // Evie's next developmental milestone
+  const dobC = config.family.babyBorn;
+  if (dobC) {
+    const ageDays = Math.max(0, Math.floor((Date.now() - new Date(`${dobC}T12:00:00`).getTime()) / 86400000));
+    const milestones = [
+      { d: 30, label: '1 month old' }, { d: 42, label: '6 weeks — first smiles!' },
+      { d: 84, label: '3 months old' }, { d: 182, label: '6 months old' }, { d: 365, label: '1st birthday' },
+    ];
+    const next = milestones.find((m) => m.d > ageDays);
+    if (next) raw.push({ name: `${config.family.babyName || 'Baby'} — ${next.label}`, days: next.d - ageDays, emoji: '👶' });
+  }
+  // Back to school (end date of the holiday we're currently in)
+  const inHol = config.family.schoolHolidays.find((h) => todayStr >= h.start && todayStr < h.end);
+  if (inHol) {
+    const days = Math.round((new Date(inHol.end + 'T12:00:00Z').getTime() - new Date(todayStr + 'T12:00:00Z').getTime()) / 86400000);
+    if (days > 0) raw.push({ name: 'Back to school', days, emoji: '🎒' });
+  }
+  const countdowns: Countdown[] = raw
+    .filter((c) => c.days >= 0)
+    .sort((a, b) => a.days - b.days)
+    .slice(0, 5)
+    .map((c) => ({
+      name: `${c.emoji} ${c.name}`,
+      detail: c.days === 0 ? 'Today!' : c.days === 1 ? 'Tomorrow' : `${c.days} days`,
+    }));
 
   let baby: DashboardData['baby'] = null;
   const dob = config.family.babyBorn;
@@ -326,8 +375,11 @@ export async function getDashboardData(): Promise<DashboardData> {
     console.error('Dashboard: shopping fetch failed:', err);
   }
 
+  const dayIndex = Math.floor(Date.now() / 86400000);
+  const dailyFun = DAILY_FUN[dayIndex % DAILY_FUN.length]!;
+
   return {
-    headerDate, today, upcoming, weather, meals, bin, schoolRun, countdowns, baby, shopping,
+    headerDate, today, upcoming, weather, meals, bin, schoolRun, countdowns, dailyFun, baby, shopping,
     ticker: getLocalEventsTicker(),
     night,
     generatedAt: fmtTime(now.toISOString()),
@@ -409,7 +461,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     : '';
 
   const countdownCard = d.countdowns.length
-    ? `<div class="card"><h2>Coming birthdays</h2><ul class="mini">${
+    ? `<div class="card"><h2>Countdowns</h2><ul class="mini">${
         d.countdowns.map((c) => `<li><span>${esc(c.name)}</span><span class="cd">${esc(c.detail)}</span></li>`).join('')
       }</ul></div>`
     : '';
@@ -422,7 +474,12 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     babyCard = `<div class="card"><h2>${esc(d.baby.name)}</h2><p class="big">👶 ${esc(d.baby.ageText)}</p>${details}</div>`;
   }
 
-  const sideCards = [weatherCard, mealsCard, schoolRunCard, binCard, countdownCard, babyCard]
+  const funCard = `<div class="card fun-card">
+      <h2>${esc(d.dailyFun.header)}</h2>
+      <p class="fun-text">${esc(d.dailyFun.text)}</p>
+    </div>`;
+
+  const sideCards = [weatherCard, mealsCard, schoolRunCard, binCard, countdownCard, babyCard, funCard]
     .filter(Boolean).join('\n');
 
   const bgs = opts.photo ? backgroundUrls() : [];
@@ -528,8 +585,12 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .empty { color: var(--muted); font-size: 2.8vh; padding: 1vh 0; }
   .side { overflow: hidden; }
   .mini { list-style: none; display: flex; flex-direction: column; gap: 1vh; }
-  .mini li { display: flex; justify-content: space-between; font-size: 2.5vh; font-weight: 600; }
-  .mini .cd { color: var(--accent2); }
+  .mini li { display: flex; justify-content: space-between; gap: 1.5vw; font-size: 2.5vh; font-weight: 600; }
+  .mini li > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mini .cd { color: var(--accent2); flex: 0 0 auto; }
+  /* Daily fun card — grows to fill any leftover space in the column (auto-fill) */
+  .fun-card { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; }
+  .fun-text { font-size: 3vh; font-weight: 600; line-height: 1.3; margin-top: 1vh; }
   .meals { list-style: none; display: flex; flex-direction: column; gap: .9vh; margin-top: 1.2vh; }
   .meals li { display: flex; gap: 1.2vw; font-size: 2.4vh; align-items: baseline; }
   .meals .d { flex: 0 0 auto; min-width: 9vw; color: var(--accent2); font-weight: 700; }
