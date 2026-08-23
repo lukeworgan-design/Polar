@@ -226,6 +226,9 @@ export async function getDashboardData(): Promise<DashboardData> {
   const todayStr = tzDateStr(now);
   const hour = tzHour(now);
   const night = hour >= 20 || hour < 6;
+  // Day of week in the family timezone (0=Sun … 5=Fri … 6=Sat).
+  const dayOfWeek = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+    .indexOf(new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: config.timezone }).format(now).slice(0, 3).toLowerCase());
 
   let today: DashEvent[] = [];
   let upcoming: DashEvent[] = [];
@@ -272,14 +275,17 @@ export async function getDashboardData(): Promise<DashboardData> {
     console.error('Dashboard: meal fetch failed:', err);
   }
 
+  // Bins collect on Friday — only show the card in the run-up (Wed/Thu/Fri).
   let bin: { label: string; colorHex: string } | null = null;
-  try {
-    const type = getFridayBinType();
-    bin = type === 'general'
-      ? { label: 'Green — general waste', colorHex: '#2ec26a' }
-      : { label: 'Blue — recycling', colorHex: '#3aa0ff' };
-  } catch (err) {
-    console.error('Dashboard: bin calc failed:', err);
+  if (dayOfWeek >= 3 && dayOfWeek <= 5) {
+    try {
+      const type = getFridayBinType();
+      bin = type === 'general'
+        ? { label: 'Green — general waste', colorHex: '#2ec26a' }
+        : { label: 'Blue — recycling', colorHex: '#3aa0ff' };
+    } catch (err) {
+      console.error('Dashboard: bin calc failed:', err);
+    }
   }
 
   // School run today (weekday and not a holiday)
