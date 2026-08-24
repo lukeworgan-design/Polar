@@ -119,11 +119,33 @@ export async function getEventsForPeriod(startDate: Date, endDate: Date): Promis
   return (res.data.items || []).map(eventToCalendarEvent);
 }
 
+/** YYYY-MM-DD for a given instant in the family timezone (en-CA gives ISO order). */
+function tzDateStr(d: Date): string {
+  return d.toLocaleDateString('en-CA', { timeZone: config.timezone });
+}
+
 export async function getTodaysEvents(): Promise<CalendarEvent[]> {
+  // "Today" must be reckoned in the family timezone, not the server's UTC clock.
+  // Otherwise an all-day event on the 25th (BST) — which Google stores as starting
+  // 23:00 UTC on the 24th — leaks into the 24th's UTC window and shows a day early.
   const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
-  return getEventsForPeriod(startOfDay, endOfDay);
+  const todayStr = tzDateStr(now);
+
+  // Query a generous window either side so BST/UTC boundary shifts can't clip the
+  // real day, then filter precisely by the family-timezone date.
+  const windowStart = new Date(now.getTime() - 36 * 60 * 60 * 1000);
+  const windowEnd = new Date(now.getTime() + 36 * 60 * 60 * 1000);
+  const events = await getEventsForPeriod(windowStart, windowEnd);
+
+  return events.filter((e) => {
+    const isAllDay = e.start.length === 10; // YYYY-MM-DD (no time component)
+    if (isAllDay) {
+      // All-day end date is exclusive in Google's model.
+      return todayStr >= e.start && todayStr < e.end;
+    }
+    // Timed event: does its start land on today in the family timezone?
+    return tzDateStr(new Date(e.start)) === todayStr;
+  });
 }
 
 export async function getWeeksEvents(weeksAhead: number = 0): Promise<CalendarEvent[]> {
