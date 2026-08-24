@@ -78,6 +78,17 @@ export async function completeTodo(task: string): Promise<boolean> {
   return true;
 }
 
+export async function clearTodos(): Promise<number> {
+  const { data, error } = await db.from('todo_list').select('id').eq('completed', false);
+  if (error) throw new Error(`DB clearTodos failed: ${error.message}`);
+  if (!data || data.length === 0) return 0;
+  const { error: updError } = await db.from('todo_list')
+    .update({ completed: true, completed_at: new Date().toISOString() })
+    .in('id', data.map((r) => r.id));
+  if (updError) throw new Error(`DB clearTodos update failed: ${updError.message}`);
+  return data.length;
+}
+
 // ── Reminders ────────────────────────────────────────────────────────────────
 
 export async function addReminder(userName: string, message: string, remindAt: Date): Promise<void> {

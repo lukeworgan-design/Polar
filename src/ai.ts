@@ -10,6 +10,7 @@ import {
   getTodos,
   addTodo,
   completeTodo,
+  clearTodos,
   addReminder,
   getBirthdays,
   addBirthday,
@@ -467,6 +468,11 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'clear_todo_list',
+    description: "Clear the entire to-do list (mark all items as done). Use when asked to clear/empty the to-do list or start fresh.",
+    input_schema: { type: 'object' as const, properties: {}, required: [] },
+  },
+  {
     name: 'add_reminder',
     description: "Set a personal reminder for a specific person at a specific time",
     input_schema: {
@@ -897,6 +903,15 @@ async function executeTool(
           : `Couldn't find "${toolInput['task']}" in the to-do list.`;
       }
 
+      case 'clear_todo_list': {
+        const count = await clearTodos();
+        const remaining = await getTodos();
+        if (remaining.length > 0) {
+          return `⚠️ Tried to clear the to-do list but ${remaining.length} item(s) remain. Tell the user it did NOT clear — do not claim success.`;
+        }
+        return count > 0 ? `Cleared ${count} item(s) from the to-do list. It is now empty.` : 'The to-do list was already empty.';
+      }
+
       case 'add_reminder': {
         const remindDate = parseInTimezone(toolInput['remind_at'] as string, config.timezone);
         await addReminder(
@@ -1257,6 +1272,22 @@ export async function generateResponse(
     calendarGroundTruth = `[CALENDAR GROUND TRUTH — unavailable due to error: ${err instanceof Error ? err.message : String(err)}. Use your calendar tools to fetch live data instead.]`;
   }
 
+  // Pre-fetch the live shopping and to-do lists too, so Rose reports/clears the
+  // REAL lists rather than what she thinks they are from the conversation.
+  let listsGroundTruth: string;
+  try {
+    const [shopping, todos] = await Promise.all([getShoppingList(), getTodos()]);
+    listsGroundTruth = [
+      `[LISTS GROUND TRUTH — fetched right now, authoritative]:`,
+      `Shopping list (${shopping.length}): ${shopping.length === 0 ? 'empty' : shopping.map((i) => i.item).join(', ')}`,
+      `To-do list (${todos.length}): ${todos.length === 0 ? 'empty' : todos.map((t) => t.task).join(', ')}`,
+      `Use these exact contents for any list question. Do NOT rely on the conversation. To change a list you MUST call the tool (add/remove/clear) — never just say you did.`,
+    ].join('\n');
+  } catch (err) {
+    console.error('Failed to pre-fetch lists ground truth:', err);
+    listsGroundTruth = `[LISTS GROUND TRUTH — unavailable; use get_shopping_list / get_todo_list tools to fetch live data.]`;
+  }
+
   // Build messages array
   const messages: Anthropic.MessageParam[] = history.slice(0, -1).map((h) => ({
     role: h.role as 'user' | 'assistant',
@@ -1280,14 +1311,14 @@ export async function generateResponse(
         },
         {
           type: 'text',
-          text: `${calendarGroundTruth}\n\n${userName}: ${textPrompt}`,
+          text: `${calendarGroundTruth}\n\n${listsGroundTruth}\n\n${userName}: ${textPrompt}`,
         },
       ],
     });
   } else {
     messages.push({
       role: 'user',
-      content: `${calendarGroundTruth}\n\n${userName}: ${userMessage}`,
+      content: `${calendarGroundTruth}\n\n${listsGroundTruth}\n\n${userName}: ${userMessage}`,
     });
   }
 
