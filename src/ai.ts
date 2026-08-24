@@ -1237,6 +1237,65 @@ export interface ImageData {
   mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 }
 
+function splitListItems(s: string): string[] {
+  return s.split(/,|\band\b|&/i)
+    .map((x) => x.trim().replace(/^(a|an|some|the)\s+/i, '').trim())
+    .filter(Boolean)
+    .map((x) => x.charAt(0).toUpperCase() + x.slice(1));
+}
+
+/**
+ * Deterministically handle unambiguous list commands (add/remove/clear) so the
+ * write ALWAYS happens — bypassing the LLM, which sometimes narrates "done"
+ * without calling the tool. Returns a confirmation string, or null to let the
+ * normal AI flow handle it.
+ */
+async function maybeHandleListCommand(message: string, userName: string): Promise<string | null> {
+  const msg = message.trim();
+  const SHOP = '(?:shopping(?:\\s+list)?|groceries|grocery\\s+list|the\\s+list|list)';
+  const TODO = '(?:to-?do(?:\\s+list)?|jobs(?:\\s+list)?|task\\s+list)';
+  const pre = '(?:hey rose[,\\s]+|rose[,\\s]+)?(?:can you |could you |please )?';
+  let m: RegExpMatchArray | null;
+
+  // Add to shopping
+  m = msg.match(new RegExp(`^${pre}(?:add|put)\\s+(.+?)\\s+(?:to|on|onto)\\s+(?:the\\s+|my\\s+|our\\s+)?${SHOP}\\.?$`, 'i'));
+  if (m) {
+    const items = splitListItems(m[1]!);
+    if (!items.length) return null;
+    for (const it of items) await addShoppingItem(it, userName);
+    const after = await getShoppingList();
+    return `Done! Added ${items.join(', ')} to the shopping list 🛒 — ${after.length} item${after.length === 1 ? '' : 's'} on it now.`;
+  }
+  // Add to to-do
+  m = msg.match(new RegExp(`^${pre}add\\s+(.+?)\\s+(?:to|on)\\s+(?:the\\s+|my\\s+|our\\s+)?${TODO}\\.?$`, 'i'));
+  if (m) {
+    const items = splitListItems(m[1]!);
+    if (!items.length) return null;
+    for (const it of items) await addTodo(it, userName);
+    return `Added ${items.join(', ')} to the to-do list ✅`;
+  }
+  // Remove from shopping
+  m = msg.match(new RegExp(`^${pre}(?:remove|delete|take)\\s+(.+?)\\s+(?:from|off)\\s+(?:the\\s+)?${SHOP}\\.?$`, 'i'));
+  if (m) {
+    const item = m[1]!.trim().replace(/^(a|an|some|the)\s+/i, '');
+    const ok = await removeShoppingItem(item);
+    return ok ? `Removed ${item} from the shopping list.` : `Couldn't find "${item}" on the shopping list.`;
+  }
+  // Clear shopping
+  if (new RegExp(`^${pre}(?:clear|empty|wipe)\\s+(?:the\\s+)?(?:shopping(?:\\s+list)?|groceries)\\.?$`, 'i').test(msg)) {
+    const n = await clearShoppingList();
+    if ((await getShoppingList()).length > 0) return null; // failed — let the AI explain
+    return n > 0 ? `Cleared ${n} item${n === 1 ? '' : 's'} from the shopping list — fresh slate 🛒` : 'The shopping list was already empty.';
+  }
+  // Clear to-do
+  if (new RegExp(`^${pre}(?:clear|empty|wipe)\\s+(?:the\\s+)?(?:to-?do(?:\\s+list)?|jobs(?:\\s+list)?)\\.?$`, 'i').test(msg)) {
+    const n = await clearTodos();
+    if ((await getTodos()).length > 0) return null;
+    return n > 0 ? `Cleared ${n} item${n === 1 ? '' : 's'} from the to-do list ✅` : 'The to-do list was already empty.';
+  }
+  return null;
+}
+
 export async function generateResponse(
   userMessage: string,
   userName: string,
@@ -1248,6 +1307,20 @@ export async function generateResponse(
     ? `${userName}: [sent a photo] ${userMessage}`.trim()
     : `${userName}: ${userMessage}`;
   await addConversationMessage('user', storedMessage, userName);
+
+  // Deterministically handle clear list commands so the write always persists
+  // (the LLM sometimes narrates "done" without calling the tool). Text only.
+  if (!imageData) {
+    try {
+      const quick = await maybeHandleListCommand(userMessage, userName);
+      if (quick) {
+        await addConversationMessage('assistant', quick);
+        return quick;
+      }
+    } catch (err) {
+      console.error('List command shortcut failed, falling back to AI:', err);
+    }
+  }
 
   // Get recent conversation history
   const history = await getRecentConversation(20);
@@ -1278,10 +1351,11 @@ export async function generateResponse(
   try {
     const [shopping, todos] = await Promise.all([getShoppingList(), getTodos()]);
     listsGroundTruth = [
-      `[LISTS GROUND TRUTH — fetched right now, authoritative]:`,
+      `[LISTS GROUND TRUTH — the CURRENT saved contents, authoritative]:`,
       `Shopping list (${shopping.length}): ${shopping.length === 0 ? 'empty' : shopping.map((i) => i.item).join(', ')}`,
       `To-do list (${todos.length}): ${todos.length === 0 ? 'empty' : todos.map((t) => t.task).join(', ')}`,
-      `Use these exact contents for any list question. Do NOT rely on the conversation. To change a list you MUST call the tool (add/remove/clear) — never just say you did.`,
+      `READING: answer any list question using exactly this data — not the conversation.`,
+      `WRITING — CRITICAL: This snapshot does NOT change by itself. To add, remove, or clear anything you MUST emit a tool call (add_shopping_item, remove_shopping_item, clear_shopping_list, add_todo, complete_todo, clear_todo_list). Writing "Done, added X" as text WITHOUT calling the tool saves NOTHING — the item is lost and you have lied to the family. So: for ANY add/remove/clear request, call the tool FIRST, wait for its result, and only then confirm.`,
     ].join('\n');
   } catch (err) {
     console.error('Failed to pre-fetch lists ground truth:', err);
