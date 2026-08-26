@@ -116,6 +116,17 @@ function fmtDay(iso: string): string {
   });
 }
 
+// Some calendar entries carry a junk location ("None", "N/A", "-") — usually from
+// an event created without a real address. Treat those as no location so the
+// dashboard doesn't print a meaningless "📍 None" pin.
+function cleanLocation(loc: string | null | undefined): string | null {
+  if (!loc) return null;
+  const trimmed = loc.trim();
+  if (!trimmed) return null;
+  if (/^(none|n\/?a|tbd|tba|null|undefined|-+)$/i.test(trimmed)) return null;
+  return trimmed;
+}
+
 function toDashEvent(e: CalendarEvent, withDay: boolean): DashEvent {
   const allDay = e.start.length === 10;
   let when: string;
@@ -124,7 +135,7 @@ function toDashEvent(e: CalendarEvent, withDay: boolean): DashEvent {
   } else {
     when = withDay ? `${fmtDay(e.start)} · ${fmtTime(e.start)}` : fmtTime(e.start);
   }
-  return { summary: e.summary, when, location: e.location ?? null, allDay };
+  return { summary: e.summary, when, location: cleanLocation(e.location), allDay };
 }
 
 function weatherEmoji(desc: string): string {

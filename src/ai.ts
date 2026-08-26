@@ -627,7 +627,7 @@ async function executeTool(
           start,
           end,
           description: toolInput['description'] as string | undefined,
-          location: toolInput['location'] as string | undefined,
+          location: sanitizeLocation(toolInput['location'] as string | undefined),
           allDay: (toolInput['all_day'] as boolean) || false,
           recurrence,
         });
@@ -653,7 +653,10 @@ async function executeTool(
         const updates: Parameters<typeof updateEvent>[1] = {};
         if (toolInput['summary']) updates.summary = toolInput['summary'] as string;
         if (toolInput['description']) updates.description = toolInput['description'] as string;
-        if (toolInput['location']) updates.location = toolInput['location'] as string;
+        if (toolInput['location']) {
+          const loc = sanitizeLocation(toolInput['location'] as string);
+          if (loc) updates.location = loc;
+        }
         if (toolInput['start_datetime']) {
           updates.start = parseInTimezone(toolInput['start_datetime'] as string, config.timezone);
         }
@@ -1242,6 +1245,14 @@ function splitListItems(s: string): string[] {
     .map((x) => x.trim().replace(/^(a|an|some|the)\s+/i, '').trim())
     .filter(Boolean)
     .map((x) => x.charAt(0).toUpperCase() + x.slice(1));
+}
+
+/** Drop placeholder locations ("None", "N/A", "-") so they're never stored. */
+function sanitizeLocation(loc: string | undefined): string | undefined {
+  if (!loc) return undefined;
+  const t = loc.trim();
+  if (!t || /^(none|n\/?a|tbd|tba|null|undefined|-+)$/i.test(t)) return undefined;
+  return t;
 }
 
 /**
