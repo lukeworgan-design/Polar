@@ -599,9 +599,10 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .mini li { display: flex; justify-content: space-between; gap: 1.5vw; font-size: 2.5vh; font-weight: 600; }
   .mini li > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mini .cd { color: var(--accent2); flex: 0 0 auto; }
-  /* Daily fun card — grows to fill any leftover space in the column (auto-fill) */
-  .fun-card { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; }
-  .fun-text { font-size: 3vh; font-weight: 600; line-height: 1.3; margin-top: 1vh; }
+  /* Daily fun card — grows to fill leftover space but never shrinks below its own
+     text (flex-shrink:0), so the punchline is never clipped. */
+  .fun-card { flex: 1 0 auto; display: flex; flex-direction: column; justify-content: center; overflow: visible; }
+  .fun-text { font-size: 2.7vh; font-weight: 600; line-height: 1.3; margin-top: 1vh; }
   .meals { list-style: none; display: flex; flex-direction: column; gap: .9vh; margin-top: 1.2vh; }
   .meals li { display: flex; gap: 1.2vw; font-size: 2.4vh; align-items: baseline; }
   .meals .d { flex: 0 0 auto; min-width: 9vw; color: var(--accent2); font-weight: 700; }
