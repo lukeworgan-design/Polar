@@ -463,6 +463,28 @@ bot.command('friday', async (ctx) => {
   await ctx.reply(message, { parse_mode: 'Markdown' });
 });
 
+// Handle /say command — speak a message out loud on the Alexa/Echo device(s)
+bot.command('say', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  const message = ctx.message as Message.TextMessage | undefined;
+  const text = (message?.text || '').replace(/^\/say(@\S+)?\s*/i, '').trim();
+  if (!text) {
+    await ctx.reply('What should I say? Try: `/say dinner is ready`', { parse_mode: 'Markdown' });
+    return;
+  }
+  const { speakOnAlexa, isVoiceEnabled } = await import('./voice');
+  if (!isVoiceEnabled()) {
+    await ctx.reply("Alexa speech isn't set up yet. Add the Voice Monkey skill, then set VOICE_MONKEY_TOKEN and VOICE_MONKEY_DEVICES.");
+    return;
+  }
+  const result = await speakOnAlexa(text);
+  if (result.ok) {
+    await ctx.reply(`🔊 Said it on ${result.spokenOn.join(', ')}.`);
+  } else {
+    await ctx.reply(`Couldn't say that out loud — ${result.reason ?? 'the Echo didn\'t respond'}.`);
+  }
+});
+
 // Handle /help command
 bot.command('help', async (ctx) => {
   if (!isFromGroup(ctx)) return;
@@ -484,6 +506,7 @@ bot.command('help', async (ctx) => {
 🗓 */weekend* — What's actually on locally this weekend (searches for real events)
 🏫 */friday* — Friday school's-out check-in with local events and weather
 🗑️ */bin* — Which bin goes out tomorrow
+🔊 */say [message]* — Say something out loud on the Alexa (or just ask "Rose, announce…")
 
 👶 *Baby tracking* — "Fed Evie 90ml", "dirty nappy", "she's asleep", "gave her vitamin D" — I'll log it. Ask "when did she last feed?" or "how's she done today?"
 ⚖️ *Weigh-ins & jabs* — "Evie was 4.2kg today" / "when are her jabs?"

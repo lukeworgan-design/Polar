@@ -567,6 +567,17 @@ const tools: Anthropic.Tool[] = [
       required: ['query'],
     },
   },
+  {
+    name: 'announce_on_alexa',
+    description: "Speak a message out loud on the family's Alexa/Echo device(s). Use when someone asks Rose to announce, say, tell, or call out something to the house — e.g. 'announce dinner's ready', 'tell the kids it's bath time', 'let everyone know we're leaving in 10 minutes'. Keep the announcement short, natural and spoken-word (no emoji or markdown — Alexa reads it aloud). Only call this when explicitly asked to say/announce something aloud, NOT for normal chat replies.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        message: { type: 'string', description: 'The exact words Alexa should say out loud' },
+      },
+      required: ['message'],
+    },
+  },
 ];
 
 // ── Tool execution ─────────────────────────────────────────────────────────────
@@ -1002,6 +1013,20 @@ async function executeTool(
         const { braveSearch, formatSearchResults } = await import('./search');
         const results = await braveSearch(toolInput['query'] as string, 6);
         return formatSearchResults(results);
+      }
+
+      case 'announce_on_alexa': {
+        const message = (toolInput['message'] as string || '').trim();
+        if (!message) return 'No message to announce.';
+        const { speakOnAlexa, isVoiceEnabled } = await import('./voice');
+        if (!isVoiceEnabled()) {
+          return 'Alexa speech is not set up yet — Voice Monkey needs configuring (VOICE_MONKEY_TOKEN and VOICE_MONKEY_DEVICES). Tell the family you could not say it aloud.';
+        }
+        const result = await speakOnAlexa(message);
+        if (result.ok) {
+          return `Announced aloud on ${result.spokenOn.join(', ')}: "${message}". Confirm briefly to the family that it was said on Alexa.`;
+        }
+        return `Failed to announce on Alexa (${result.reason ?? 'unknown error'}). Tell the family it did not play out loud — do NOT claim it was announced.`;
       }
 
       default:

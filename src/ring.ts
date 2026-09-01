@@ -112,6 +112,22 @@ async function recordDing(cameraName: string, cam?: any, ringDescription?: strin
       console.error('Ring: snapshot failed:', err);
     }
   }
+
+  // Speak it aloud on the Echo(s), using Claude's description when we have it.
+  if (config.voice.announceDoorbell) {
+    try {
+      const { speakOnAlexa, isVoiceEnabled } = await import('./voice');
+      if (isVoiceEnabled()) {
+        const desc = latestDingDescription;
+        const announcement = desc
+          ? `Ding dong. Someone's at the front door. ${desc}`
+          : "Ding dong. Someone's at the front door.";
+        await speakOnAlexa(announcement);
+      }
+    } catch (err) {
+      console.error('Ring: doorbell announcement failed:', err);
+    }
+  }
 }
 
 /** Manually trigger the doorbell overlay (for testing the dashboard side). */

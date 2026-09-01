@@ -107,6 +107,23 @@ export const config = {
   // Ring doorbell — set RING_REFRESH_TOKEN (generated with ring-auth-cli) to
   // show a snapshot on the dashboard when the bell is pressed.
   ringRefreshToken: process.env['RING_REFRESH_TOKEN'] || null,
+  // Alexa "speak out loud" via Voice Monkey (voicemonkey.io). Install the free
+  // Voice Monkey skill, link it to your Amazon account, then:
+  //  - VOICE_MONKEY_TOKEN   → your account token from the Voice Monkey console
+  //  - VOICE_MONKEY_DEVICES → comma-separated device id(s) you created there
+  //                           (e.g. "kitchen-echo,living-room"). Rose announces
+  //                           to every device listed.
+  // Leave unset to disable Alexa speech (everything else keeps working).
+  voice: {
+    token: process.env['VOICE_MONKEY_TOKEN']?.trim() || null,
+    devices: (process.env['VOICE_MONKEY_DEVICES'] || process.env['VOICE_MONKEY_DEVICE'] || '')
+      .split(',').map((s) => s.trim()).filter(Boolean),
+    // Announce doorbell presses aloud on the Echo(s). On by default when voice is
+    // configured; set VOICE_ANNOUNCE_DOORBELL=false to keep the door quiet.
+    announceDoorbell: process.env['VOICE_ANNOUNCE_DOORBELL'] !== 'false',
+    // Optional Amazon voice to use (e.g. "Amy", "Brian"). Leave unset for default.
+    voiceName: process.env['VOICE_MONKEY_VOICE']?.trim() || null,
+  },
   family: {
     children: [
       // Set POPPY_DOB / BILLY_DOB (YYYY-MM-DD) in the environment to the real
