@@ -485,6 +485,28 @@ bot.command('say', async (ctx) => {
   }
 });
 
+// Handle /devices command — list the Voice Monkey device ids (setup/diagnosis)
+bot.command('devices', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  const { listVoiceDevices } = await import('./voice');
+  const result = await listVoiceDevices();
+  if (!result.ok) {
+    await ctx.reply(`Couldn't list Alexa devices — ${result.reason ?? 'unknown error'}.`);
+    return;
+  }
+  if (result.ids.length) {
+    await ctx.reply(
+      `🔊 Voice Monkey devices found:\n${result.ids.map((d) => `• \`${d}\``).join('\n')}\n\nSet VOICE_MONKEY_DEVICES in Railway to one of these ids (exactly).`,
+      { parse_mode: 'Markdown' },
+    );
+  } else {
+    await ctx.reply(
+      `Connected to Voice Monkey but couldn't parse device ids. Raw response:\n\`\`\`\n${result.raw.slice(0, 500)}\n\`\`\``,
+      { parse_mode: 'Markdown' },
+    );
+  }
+});
+
 // Handle /help command
 bot.command('help', async (ctx) => {
   if (!isFromGroup(ctx)) return;

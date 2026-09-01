@@ -37,6 +37,33 @@ export function toSpeech(text: string): string {
     .trim();
 }
 
+/** List the device ids registered in the Voice Monkey account (for setup/diagnosis). */
+export async function listVoiceDevices(): Promise<{ ok: boolean; ids: string[]; raw: string; reason?: string }> {
+  if (!config.voice.token) {
+    return { ok: false, ids: [], raw: '', reason: 'Voice Monkey token not configured (set VOICE_MONKEY_TOKEN)' };
+  }
+  try {
+    const res = await fetch('https://api-v3.voicemonkey.io/devices', {
+      headers: { 'Authorization': config.voice.token },
+    });
+    const raw = (await res.text().catch(() => '')).trim();
+    if (!res.ok) return { ok: false, ids: [], raw, reason: `HTTP ${res.status}${raw ? ` — ${raw.slice(0, 180)}` : ''}` };
+    let ids: string[] = [];
+    try {
+      const j: any = JSON.parse(raw);
+      const arr: any[] = Array.isArray(j) ? j : (j.devices || j.data || []);
+      ids = arr
+        .map((d: any) => (typeof d === 'string' ? d : (d.device || d.device_id || d.id || d.name)))
+        .filter((x: any): x is string => typeof x === 'string' && x.length > 0);
+    } catch {
+      /* leave ids empty; caller can show raw */
+    }
+    return { ok: true, ids, raw };
+  } catch (err) {
+    return { ok: false, ids: [], raw: '', reason: (err as Error).message };
+  }
+}
+
 interface SpeakResult {
   ok: boolean;
   spokenOn: string[];
