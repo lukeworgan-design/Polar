@@ -58,6 +58,53 @@ export function normalizeBinType(input: string): 'general' | 'recycling' {
   return 'general';
 }
 
+export interface VoiceRoom {
+  name: string; // friendly, lower-case, e.g. "kitchen", "living room"
+  id: string;   // Voice Monkey device id, e.g. "kitchen-echo-mybev"
+}
+
+/** Friendly room name from a Voice Monkey device id ("living-room-echo-ai6ep" → "living room"). */
+function deriveRoomName(id: string): string {
+  const base = id.split(/-(?:echo|dot|show|speaker|flex)-/i)[0] || id;
+  return base.replace(/-/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * Parse the Alexa rooms. Prefer VOICE_MONKEY_ROOMS ("kitchen:idA,lounge:idB")
+ * for explicit friendly names; otherwise fall back to VOICE_MONKEY_DEVICES
+ * (bare ids) and derive names from the ids.
+ */
+function parseVoiceRooms(): VoiceRoom[] {
+  const explicit = (process.env['VOICE_MONKEY_ROOMS'] || '').trim();
+  if (explicit) {
+    return explicit
+      .split(',')
+      .map((pair): VoiceRoom | null => {
+        const idx = pair.indexOf(':');
+        if (idx === -1) {
+          const id = pair.trim();
+          return id ? { name: deriveRoomName(id), id } : null;
+        }
+        const name = pair.slice(0, idx).trim().toLowerCase();
+        const id = pair.slice(idx + 1).trim();
+        return id ? { name: name || deriveRoomName(id), id } : null;
+      })
+      .filter((r): r is VoiceRoom => !!r);
+  }
+  const ids = (process.env['VOICE_MONKEY_DEVICES'] || process.env['VOICE_MONKEY_DEVICE'] || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  return ids.map((id) => ({ name: deriveRoomName(id), id }));
+}
+
+/** Parse a "start-end" 24h quiet-hours window (e.g. "21-7"); null if unset/invalid. */
+function parseQuietHours(raw: string | undefined): { start: number; end: number } | null {
+  const m = (raw || '').trim().match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+  if (!m) return null;
+  return { start: parseInt(m[1]!, 10) % 24, end: parseInt(m[2]!, 10) % 24 };
+}
+
+const voiceRooms = parseVoiceRooms();
+
 export const config = {
   telegram: {
     botToken: requireEnv('TELEGRAM_BOT_TOKEN'),
@@ -116,8 +163,20 @@ export const config = {
   // Leave unset to disable Alexa speech (everything else keeps working).
   voice: {
     token: process.env['VOICE_MONKEY_TOKEN']?.trim() || null,
-    devices: (process.env['VOICE_MONKEY_DEVICES'] || process.env['VOICE_MONKEY_DEVICE'] || '')
-      .split(',').map((s) => s.trim()).filter(Boolean),
+    // Named rooms so announcements can target "the kitchen", "downstairs", etc.
+    // Set VOICE_MONKEY_ROOMS="kitchen:kitchen-echo-mybev,lounge:living-room-echo-ai6ep"
+    // for friendly names, or just VOICE_MONKEY_DEVICES with bare ids (names are
+    // then derived from the ids).
+    rooms: voiceRooms,
+    devices: voiceRooms.map((r) => r.id),
+    // Which rooms the doorbell announces in (room names or ids, comma-separated).
+    // Leave unset to announce in every room. e.g. "kitchen,lounge" for downstairs.
+    doorbellRooms: (process.env['VOICE_MONKEY_DOORBELL_ROOMS'] || '')
+      .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+    // Optional quiet-hours window "start-end" (24h, family timezone). Automatic
+    // announcements (doorbell, scheduled) are suppressed during it; a manual
+    // /say or "Rose, announce…" still goes through. e.g. VOICE_QUIET_HOURS="21-7".
+    quietHours: parseQuietHours(process.env['VOICE_QUIET_HOURS']),
     // Announce doorbell presses aloud on the Echo(s). On by default when voice is
     // configured; set VOICE_ANNOUNCE_DOORBELL=false to keep the door quiet.
     announceDoorbell: process.env['VOICE_ANNOUNCE_DOORBELL'] !== 'false',

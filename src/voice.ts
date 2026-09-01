@@ -22,6 +22,56 @@ export function isVoiceEnabled(): boolean {
   return !!config.voice.token && config.voice.devices.length > 0;
 }
 
+/** True if we're currently inside the configured quiet-hours window (family tz). */
+export function isInQuietHours(): boolean {
+  const q = config.voice.quietHours;
+  if (!q || q.start === q.end) return false;
+  const hour = parseInt(
+    new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hour12: false, timeZone: config.timezone }).format(new Date()),
+    10,
+  );
+  // Same-day window (e.g. 13-15) vs one that wraps midnight (e.g. 21-7).
+  return q.start < q.end ? hour >= q.start && hour < q.end : hour >= q.start || hour < q.end;
+}
+
+/** A room name matches a spoken target, with a few common aliases. */
+function roomMatches(roomName: string, token: string): boolean {
+  const alias =
+    /^(lounge|living room|front room|sitting room|tv room)$/.test(token) ? 'living'
+    : /^(master|master bedroom|our room|main bedroom)$/.test(token) ? 'bedroom'
+    : token;
+  return roomName.includes(alias) || roomName.includes(token) || alias.includes(roomName);
+}
+
+/**
+ * Resolve a free-text target ("kitchen", "lounge and bedroom", "all", or
+ * undefined) to Voice Monkey device ids plus the friendly room names matched.
+ * Undefined / "all" / "everywhere" → every configured room.
+ */
+export function resolveDevices(target?: string): { ids: string[]; names: string[] } {
+  const rooms = config.voice.rooms;
+  const t = (target || '').trim().toLowerCase();
+  if (!t || /^(all|everyone|everywhere|the house|house|both|whole house)$/.test(t)) {
+    return { ids: rooms.map((r) => r.id), names: rooms.map((r) => r.name) };
+  }
+  const tokens = t.split(/,|\+|&|\band\b/).map((s) => s.trim()).filter(Boolean);
+  const picked: typeof rooms = [];
+  for (const tok of tokens) {
+    for (const room of rooms) {
+      // A raw device id passed straight through should also match.
+      if (!picked.includes(room) && (room.id.toLowerCase() === tok || roomMatches(room.name, tok))) {
+        picked.push(room);
+      }
+    }
+  }
+  return { ids: picked.map((r) => r.id), names: picked.map((r) => r.name) };
+}
+
+/** All configured room names, for prompts/help. */
+export function roomNames(): string[] {
+  return config.voice.rooms.map((r) => r.name);
+}
+
 /** Strip markdown, emoji and extra whitespace so Alexa reads a clean sentence. */
 export function toSpeech(text: string): string {
   return text
@@ -66,32 +116,48 @@ export async function listVoiceDevices(): Promise<{ ok: boolean; ids: string[]; 
 
 interface SpeakResult {
   ok: boolean;
-  spokenOn: string[];
-  failed: string[];
+  spokenOn: string[]; // friendly room names
+  failed: string[];   // friendly room names
   reason?: string;
+}
+
+export interface SpeakOptions {
+  /** Room(s) to speak in — name, group, comma list, or raw id. Omit for all rooms. */
+  target?: string;
+  /** If true, suppress during quiet hours (use for automatic announcements). */
+  respectQuietHours?: boolean;
 }
 
 /**
  * Announce a message on the configured Echo device(s).
- * Returns which devices succeeded so callers (and Rose) can report truthfully.
+ * Returns which rooms succeeded so callers (and Rose) can report truthfully.
  */
-export async function speakOnAlexa(text: string, deviceOverride?: string): Promise<SpeakResult> {
+export async function speakOnAlexa(text: string, opts: SpeakOptions = {}): Promise<SpeakResult> {
   const speech = toSpeech(text);
   if (!speech) return { ok: false, spokenOn: [], failed: [], reason: 'nothing to say' };
   if (!config.voice.token) {
     return { ok: false, spokenOn: [], failed: [], reason: 'Voice Monkey token not configured (set VOICE_MONKEY_TOKEN)' };
   }
-
-  const devices = deviceOverride ? [deviceOverride] : config.voice.devices;
-  if (devices.length === 0) {
-    return { ok: false, spokenOn: [], failed: [], reason: 'no Alexa devices configured (set VOICE_MONKEY_DEVICES)' };
+  if (opts.respectQuietHours && isInQuietHours()) {
+    return { ok: false, spokenOn: [], failed: [], reason: 'suppressed — quiet hours' };
   }
+
+  const { ids, names } = resolveDevices(opts.target);
+  if (ids.length === 0) {
+    return {
+      ok: false, spokenOn: [], failed: [],
+      reason: opts.target
+        ? `no room matched "${opts.target}" (rooms: ${roomNames().join(', ') || 'none configured'})`
+        : 'no Alexa devices configured (set VOICE_MONKEY_DEVICES)',
+    };
+  }
+  const nameFor = (id: string) => names[ids.indexOf(id)] ?? id;
 
   const spokenOn: string[] = [];
   const failed: string[] = [];
   let lastDetail = '';
 
-  for (const device of devices) {
+  for (const device of ids) {
     try {
       const payload: Record<string, string> = { device, speech };
       if (config.voice.voiceName) payload['voice'] = config.voice.voiceName;
@@ -106,14 +172,14 @@ export async function speakOnAlexa(text: string, deviceOverride?: string): Promi
       const bodyText = (await res.text().catch(() => '')).trim();
       const looksError = /"?status"?\s*:\s*"?error|"error"\s*:/i.test(bodyText);
       if (res.ok && !looksError) {
-        spokenOn.push(device);
+        spokenOn.push(nameFor(device));
       } else {
-        failed.push(device);
+        failed.push(nameFor(device));
         lastDetail = `HTTP ${res.status}${bodyText ? ` — ${bodyText.slice(0, 180)}` : ''}`;
         console.error(`Voice: announcement failed on "${device}": ${lastDetail}`);
       }
     } catch (err) {
-      failed.push(device);
+      failed.push(nameFor(device));
       lastDetail = (err as Error).message;
       console.error(`Voice: announcement error on "${device}":`, err);
     }

@@ -467,19 +467,26 @@ bot.command('friday', async (ctx) => {
 bot.command('say', async (ctx) => {
   if (!isFromGroup(ctx)) return;
   const message = ctx.message as Message.TextMessage | undefined;
-  const text = (message?.text || '').replace(/^\/say(@\S+)?\s*/i, '').trim();
+  let text = (message?.text || '').replace(/^\/say(@\S+)?\s*/i, '').trim();
   if (!text) {
-    await ctx.reply('What should I say? Try: `/say dinner is ready`', { parse_mode: 'Markdown' });
+    await ctx.reply('What should I say? Try: `/say dinner is ready`, or target a room: `/say @lounge tea\'s ready`', { parse_mode: 'Markdown' });
     return;
+  }
+  // Optional "@room " prefix to target a specific room (e.g. "@kitchen", "@all").
+  let target: string | undefined;
+  const roomMatch = text.match(/^@(\S+)\s+([\s\S]+)$/);
+  if (roomMatch) {
+    target = roomMatch[1]!.replace(/-/g, ' ');
+    text = roomMatch[2]!.trim();
   }
   const { speakOnAlexa, isVoiceEnabled } = await import('./voice');
   if (!isVoiceEnabled()) {
     await ctx.reply("Alexa speech isn't set up yet. Add the Voice Monkey skill, then set VOICE_MONKEY_TOKEN and VOICE_MONKEY_DEVICES.");
     return;
   }
-  const result = await speakOnAlexa(text);
+  const result = await speakOnAlexa(text, { target });
   if (result.ok) {
-    await ctx.reply(`🔊 Said it on ${result.spokenOn.join(', ')}.`);
+    await ctx.reply(`🔊 Said it in ${result.spokenOn.join(', ')}.`);
   } else {
     await ctx.reply(`Couldn't say that out loud — ${result.reason ?? 'the Echo didn\'t respond'}.`);
   }
@@ -496,7 +503,7 @@ bot.command('devices', async (ctx) => {
   }
   if (result.ids.length) {
     await ctx.reply(
-      `🔊 Voice Monkey devices found:\n${result.ids.map((d) => `• \`${d}\``).join('\n')}\n\nSet VOICE_MONKEY_DEVICES in Railway to one of these ids (exactly).`,
+      `🔊 Voice Monkey devices found:\n${result.ids.map((d) => `• \`${d}\``).join('\n')}\n\nSet \`VOICE_MONKEY_DEVICES\` in Railway to these ids (comma-separated, exactly).`,
       { parse_mode: 'Markdown' },
     );
   } else {
@@ -528,7 +535,7 @@ bot.command('help', async (ctx) => {
 🗓 */weekend* — What's actually on locally this weekend (searches for real events)
 🏫 */friday* — Friday school's-out check-in with local events and weather
 🗑️ */bin* — Which bin goes out tomorrow
-🔊 */say [message]* — Say something out loud on the Alexa (or just ask "Rose, announce…")
+🔊 */say [message]* — Say it out loud everywhere (or `/say @lounge …` for one room). Or just ask "Rose, announce … in the kitchen"
 
 👶 *Baby tracking* — "Fed Evie 90ml", "dirty nappy", "she's asleep", "gave her vitamin D" — I'll log it. Ask "when did she last feed?" or "how's she done today?"
 ⚖️ *Weigh-ins & jabs* — "Evie was 4.2kg today" / "when are her jabs?"

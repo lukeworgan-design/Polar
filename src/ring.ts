@@ -122,7 +122,10 @@ async function recordDing(cameraName: string, cam?: any, ringDescription?: strin
         const announcement = desc
           ? `Ding dong. Someone's at the front door. ${desc}`
           : "Ding dong. Someone's at the front door.";
-        await speakOnAlexa(announcement);
+        // Only the configured doorbell rooms (or everywhere if unset), and stay
+        // quiet during quiet hours.
+        const target = config.voice.doorbellRooms.length ? config.voice.doorbellRooms.join(',') : undefined;
+        await speakOnAlexa(announcement, { target, respectQuietHours: true });
       }
     } catch (err) {
       console.error('Ring: doorbell announcement failed:', err);
