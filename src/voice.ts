@@ -43,9 +43,9 @@ export async function listVoiceDevices(): Promise<{ ok: boolean; ids: string[]; 
     return { ok: false, ids: [], raw: '', reason: 'Voice Monkey token not configured (set VOICE_MONKEY_TOKEN)' };
   }
   try {
-    const res = await fetch('https://api-v3.voicemonkey.io/devices', {
-      headers: { 'Authorization': config.voice.token },
-    });
+    // Auth via query param — the Authorization header form gets rejected (401),
+    // whereas the token query param works (matches how /announce accepts it).
+    const res = await fetch(`https://api-v3.voicemonkey.io/devices?token=${encodeURIComponent(config.voice.token)}`);
     const raw = (await res.text().catch(() => '')).trim();
     if (!res.ok) return { ok: false, ids: [], raw, reason: `HTTP ${res.status}${raw ? ` — ${raw.slice(0, 180)}` : ''}` };
     let ids: string[] = [];
@@ -96,14 +96,11 @@ export async function speakOnAlexa(text: string, deviceOverride?: string): Promi
       const payload: Record<string, string> = { device, speech };
       if (config.voice.voiceName) payload['voice'] = config.voice.voiceName;
 
-      // v3 wants a JSON body with the token in an Authorization header (raw
-      // token, not "Bearer ..."). Sending token in the body too is harmless.
-      const res = await fetch(ANNOUNCE_URL, {
+      // Auth via the token query param (the reliable form — the Authorization
+      // header gets rejected). Device/speech go in the JSON body.
+      const res = await fetch(`${ANNOUNCE_URL}?token=${encodeURIComponent(config.voice.token)}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': config.voice.token,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: config.voice.token, ...payload }),
       });
       const bodyText = (await res.text().catch(() => '')).trim();
