@@ -62,26 +62,35 @@ export async function speakOnAlexa(text: string, deviceOverride?: string): Promi
 
   const spokenOn: string[] = [];
   const failed: string[] = [];
+  let lastDetail = '';
 
   for (const device of devices) {
     try {
-      const params = new URLSearchParams({
-        token: config.voice.token,
-        device,
-        speech,
-      });
-      if (config.voice.voiceName) params.set('voice', config.voice.voiceName);
+      const payload: Record<string, string> = { device, speech };
+      if (config.voice.voiceName) payload['voice'] = config.voice.voiceName;
 
-      const res = await fetch(`${ANNOUNCE_URL}?${params.toString()}`, { method: 'POST' });
-      const bodyText = await res.text().catch(() => '');
-      if (res.ok && !/error/i.test(bodyText)) {
+      // v3 wants a JSON body with the token in an Authorization header (raw
+      // token, not "Bearer ..."). Sending token in the body too is harmless.
+      const res = await fetch(ANNOUNCE_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': config.voice.token,
+        },
+        body: JSON.stringify({ token: config.voice.token, ...payload }),
+      });
+      const bodyText = (await res.text().catch(() => '')).trim();
+      const looksError = /"?status"?\s*:\s*"?error|"error"\s*:/i.test(bodyText);
+      if (res.ok && !looksError) {
         spokenOn.push(device);
       } else {
         failed.push(device);
-        console.error(`Voice: announcement failed on "${device}" (${res.status}): ${bodyText.slice(0, 200)}`);
+        lastDetail = `HTTP ${res.status}${bodyText ? ` — ${bodyText.slice(0, 180)}` : ''}`;
+        console.error(`Voice: announcement failed on "${device}": ${lastDetail}`);
       }
     } catch (err) {
       failed.push(device);
+      lastDetail = (err as Error).message;
       console.error(`Voice: announcement error on "${device}":`, err);
     }
   }
@@ -90,6 +99,6 @@ export async function speakOnAlexa(text: string, deviceOverride?: string): Promi
     ok: spokenOn.length > 0,
     spokenOn,
     failed,
-    reason: spokenOn.length === 0 ? 'all devices failed — check the Voice Monkey token/device ids' : undefined,
+    reason: spokenOn.length === 0 ? (lastDetail || 'all devices failed — check the Voice Monkey token/device ids') : undefined,
   };
 }
