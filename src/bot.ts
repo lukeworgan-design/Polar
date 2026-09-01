@@ -535,7 +535,7 @@ bot.command('help', async (ctx) => {
 🗓 */weekend* — What's actually on locally this weekend (searches for real events)
 🏫 */friday* — Friday school's-out check-in with local events and weather
 🗑️ */bin* — Which bin goes out tomorrow
-🔊 */say [message]* — Say it out loud everywhere (or `/say @lounge …` for one room). Or just ask "Rose, announce … in the kitchen"
+🔊 */say [message]* — Say it out loud everywhere (or \`/say @lounge …\` for one room). Or just ask "Rose, announce … in the kitchen"
 
 👶 *Baby tracking* — "Fed Evie 90ml", "dirty nappy", "she's asleep", "gave her vitamin D" — I'll log it. Ask "when did she last feed?" or "how's she done today?"
 ⚖️ *Weigh-ins & jabs* — "Evie was 4.2kg today" / "when are her jabs?"
