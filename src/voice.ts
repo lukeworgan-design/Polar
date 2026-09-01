@@ -4,7 +4,7 @@ import { config } from './config';
 //
 // Voice Monkey is a free Alexa skill that exposes a simple HTTP endpoint to make
 // your Echo devices announce arbitrary text — no Amazon skill certification or
-// proactive-notifications faff. Rose calls the v2 announcement API with a token
+// proactive-notifications faff. Rose calls the v3 announce API with a token
 // and a device id and the Echo speaks.
 //
 // Setup (one-off, done in the Amazon Alexa app + voicemonkey.io console):
@@ -13,7 +13,10 @@ import { config } from './config';
 //      speak on and copy its device id.
 //   3. Set VOICE_MONKEY_TOKEN and VOICE_MONKEY_DEVICES in the environment.
 
-const ANNOUNCE_URL = 'https://api-v2.voicemonkey.io/announcement';
+// Voice Monkey v3 announcement API. (v2 used /announcement + a `text` field on
+// api-v2; v3 renames the host to api-v3, the path to /announce and the TTS field
+// to `speech`.)
+const ANNOUNCE_URL = 'https://api-v3.voicemonkey.io/announce';
 
 export function isVoiceEnabled(): boolean {
   return !!config.voice.token && config.voice.devices.length > 0;
@@ -65,7 +68,7 @@ export async function speakOnAlexa(text: string, deviceOverride?: string): Promi
       const params = new URLSearchParams({
         token: config.voice.token,
         device,
-        text: speech,
+        speech,
       });
       if (config.voice.voiceName) params.set('voice', config.voice.voiceName);
 
