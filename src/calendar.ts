@@ -167,6 +167,62 @@ export async function getUpcomingEvents(days: number = 3): Promise<CalendarEvent
   return getEventsForPeriod(now, future);
 }
 
+// A single, tasteful emoji appended to event titles based on keywords. Ordered:
+// more specific patterns first. Returns nothing extra if nothing sensible fits.
+const EVENT_EMOJI: Array<[RegExp, string]> = [
+  [/\b(football|soccer|fc|five[-\s]?a[-\s]?side)\b/i, '⚽'],
+  [/\brugby\b/i, '🏉'],
+  [/\b(swim|swimming|pool)\b/i, '🏊'],
+  [/\bcricket\b/i, '🏏'],
+  [/\btennis\b/i, '🎾'],
+  [/\b(gymnastics|gym club|tumble)\b/i, '🤸'],
+  [/\b(ballet|dance|dancing)\b/i, '🩰'],
+  [/\b(theatre|theater|drama|musical|panto|pantomime)\b/i, '🎭'],
+  [/\bpiano\b/i, '🎹'],
+  [/\bguitar\b/i, '🎸'],
+  [/\b(choir|singing|orchestra|music lesson)\b/i, '🎵'],
+  [/\b(art class|painting|craft|crafts)\b/i, '🎨'],
+  [/\b(birthday|bday)\b/i, '🎂'],
+  [/\bparty\b/i, '🎉'],
+  [/\b(dentist|dental)\b/i, '🦷'],
+  [/\b(optician|opticians|eye test|glasses)\b/i, '👓'],
+  [/\b(jab|jabs|immunisation|immunization|vaccine|vaccination|injection)\b/i, '💉'],
+  [/\b(doctor|gp|clinic|hospital|appointment|check[-\s]?up|midwife|health visitor|scan)\b/i, '🩺'],
+  [/\b(haircut|barber|hairdresser)\b/i, '✂️'],
+  [/\b(cinema|movie|film)\b/i, '🎬'],
+  [/\b(restaurant|dinner|lunch|brunch)\b/i, '🍽'],
+  [/\b(coffee|café|cafe)\b/i, '☕'],
+  [/\b(playdate|play date|soft play)\b/i, '🧸'],
+  [/\b(park|playground)\b/i, '🌳'],
+  [/\b(beach|seaside)\b/i, '🏖'],
+  [/\bzoo\b/i, '🦁'],
+  [/\bfarm\b/i, '🚜'],
+  [/\b(scouts|beavers|cubs|brownies|rainbows|guides)\b/i, '🏕'],
+  [/\b(church|mass|christening|communion)\b/i, '⛪'],
+  [/\b(vet|vets)\b/i, '🐾'],
+  [/\b(school|inset|parents evening|assembly|sports day|nursery|pre[-\s]?school)\b/i, '🏫'],
+  [/\b(register office|registration|registrar)\b/i, '📝'],
+  [/\b(exam|sats|assessment)\b/i, '📝'],
+  [/\b(flight|airport|holiday|vacation)\b/i, '✈️'],
+  [/\bwedding\b/i, '💒'],
+  [/\b(christmas|xmas)\b/i, '🎄'],
+  [/\bhalloween\b/i, '🎃'],
+  [/\beaster\b/i, '🐣'],
+];
+
+// Detects an existing emoji so we never double up or override a manual choice.
+const HAS_EMOJI = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{200D}]/u;
+
+/** Append one relevant emoji to an event title, unless it already has one. */
+export function addEventEmoji(summary: string): string {
+  const s = (summary || '').trim();
+  if (!s || HAS_EMOJI.test(s)) return s;
+  for (const [re, emoji] of EVENT_EMOJI) {
+    if (re.test(s)) return `${s} ${emoji}`;
+  }
+  return s;
+}
+
 export async function createEvent(params: {
   summary: string;
   start: Date;
@@ -180,7 +236,7 @@ export async function createEvent(params: {
   const cid = await getFamilyCalendarId();
 
   const eventBody: calendar_v3.Schema$Event = {
-    summary: params.summary,
+    summary: addEventEmoji(params.summary),
     description: params.description,
     location: params.location,
     recurrence: params.recurrence,
@@ -218,7 +274,7 @@ export async function updateEvent(
   const existing = await cal.events.get({ calendarId: cid, eventId });
   const eventBody: calendar_v3.Schema$Event = { ...existing.data };
 
-  if (updates.summary) eventBody.summary = updates.summary;
+  if (updates.summary) eventBody.summary = addEventEmoji(updates.summary);
   if (updates.description) eventBody.description = updates.description;
   if (updates.location) eventBody.location = updates.location;
   if (updates.recurrence) eventBody.recurrence = updates.recurrence;
