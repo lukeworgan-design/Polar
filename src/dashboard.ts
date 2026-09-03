@@ -307,7 +307,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     meals.tonight = dinners.find((m) => m.date === todayStr)?.meal ?? null;
     meals.upcoming = dinners
       .filter((m) => m.date > todayStr)
-      .slice(0, 5)
+      .slice(0, 2)
       .map((m) => ({ day: fmtDay(m.date), meal: m.meal }));
   } catch (err) {
     console.error('Dashboard: meal fetch failed:', err);
@@ -480,7 +480,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   let babyCard = '';
   if (d.baby && opts.baby !== 'off') {
     const details = (opts.baby === 'full' && d.baby.fact)
-      ? `<p class="sub">💡 Today ${esc(d.baby.name)} ${esc(d.baby.fact)}</p>`
+      ? `<p class="baby-fact">💡 Today ${esc(d.baby.name)} ${esc(d.baby.fact)}</p>`
       : '';
     babyCard = `<div class="card"><h2>${esc(d.baby.name)}</h2><p class="big">👶 ${esc(d.baby.ageText)}</p>${details}</div>`;
   }
@@ -490,8 +490,23 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
       <p class="fun-text">${esc(d.dailyFun.text)}</p>
     </div>`;
 
-  const sideCards = [weatherCard, mealsCard, schoolRunCard, binCard, countdownCard, babyCard, funCard]
-    .filter(Boolean).join('\n');
+  // Pair compact single-purpose cards side-by-side so the right column fits on a
+  // busy school day (weather + meals + school run + bin + countdowns + Evie + joke)
+  // without shoving the kids' beloved joke off the bottom. A pair with only one
+  // card present just renders that card full-width.
+  const pair = (...cards: string[]): string => {
+    const present = cards.filter(Boolean);
+    if (present.length === 0) return '';
+    if (present.length === 1) return present[0]!;
+    return `<div class="side-pair">${present.join('')}</div>`;
+  };
+  const sideCards = [
+    weatherCard,
+    mealsCard,
+    pair(schoolRunCard, binCard),
+    pair(countdownCard, babyCard),
+    funCard,
+  ].filter(Boolean).join('\n');
 
   const bgs = opts.photo ? backgroundUrls() : [];
   const bgLayer = bgs.length
@@ -565,19 +580,19 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .dot { display: inline-block; width: 2.4vh; height: 2.4vh; border-radius: 50%; margin-right: 1vh;
     vertical-align: middle; box-shadow: 0 0 0 2px rgba(255,255,255,.15) inset; }
   .sub { font-size: 2.3vh; color: var(--muted); margin-top: .7vh; }
-  .hours { display: flex; justify-content: space-between; gap: .4vw; margin-top: 1vh; }
+  .hours { display: flex; justify-content: space-between; gap: .4vw; margin-top: .5vh; }
   .hr { display: flex; flex-direction: column; align-items: center; gap: .2vh; flex: 1; }
   .hr-t { font-size: 1.5vh; color: var(--muted); font-variant-numeric: tabular-nums; }
   .hr-e { font-size: 2.1vh; }
   .hr-d { font-size: 1.8vh; font-weight: 700; }
   .hr-r { font-size: 1.3vh; color: var(--accent); min-height: 1.3vh; }
-  .wfoot { font-size: 1.7vh; color: var(--muted); margin-top: 1vh; }
+  .wfoot { font-size: 1.7vh; color: var(--muted); margin-top: .5vh; }
   /* Compact the right-hand column so all cards fit without clipping */
-  .col.side { gap: 1.1vh; }
-  .side .card { padding: 1.3vh 1.4vw; }
-  .side .card h2 { margin-bottom: .8vh; }
-  .side .big { font-size: 3vh; }
-  .side .sub { font-size: 2vh; margin-top: .5vh; }
+  .col.side { gap: .9vh; }
+  .side .card { padding: 1vh 1.3vw; }
+  .side .card h2 { margin-bottom: .5vh; }
+  .side .big { font-size: 2.7vh; }
+  .side .sub { font-size: 1.9vh; margin-top: .4vh; }
   .events { list-style: none; display: flex; flex-direction: column; gap: 1.3vh; overflow: hidden; }
   .events li { display: flex; align-items: baseline; gap: 1.2vw; }
   .ev-when { flex: 0 0 auto; min-width: 13vw; color: var(--accent2); font-weight: 700; font-size: 2.7vh; font-variant-numeric: tabular-nums; }
@@ -599,10 +614,19 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .mini li { display: flex; justify-content: space-between; gap: 1.5vw; font-size: 2.5vh; font-weight: 600; }
   .mini li > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mini .cd { color: var(--accent2); flex: 0 0 auto; }
+  /* Two compact cards side by side, equal height, to save vertical space. */
+  .side-pair { display: flex; gap: 1.1vh; align-items: stretch; }
+  .side-pair > .card { flex: 1 1 0; min-width: 0; }
+  /* Countdowns/mini lists sit in half-width paired cards — smaller so labels fit. */
+  .side .mini li { font-size: 2.05vh; gap: .8vw; }
+  /* Baby fact sits in a half-width paired card — keep it compact and capped at
+     two lines so a long fact can't push the joke card off the bottom. */
+  .baby-fact { font-size: 1.6vh; color: var(--muted); margin-top: .4vh; line-height: 1.25;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   /* Daily fun card — fills leftover space, but its text is top-aligned so the
      header and joke always render from the top (never centred out of view). */
   .fun-card { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: flex-start; }
-  .fun-text { font-size: 2.4vh; font-weight: 600; line-height: 1.25; margin-top: .8vh; }
+  .fun-text { font-size: 2.3vh; font-weight: 600; line-height: 1.2; margin-top: .4vh; }
   .meals { list-style: none; display: flex; flex-direction: column; gap: .9vh; margin-top: 1.2vh; }
   .meals li { display: flex; gap: 1.2vw; font-size: 2.4vh; align-items: baseline; }
   .meals .d { flex: 0 0 auto; min-width: 9vw; color: var(--accent2); font-weight: 700; }
