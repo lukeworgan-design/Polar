@@ -579,6 +579,31 @@ const tools: Anthropic.Tool[] = [
       required: ['message'],
     },
   },
+  {
+    name: 'set_school_run',
+    description: "Record a change to the school-run rota for Poppy and Billy. Use for a LASTING change to a weekday (pass 'day', e.g. 'Wednesday') OR a ONE-OFF change on a specific date (pass 'date' as YYYY-MM-DD — for 'this Thursday'/'tomorrow' work out the actual date first). Only call this when someone tells you the school run has changed; never guess.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        note: { type: 'string', description: 'Who does the run, e.g. "Grandma: drop-off + pick-up" or "Luke does pick-up"' },
+        day: { type: 'string', description: 'Weekday (Monday–Friday) for a lasting change. Use this OR date.' },
+        date: { type: 'string', description: 'YYYY-MM-DD for a one-off change on a specific day. Use this OR day.' },
+      },
+      required: ['note'],
+    },
+  },
+  {
+    name: 'reset_school_run',
+    description: "Undo school-run changes: clear a one-off (pass 'date'), reset a single weekday to the normal rota (pass 'day'), or reset the whole rota to normal (pass neither). Use when someone says to put the school run back to normal.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        day: { type: 'string', description: 'Weekday to reset to normal (optional)' },
+        date: { type: 'string', description: 'YYYY-MM-DD one-off to clear (optional)' },
+      },
+      required: [],
+    },
+  },
 ];
 
 // ── Tool execution ─────────────────────────────────────────────────────────────
@@ -1031,6 +1056,39 @@ async function executeTool(
         return `Failed to announce on Alexa (${result.reason ?? 'unknown error'}). Tell the family it did not play out loud — do NOT claim it was announced.`;
       }
 
+      case 'set_school_run': {
+        const note = (toolInput['note'] as string || '').trim();
+        if (!note) return 'What should the school run say (who does drop-off/pick-up)?';
+        const { setBaselineDay, setOverrideForDate } = await import('./schoolrun');
+        const day = (toolInput['day'] as string || '').trim();
+        const date = (toolInput['date'] as string || '').trim();
+        if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          await setOverrideForDate(date, note);
+          return `Recorded a one-off school run for ${date}: "${note}". Confirm briefly to the family (mention it's just for that day).`;
+        }
+        if (day) {
+          try {
+            const canon = await setBaselineDay(day, note);
+            return `Updated the usual ${canon} school run to: "${note}". Confirm briefly.`;
+          } catch (e) {
+            return `"${day}" isn't a weekday I recognise — ask which day they mean.`;
+          }
+        }
+        return 'Ask whether this is a lasting change (which weekday?) or just a one-off for a specific date.';
+      }
+
+      case 'reset_school_run': {
+        const { resetSchoolRun } = await import('./schoolrun');
+        const day = (toolInput['day'] as string || '').trim() || undefined;
+        const date = (toolInput['date'] as string || '').trim() || undefined;
+        try {
+          const msg = await resetSchoolRun({ day, date });
+          return `${msg} Confirm briefly.`;
+        } catch (e) {
+          return `Couldn't reset that — "${day}" isn't a weekday I recognise.`;
+        }
+      }
+
       default:
         return `Unknown tool: ${toolName}`;
     }
@@ -1087,7 +1145,21 @@ function parseInTimezone(datetimeStr: string, timezone: string): Date {
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 
-function buildSystemPrompt(): string {
+/** The live, editable school-run rota, wrapped with guidance for Rose. */
+async function buildSchoolRunBlock(): Promise<string> {
+  const { describeRota } = await import('./schoolrun');
+  const rota = await describeRota();
+  return `SCHOOL RUN & CHILDCARE:
+Toni is on maternity leave and covers most of the school run for Poppy and Billy. This is the CURRENT rota — the single source of truth. ALWAYS answer school-run questions from this, never from memory:
+${rota}
+
+- The rota changes ad hoc. For a lasting change to a weekday ("from now on Grandma does Mondays"), record it with set_school_run using the day. For a one-off ("Grandma's got Thursday this week", "I'll do pick-up tomorrow"), work out the exact date and record it with set_school_run using the date. Undo with reset_school_run.
+- Wednesdays the kids have after-school clubs, so pick-up is later.
+- If whoever normally does a run is away or unavailable that day, flag which run (drop-off/pick-up) needs cover and suggest who could step in — Grandma is the usual backup.`;
+}
+
+async function buildSystemPrompt(): Promise<string> {
+  const schoolRunBlock = await buildSchoolRunBlock();
   const now = getLocalNow(config.timezone);
   const dateStr = now.toLocaleDateString('en-GB', {
     weekday: 'long',
@@ -1143,19 +1215,7 @@ ${babyLines}
 - They have a dog — whenever Luke is away from home (day travel or overnight), dog walker coverage needs to be in place
 - Luke mainly works from home, but has occasional day trips and overnight stays for work
 ${newbornSection}
-SCHOOL RUN & CHILDCARE:
-The regular weekly school run schedule for Poppy and Billy is:
-- Monday: Luke does drop-off and after-school club pick-up
-- Tuesday: Grandma does drop-off and pick-up (fully covered regardless of Luke)
-- Wednesday: Breakfast club covers the morning (self-drop), Granddad does pick-up (fully covered regardless of Luke)
-- Thursday: Luke does drop-off, Toni does pick-up
-- Friday: Toni doesn't work — Toni does both drop-off and pick-up (fully covered regardless of Luke)
-
-When Luke is away (day trip or overnight), cross-reference his travel dates against the above:
-- Monday away: both drop-off AND pick-up need alternative cover — flag this clearly
-- Thursday away: morning drop-off needs cover (Toni already has the afternoon)
-- Tuesday, Wednesday, Friday: already covered — no action needed, but you can reassure them it's fine
-Grandma is the most likely person to step in for extra cover. If Luke books travel on a Monday or Thursday, proactively flag which part of the school run needs sorting and suggest asking Grandma if needed.
+${schoolRunBlock}
 
 PE DAYS (kit needed the night before):
 - Poppy: Mondays and Fridays
@@ -1435,7 +1495,7 @@ export async function generateResponse(
   }
 
   // Build the system prompt once — it's identical across every loop iteration.
-  const systemPrompt = buildSystemPrompt();
+  const systemPrompt = await buildSystemPrompt();
 
   let response = await createMessage({
     model: config.anthropic.model,
@@ -1538,14 +1598,8 @@ export async function generateDailySummary(): Promise<string> {
   const todayIsHoliday = inHoliday(todayStr);
   const tomorrowIsHoliday = inHoliday(tomorrowStr);
 
-  const schoolRunSchedule: Record<number, string> = {
-    1: 'Luke does drop-off and after-school club pick-up',
-    2: 'Grandma handles both — nothing needed from you two',
-    3: 'Breakfast club drop-off, Granddad picks up — you\'re off the hook',
-    4: 'Luke does drop-off, Toni picks up',
-    5: 'Toni does both',
-  };
-  const todaySchoolRun = (isWeekday && !todayIsHoliday) ? schoolRunSchedule[dayOfWeek] : null;
+  const { getRunForDate } = await import('./schoolrun');
+  const todaySchoolRun = (isWeekday && !todayIsHoliday) ? await getRunForDate(todayStr) : null;
 
   // PE schedule: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
   const peSchedule: Record<number, string[]> = {
@@ -1623,7 +1677,7 @@ ${calendarWarning}`;
   const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 512,
-    system: buildSystemPrompt(),
+    system: await buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -1641,6 +1695,8 @@ export async function generateWeeklySummary(): Promise<string> {
   nextSunday.setHours(23, 59, 59, 999);
 
   const weekEvents = await getEventsForPeriod(nextMonday, nextSunday);
+  const { describeRota } = await import('./schoolrun');
+  const schoolRunRota = await describeRota();
 
   const fmtDate = (d: Date) => d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone });
   const prompt = `Generate a friendly weekly overview message for Luke and Toni for the coming week (${fmtDate(nextMonday)} to ${fmtDate(nextSunday)}).
@@ -1654,19 +1710,15 @@ ${formatEventsForAI(weekEvents)}
 
 Mention any busy days, any gaps, anything that needs preparing or booking ahead. Call out anything involving the kids specifically. Keep it conversational and warm — not a bullet list. Flag anything that stands out. If it's a quiet week, say so positively.
 
-SCHOOL RUN CHECK: Cross-reference the week's events against the regular school run schedule:
-- Monday: Luke does drop-off and after-school club pick-up
-- Tuesday: Grandma handles both — no action needed
-- Wednesday: Breakfast club in the morning, Granddad picks up — no action needed
-- Thursday: Luke does drop-off, Toni picks up
-- Friday: Toni does both — no action needed
+SCHOOL RUN CHECK: Cross-reference the week's events against the current school-run rota (Toni is on maternity leave and covers most runs):
+${schoolRunRota}
 
-If there are any travel events or work commitments for Luke on Monday or Thursday, flag the specific school run that needs cover and suggest asking Grandma. If Monday and Thursday are clear, give a quick reassuring note that the school runs are sorted for the week.`;
+If anyone who normally does a run has travel or a commitment that clashes, flag the specific school run that needs cover and suggest asking Grandma (the usual backup). If the week is clear, give a quick reassuring note that the school runs are sorted.`;
 
   const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 600,
-    system: buildSystemPrompt(),
+    system: await buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -1686,14 +1738,10 @@ export async function generateEventReminder(event: CalendarEvent, hoursUntil: nu
 
   // Pre-compute school run context for the event date so Claude can't get it wrong
   const eventDow = eventDate.getDay(); // 0=Sun…6=Sat
-  const schoolRunNotes: Record<number, string> = {
-    1: 'It\'s a Monday — Luke does drop-off and after-school club pick-up (flag if this conflicts)',
-    2: 'It\'s a Tuesday — Grandma covers drop-off and pick-up, no action needed',
-    3: 'It\'s a Wednesday — Breakfast club + Granddad pick-up, no action needed',
-    4: 'It\'s a Thursday — Luke does drop-off, Toni does pick-up',
-    5: 'It\'s a Friday — Toni does both, no action needed',
-  };
-  const schoolRunNote = schoolRunNotes[eventDow] ?? null;
+  const { getRunForDate } = await import('./schoolrun');
+  const eventDateStr = eventDate.toLocaleDateString('en-CA', { timeZone: config.timezone });
+  const eventRun = (eventDow >= 1 && eventDow <= 5) ? await getRunForDate(eventDateStr) : null;
+  const schoolRunNote = eventRun ? `It's a ${eventDate.toLocaleDateString('en-GB', { weekday: 'long', timeZone: config.timezone })} — school run that day: ${eventRun} (flag if this event conflicts)` : null;
 
   // Check if a dog walker event already exists on the travel date(s)
   const dayStart = new Date(eventDate);
@@ -1725,7 +1773,7 @@ Write it conversationally — not just "Reminder: X". Reference school run conte
   const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 256,
-    system: buildSystemPrompt(),
+    system: await buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -1784,7 +1832,7 @@ RULES:
   const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 400,
-    system: buildSystemPrompt(),
+    system: await buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -1858,7 +1906,7 @@ RULES FOR THIS MESSAGE:
   const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 450,
-    system: buildSystemPrompt(),
+    system: await buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -1872,7 +1920,7 @@ export async function generateBirthdayReminder(name: string, relation: string | 
   const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 200,
-    system: buildSystemPrompt(),
+    system: await buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -1926,7 +1974,7 @@ Write a friendly, practical message suggesting 3–5 specific activities or plac
   const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 600,
-    system: buildSystemPrompt(),
+    system: await buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -1968,7 +2016,7 @@ Write a short, warm weekend round-up — group by day if it helps, mention times
   const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 500,
-    system: buildSystemPrompt(),
+    system: await buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -2002,7 +2050,7 @@ Write a short, warm nudge for Luke and Toni's family Telegram chat. Highlight 2�
   const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 300,
-    system: buildSystemPrompt(),
+    system: await buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -2039,7 +2087,7 @@ Include:
   const response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 400,
-    system: buildSystemPrompt(),
+    system: await buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   });
 

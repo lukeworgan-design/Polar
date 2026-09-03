@@ -5,6 +5,7 @@ import { getTodaysEvents, getUpcomingEvents, CalendarEvent } from './calendar';
 import { getWeatherForecast, DayForecast } from './weather';
 import { getMealPlan, getLastBabyLog, getUpcomingBirthdays, getShoppingList } from './db';
 import { getFridayBinType } from './scheduler';
+import { getRunForDate } from './schoolrun';
 import { getLocalEventsTicker } from './ai';
 import { getDetailedWeather, weatherEmojiForCode, DetailedWeather } from './weather';
 
@@ -97,10 +98,6 @@ function tzDateStr(d: Date): string {
 
 function tzHour(d: Date): number {
   return parseInt(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hour12: false, timeZone: config.timezone }).format(d), 10);
-}
-
-function tzWeekday(d: Date): string {
-  return new Intl.DateTimeFormat('en-GB', { weekday: 'long', timeZone: config.timezone }).format(d);
 }
 
 function fmtTime(iso: string): string {
@@ -237,15 +234,6 @@ function isStale(iso: string, maxHours: number): boolean {
   return (Date.now() - new Date(iso).getTime()) / 3600000 > maxHours;
 }
 
-// School-run rota (mirrors Rose's system prompt). Suppressed during school holidays.
-const SCHOOL_RUN: Record<string, string> = {
-  Monday: 'Luke: drop-off + after-school pick-up',
-  Tuesday: 'Grandma has both — sorted',
-  Wednesday: 'Breakfast club drop, Granddad picks up',
-  Thursday: 'Luke drops, Toni picks up',
-  Friday: 'Toni has both — sorted',
-};
-
 const HOLIDAY_KEYWORDS = ['holiday', 'half term', 'inset', 'teacher training', 'training day', 'school closed'];
 
 function isSchoolHoliday(todayStr: string, todayEvents: CalendarEvent[]): boolean {
@@ -326,11 +314,15 @@ export async function getDashboardData(): Promise<DashboardData> {
     }
   }
 
-  // School run today (weekday and not a holiday)
+  // School run today (weekday and not a holiday). Read from the shared, editable
+  // rota so the wall always matches what Rose says in chat.
   let schoolRun: string | null = null;
-  const weekday = tzWeekday(now);
-  if (SCHOOL_RUN[weekday] && !isSchoolHoliday(todayStr, todayEvents)) {
-    schoolRun = SCHOOL_RUN[weekday]!;
+  if (!isSchoolHoliday(todayStr, todayEvents)) {
+    try {
+      schoolRun = await getRunForDate(todayStr);
+    } catch (err) {
+      console.error('Dashboard: school-run lookup failed:', err);
+    }
   }
 
   // Countdowns: birthdays + Evie milestones + back-to-school, soonest first.
