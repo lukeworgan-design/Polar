@@ -87,6 +87,7 @@ interface DashboardData {
   dailyFun: { header: string; text: string };
   baby: { name: string; ageText: string; fact: string | null } | null;
   shopping: string[];
+  reminders: string[];
   ticker: string[];
   night: boolean;
   generatedAt: string;
@@ -325,6 +326,25 @@ export async function getDashboardData(): Promise<DashboardData> {
     }
   }
 
+  // "Don't forget" — PE / forest-school kit for today and tomorrow (skipped in
+  // holidays). Reads the same shared schedule Rose uses.
+  const reminders: string[] = [];
+  try {
+    const { getKitForWeekday, kitWallLabel } = await import('./kit');
+    const wd = (d: Date) => new Intl.DateTimeFormat('en-GB', { weekday: 'long', timeZone: config.timezone }).format(d);
+    const tomorrow = new Date(now);
+    tomorrow.setDate(now.getDate() + 1);
+    const tomorrowStr = tzDateStr(tomorrow);
+    if (!isSchoolHoliday(todayStr, todayEvents)) {
+      for (const e of await getKitForWeekday(wd(now))) reminders.push(`Today · ${e.child}: ${kitWallLabel(e)}`);
+    }
+    if (!isSchoolHoliday(tomorrowStr, todayEvents)) {
+      for (const e of await getKitForWeekday(wd(tomorrow))) reminders.push(`Tomorrow · ${e.child}: ${kitWallLabel(e)}`);
+    }
+  } catch (err) {
+    console.error('Dashboard: kit reminders failed:', err);
+  }
+
   // Countdowns: birthdays + Evie milestones + back-to-school, soonest first.
   const raw: Array<{ name: string; days: number; emoji: string }> = [];
   try {
@@ -382,7 +402,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   const dailyFun = DAILY_FUN[dayIndex % DAILY_FUN.length]!;
 
   return {
-    headerDate, today, upcoming, weather, meals, bin, schoolRun, countdowns, dailyFun, baby, shopping,
+    headerDate, today, upcoming, weather, meals, bin, schoolRun, countdowns, dailyFun, baby, shopping, reminders,
     ticker: getLocalEventsTicker(),
     night,
     generatedAt: fmtTime(now.toISOString()),
@@ -423,6 +443,19 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         : `<p class="empty">All caught up — nothing on the list 🎉</p>`}
     </div>`;
 
+  // "Don't forget" kit card — only rendered when there's something to pack.
+  const remindersCard = d.reminders.length
+    ? `<div class="card reminders-card">
+        <h2>🎒 Don't forget</h2>
+        <ul class="reminders">${d.reminders
+          .map((r) => {
+            const [tag, rest] = r.split(' · ');
+            return `<li><span class="rm-tag">${esc(tag ?? '')}</span>${esc(rest ?? r)}</li>`;
+          })
+          .join('')}</ul>
+      </div>`
+    : '';
+
   const w = d.weather;
   const hourlyStrip = w.hourly.length
     ? `<div class="hours">${w.hourly.map((h) => `
@@ -446,7 +479,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
        </div>` : '';
 
   const schoolRunCard = d.schoolRun
-    ? `<div class="card"><h2>School run today</h2><p class="big">🚌 ${esc(d.schoolRun)}</p></div>`
+    ? `<div class="card"><h2>School run today</h2><p class="big clamp2">🚌 ${esc(d.schoolRun)}</p></div>`
     : '';
 
   const mealsCard = (d.meals.tonight || d.meals.upcoming.length)
@@ -590,7 +623,13 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .ev-when { flex: 0 0 auto; min-width: 13vw; color: var(--accent2); font-weight: 700; font-size: 2.7vh; font-variant-numeric: tabular-nums; }
   .ev-name { font-size: 2.9vh; font-weight: 600; display: flex; flex-direction: column; }
   .ev-loc { font-size: 2vh; color: var(--muted); font-weight: 400; }
+  /* Clamp a long value to two lines so an edited rota can't blow up a half-width card. */
+  .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .today-card { flex: 0 0 auto; }
+  .reminders-card { flex: 0 0 auto; }
+  .reminders { list-style: none; display: flex; flex-direction: column; gap: .8vh; margin-top: .6vh; }
+  .reminders li { font-size: 2.5vh; font-weight: 600; display: flex; gap: 1.2vw; align-items: baseline; }
+  .reminders .rm-tag { flex: 0 0 auto; min-width: 11vw; color: var(--accent2); font-weight: 700; }
   .events-card { flex: 1.7; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   .events-card .events { flex: 1; min-height: 0; overflow: hidden; }
   .shop-card { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -676,6 +715,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         <h2>Today</h2>
         ${todayList}
       </div>
+      ${remindersCard}
       <div class="card events-card">
         <h2>Coming up</h2>
         ${upcomingList}

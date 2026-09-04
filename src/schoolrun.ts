@@ -14,7 +14,7 @@ import { getSetting, setSetting } from './db';
 const DEFAULT_ROTA: Record<string, string> = {
   Monday: 'Toni: drop-off + pick-up',
   Tuesday: 'Toni: drop-off + pick-up',
-  Wednesday: 'Toni drops; clubs after school, Toni picks up later',
+  Wednesday: 'Toni — clubs, later pick-up',
   Thursday: 'Toni: drop-off + pick-up',
   Friday: 'Toni: drop-off + pick-up',
 };

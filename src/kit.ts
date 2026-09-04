@@ -34,6 +34,12 @@ function kitNoun(e: KitEntry): string {
   return e.kit || (/pe/i.test(e.activity) ? 'PE kit' : 'kit');
 }
 
+/** Compact label for the wall dashboard, e.g. "PE kit" or "Forest School (wellies + spare clothes)". */
+export function kitWallLabel(e: KitEntry): string {
+  if (/pe/i.test(e.activity)) return 'PE kit';
+  return `${e.activity}${e.kit ? ` (${e.kit})` : ''}`;
+}
+
 async function readList(): Promise<KitEntry[]> {
   try {
     const s = await getSetting(KIT_KEY);
