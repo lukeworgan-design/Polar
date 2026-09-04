@@ -604,6 +604,38 @@ const tools: Anthropic.Tool[] = [
       required: [],
     },
   },
+  {
+    name: 'set_kit',
+    description: "Record a PE or Forest-School day for a child (kit is needed the night before). e.g. 'Poppy has PE on Wednesday', 'Billy starts forest school on Thursdays'. Call only when told about an activity/kit day.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        child: { type: 'string', description: 'Child name, e.g. Poppy or Billy' },
+        day: { type: 'string', description: 'Weekday (Monday–Friday)' },
+        activity: { type: 'string', description: "e.g. 'PE' or 'Forest School'" },
+        kit: { type: 'string', description: "Optional — what to bring, e.g. 'wellies + spare clothes'" },
+      },
+      required: ['child', 'day', 'activity'],
+    },
+  },
+  {
+    name: 'remove_kit',
+    description: "Remove a PE/Forest-School day for a child, e.g. 'Poppy no longer has PE on Monday'. Omit activity to clear everything that child has that day.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        child: { type: 'string', description: 'Child name' },
+        day: { type: 'string', description: 'Weekday' },
+        activity: { type: 'string', description: 'Optional activity to remove (e.g. PE)' },
+      },
+      required: ['child', 'day'],
+    },
+  },
+  {
+    name: 'reset_kit',
+    description: "Reset the whole PE / Forest-School kit schedule back to the usual pattern.",
+    input_schema: { type: 'object' as const, properties: {}, required: [] },
+  },
 ];
 
 // ── Tool execution ─────────────────────────────────────────────────────────────
@@ -1089,6 +1121,40 @@ async function executeTool(
         }
       }
 
+      case 'set_kit': {
+        const child = (toolInput['child'] as string || '').trim();
+        const day = (toolInput['day'] as string || '').trim();
+        const activity = (toolInput['activity'] as string || '').trim();
+        const kit = (toolInput['kit'] as string || '').trim() || undefined;
+        if (!child || !day || !activity) return 'Tell me the child, the day, and the activity (PE or forest school).';
+        const { setKit } = await import('./kit');
+        try {
+          const r = await setKit(child, day, activity, kit);
+          return `Noted — ${r}${kit ? ` (${kit})` : ''}. Confirm briefly.`;
+        } catch {
+          return `"${day}" isn't a weekday I recognise — ask which day they mean.`;
+        }
+      }
+
+      case 'remove_kit': {
+        const child = (toolInput['child'] as string || '').trim();
+        const day = (toolInput['day'] as string || '').trim();
+        const activity = (toolInput['activity'] as string || '').trim() || undefined;
+        if (!child || !day) return 'Tell me which child and which day to clear.';
+        const { removeKit } = await import('./kit');
+        try {
+          const r = await removeKit(child, day, activity);
+          return `${r}. Confirm briefly.`;
+        } catch {
+          return `"${day}" isn't a weekday I recognise.`;
+        }
+      }
+
+      case 'reset_kit': {
+        const { resetKit } = await import('./kit');
+        return `${await resetKit()} Confirm briefly.`;
+      }
+
       default:
         return `Unknown tool: ${toolName}`;
     }
@@ -1145,6 +1211,15 @@ function parseInTimezone(datetimeStr: string, timezone: string): Date {
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 
+/** The live, editable PE / forest-school kit schedule, wrapped with guidance. */
+async function buildKitBlock(): Promise<string> {
+  const { describeKit } = await import('./kit');
+  const kit = await describeKit();
+  return `PE / FOREST-SCHOOL KIT (kit needed the night before — suppressed during school holidays):
+${kit}
+- Answer kit questions from THIS list, never from memory. To change it use set_kit (e.g. "Poppy's PE moved to Tuesday", "Billy starts forest school Thursdays"), remove_kit, or reset_kit.`;
+}
+
 /** The live, editable school-run rota, wrapped with guidance for Rose. */
 async function buildSchoolRunBlock(): Promise<string> {
   const { describeRota } = await import('./schoolrun');
@@ -1160,6 +1235,7 @@ ${rota}
 
 async function buildSystemPrompt(): Promise<string> {
   const schoolRunBlock = await buildSchoolRunBlock();
+  const kitBlock = await buildKitBlock();
   const now = getLocalNow(config.timezone);
   const dateStr = now.toLocaleDateString('en-GB', {
     weekday: 'long',
@@ -1217,9 +1293,7 @@ ${babyLines}
 ${newbornSection}
 ${schoolRunBlock}
 
-PE DAYS (kit needed the night before):
-- Poppy: Mondays and Fridays
-- Billy: Wednesdays and Fridays
+${kitBlock}
 
 SCHOOL HOLIDAYS:
 School holiday periods are stored in the Family Google Calendar as all-day events (e.g. "School holidays"). When you see one of these events on the calendar:
@@ -1601,23 +1675,13 @@ export async function generateDailySummary(): Promise<string> {
   const { getRunForDate } = await import('./schoolrun');
   const todaySchoolRun = (isWeekday && !todayIsHoliday) ? await getRunForDate(todayStr) : null;
 
-  // PE schedule: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
-  const peSchedule: Record<number, string[]> = {
-    1: ['Poppy'],           // Monday
-    3: ['Billy'],           // Wednesday
-    5: ['Poppy', 'Billy'],  // Friday
-  };
+  // PE / forest-school kit — read from the shared, editable schedule.
+  const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const tomorrowDow = (dayOfWeek + 1) % 7;
-  const todayPE = todayIsHoliday ? [] : (peSchedule[dayOfWeek] ?? []);
-  const tomorrowPE = tomorrowIsHoliday ? [] : (peSchedule[tomorrowDow] ?? []);
-  const peAlerts: string[] = [];
-  if (todayPE.length > 0) {
-    peAlerts.push(`${todayPE.join(' and ')} ${todayPE.length === 1 ? 'has' : 'have'} PE today — make sure kit is on them!`);
-  }
-  if (tomorrowPE.length > 0) {
-    peAlerts.push(`${tomorrowPE.join(' and ')} ${tomorrowPE.length === 1 ? 'has' : 'have'} PE tomorrow — pack kit tonight.`);
-  }
-  const peSection = peAlerts.length > 0 ? peAlerts.join(' ') : null;
+  const { kitAlertsFor } = await import('./kit');
+  const todayKitAlerts = todayIsHoliday ? [] : await kitAlertsFor(WEEKDAY_NAMES[dayOfWeek]!, 'today');
+  const tomorrowKitAlerts = tomorrowIsHoliday ? [] : await kitAlertsFor(WEEKDAY_NAMES[tomorrowDow]!, 'tomorrow');
+  const peSection = [...todayKitAlerts, ...tomorrowKitAlerts].join(' ') || null;
 
   const weatherSection = weatherDays.length > 0
     ? `Today's weather: ${formatDayWeather(weatherDays[0])}${weatherDays[1] ? `\nTomorrow's weather: ${formatDayWeather(weatherDays[1])}` : ''}`
@@ -1659,7 +1723,7 @@ ${todaySchoolRun ? `SCHOOL RUN TODAY: ${todaySchoolRun}. Include a **🚌 School
 
 ${mealSection ? `MEALS: ${mealSection}\nInclude a **🍽 Food** section with today's planned meals. Keep it to one line per meal. If only dinner is set, just mention dinner.` : ''}
 
-${peSection ? `PE KIT ALERT: ${peSection}\nInclude this under the **🎒 Kids** section. Use exactly the day names given (today/tomorrow) — do not guess or invent.` : ''}
+${peSection ? `KIT ALERT: ${peSection}\nInclude this under the **🎒 Kids** section. Use exactly the day names given (today/tomorrow) — do not guess or invent.` : ''}
 
 ${babyRecap ? `BABY OVERNIGHT: ${babyRecap}\nInclude a short **👶 ${babyDisplayName()}** line with this overnight recap. Keep it warm and brief.` : ''}
 
