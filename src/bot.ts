@@ -5,7 +5,7 @@ import { config, getUserName } from './config';
 import { generateResponse, ImageData, loadBabyArrival } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
-import { getDashboardData, renderDashboardPage, parseOptions, localBgFiles } from './dashboard';
+import { getDashboardData, renderDashboardPage, parseOptions, localBgFiles, emojifyHtml } from './dashboard';
 import { initRing, getDoorbellStatus, getDoorbellSnapshot, getMotionSnapshot, triggerTestDing } from './ring';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { createReadStream } from 'fs';
@@ -683,7 +683,7 @@ async function handleHttp(
     }
     try {
       const data = await getDashboardData();
-      const html = renderDashboardPage(data, parseOptions(url.searchParams));
+      const html = emojifyHtml(renderDashboardPage(data, parseOptions(url.searchParams)));
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
     } catch (err) {

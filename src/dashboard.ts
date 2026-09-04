@@ -447,6 +447,19 @@ function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Replace emoji with Twemoji images server-side, so even the wall TV's old
+// browser (which can't draw newer emoji like 🦦 and may not run our scripts)
+// shows every emoji as an image baked straight into the HTML.
+const EMOJI_SEQ = /\p{Extended_Pictographic}(\uFE0F|[\u{1F3FB}-\u{1F3FF}])?(\u200D\p{Extended_Pictographic}\uFE0F?)*/gu;
+export function emojifyHtml(html: string): string {
+  return html.replace(EMOJI_SEQ, (seq) => {
+    const cps = Array.from(seq).map((c) => c.codePointAt(0)!).filter((cp) => cp !== 0xfe0f);
+    if (cps.length === 0) return seq;
+    const name = cps.map((cp) => cp.toString(16)).join('-');
+    return `<img class="emoji" alt="${seq}" src="https://cdn.jsdelivr.net/npm/twemoji@14.0.2/assets/72x72/${name}.png">`;
+  });
+}
+
 function eventRow(e: DashEvent): string {
   return `<li><span class="ev-when">${esc(e.when)}</span><span class="ev-name">${esc(e.summary)}${
     e.location ? `<span class="ev-loc">📍 ${esc(e.location)}</span>` : ''
@@ -784,20 +797,6 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
       <div class="m-sub" id="motion-sub"></div>
     </div>
   </div>
-
-  <!-- Twemoji: swap emoji glyphs for images so the TV's old font can't miss any
-       (its bundled MaxCDN base is dead, so point base at jsDelivr explicitly). -->
-  <script src="https://cdn.jsdelivr.net/npm/twemoji@14.0.2/dist/twemoji.min.js" crossorigin="anonymous"></script>
-  <script>
-    try {
-      if (window.twemoji) {
-        twemoji.parse(document.body, {
-          base: 'https://cdn.jsdelivr.net/npm/twemoji@14.0.2/assets/',
-          folder: '72x72', ext: '.png'
-        });
-      }
-    } catch (e) { /* fall back to native emoji */ }
-  </script>
 
   <script>
     function tick() {
