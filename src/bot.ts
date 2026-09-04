@@ -514,6 +514,28 @@ bot.command('devices', async (ctx) => {
   }
 });
 
+// Handle /birthdays command — diagnostic: dump the birthdays table + computed countdown
+bot.command('birthdays', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  try {
+    const { getBirthdays, getUpcomingBirthdays } = await import('./db');
+    const [all, up] = await Promise.all([getBirthdays(), getUpcomingBirthdays(60)]);
+    const daysById = new Map(up.map((u) => [u.id, u.days_until]));
+    if (all.length === 0) {
+      await ctx.reply('🎂 The birthdays table is empty — no birthdays are stored in the DB.');
+      return;
+    }
+    const lines = all.map((b) => {
+      const d = daysById.get(b.id);
+      const status = d == null ? '⚠️ not parsed / >60d' : d === 0 ? 'today!' : `${d}d`;
+      return `• ${b.name}${b.relation ? ` (${b.relation})` : ''} — stored: \`${b.date}\` → ${status}`;
+    });
+    await ctx.reply(`🎂 *Birthdays table* (${all.length}):\n${lines.join('\n')}`, { parse_mode: 'Markdown' });
+  } catch (err) {
+    await ctx.reply(`Couldn't read the birthdays table: ${(err as Error).message}`);
+  }
+});
+
 // Handle /help command
 bot.command('help', async (ctx) => {
   if (!isFromGroup(ctx)) return;
