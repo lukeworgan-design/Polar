@@ -73,6 +73,7 @@ interface DashEvent {
 interface Countdown {
   name: string;
   detail: string;
+  close?: boolean; // immediate family — gets a subtle highlight
 }
 
 interface DashboardData {
@@ -346,7 +347,14 @@ export async function getDashboardData(): Promise<DashboardData> {
   }
 
   // Countdowns: birthdays + Evie milestones + back-to-school, soonest first.
-  const raw: Array<{ name: string; days: number; emoji: string }> = [];
+  const raw: Array<{ name: string; days: number; emoji: string; close?: boolean }> = [];
+  // Immediate family get a subtle highlight to stand out from friends/relatives.
+  const closeNames = new Set<string>(
+    [
+      ...config.family.children.map((c) => c.name),
+      config.users.luke.name, config.users.toni.name, config.family.babyName || '',
+    ].map((n) => n.trim().toLowerCase()).filter(Boolean),
+  );
   const dbBdayNames = new Set<string>();
   try {
     const [bdays, allBdays] = await Promise.all([getUpcomingBirthdays(45), getBirthdays()]);
@@ -355,7 +363,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       const key = `${b.name.trim().toLowerCase()}|${b.days_until}`;
       if (seenBday.has(key)) continue; // skip duplicate rows (e.g. two identical "Alex" entries)
       seenBday.add(key);
-      raw.push({ name: b.name, days: b.days_until, emoji: '🎂' });
+      raw.push({ name: b.name, days: b.days_until, emoji: '🎂', close: closeNames.has(b.name.trim().toLowerCase()) });
     }
     // Full list (any date) so a child tracked in the DB is never re-added from
     // config with a placeholder DOB, even if their birthday is outside the window.
@@ -374,7 +382,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   for (const child of config.family.children) {
     if (dbBdayNames.has(child.name.trim().toLowerCase())) continue;
     const { days, turning } = nextBirthday(child.dob);
-    if (days >= 0 && days <= 45) raw.push({ name: `${child.name} turns ${turning}`, days, emoji: '🎂' });
+    if (days >= 0 && days <= 45) raw.push({ name: `${child.name} turns ${turning}`, days, emoji: '🎂', close: true });
   }
   // Evie's next developmental milestone
   const dobC = config.family.babyBorn;
@@ -385,7 +393,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       { d: 84, label: '3 months old' }, { d: 182, label: '6 months old' }, { d: 365, label: '1st birthday' },
     ];
     const next = milestones.find((m) => m.d > ageDays);
-    if (next) raw.push({ name: `${config.family.babyName || 'Baby'} — ${next.label}`, days: next.d - ageDays, emoji: '👶' });
+    if (next) raw.push({ name: `${config.family.babyName || 'Baby'} — ${next.label}`, days: next.d - ageDays, emoji: '👶', close: true });
   }
   // Back to school (end date of the holiday we're currently in)
   const inHol = config.family.schoolHolidays.find((h) => todayStr >= h.start && todayStr < h.end);
@@ -400,6 +408,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     .map((c) => ({
       name: `${c.emoji} ${c.name}`,
       detail: c.days === 0 ? 'Today!' : c.days === 1 ? 'Tomorrow' : `${c.days} days`,
+      close: c.close,
     }));
 
   let baby: DashboardData['baby'] = null;
@@ -521,7 +530,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
 
   const countdownCard = d.countdowns.length
     ? `<div class="card"><h2>Countdowns</h2><ul class="mini">${
-        d.countdowns.map((c) => `<li><span>${esc(c.name)}</span><span class="cd">${esc(c.detail)}</span></li>`).join('')
+        d.countdowns.map((c) => `<li${c.close ? ' class="fam"' : ''}><span>${esc(c.name)}</span><span class="cd">${esc(c.detail)}</span></li>`).join('')
       }</ul></div>`
     : '';
 
@@ -668,6 +677,8 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .mini li { display: flex; justify-content: space-between; gap: 1.5vw; font-size: 2.5vh; font-weight: 600; }
   .mini li > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mini .cd { color: var(--accent2); flex: 0 0 auto; }
+  /* Immediate family — subtle highlight so they stand out from friends/relatives. */
+  .mini li.fam > span:first-child { color: var(--accent); }
   /* Two compact cards side by side, equal height, to save vertical space. */
   .side-pair { display: flex; gap: 1.1vh; align-items: stretch; }
   .side-pair > .card { flex: 1 1 0; min-width: 0; }
