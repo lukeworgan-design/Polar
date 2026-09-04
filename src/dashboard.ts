@@ -456,7 +456,8 @@ export function emojifyHtml(html: string): string {
     const cps = Array.from(seq).map((c) => c.codePointAt(0)!).filter((cp) => cp !== 0xfe0f);
     if (cps.length === 0) return seq;
     const name = cps.map((cp) => cp.toString(16)).join('-');
-    return `<img class="emoji" alt="${seq}" src="https://cdn.jsdelivr.net/npm/twemoji@14.0.2/assets/72x72/${name}.png">`;
+    // Served from Rose's own origin (the TV can reach that, but not external CDNs).
+    return `<img class="emoji" alt="${seq}" src="/emoji/${name}.png">`;
   });
 }
 
