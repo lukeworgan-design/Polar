@@ -731,6 +731,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   #motion img { width: 16vw; max-height: 12vh; object-fit: cover; border-radius: 10px; display: none; }
   #motion .m-txt { font-size: 2.4vh; font-weight: 700; }
   #motion .m-sub { font-size: 1.9vh; color: var(--muted); font-weight: 500; margin-top: .4vh; }
+  /* Twemoji renders emoji as inline images so newer ones (🦦 etc.) show on the
+     TV's old browser font. Size them to the surrounding text. */
+  img.emoji { height: 1em; width: 1em; margin: 0 .08em; vertical-align: -0.12em; display: inline-block; }
 </style>
 </head>
 <body class="${hasTicker ? 'has-ticker' : ''}"${d.night ? ' data-night="1"' : ''}>
@@ -781,6 +784,20 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
       <div class="m-sub" id="motion-sub"></div>
     </div>
   </div>
+
+  <!-- Twemoji: swap emoji glyphs for images so the TV's old font can't miss any
+       (its bundled MaxCDN base is dead, so point base at jsDelivr explicitly). -->
+  <script src="https://cdn.jsdelivr.net/npm/twemoji@14.0.2/dist/twemoji.min.js" crossorigin="anonymous"></script>
+  <script>
+    try {
+      if (window.twemoji) {
+        twemoji.parse(document.body, {
+          base: 'https://cdn.jsdelivr.net/npm/twemoji@14.0.2/assets/',
+          folder: '72x72', ext: '.png'
+        });
+      }
+    } catch (e) { /* fall back to native emoji */ }
+  </script>
 
   <script>
     function tick() {
