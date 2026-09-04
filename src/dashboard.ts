@@ -3,7 +3,7 @@ import { join } from 'path';
 import { config } from './config';
 import { getTodaysEvents, getUpcomingEvents, CalendarEvent } from './calendar';
 import { getWeatherForecast, DayForecast } from './weather';
-import { getMealPlan, getLastBabyLog, getUpcomingBirthdays, getShoppingList } from './db';
+import { getMealPlan, getLastBabyLog, getUpcomingBirthdays, getBirthdays, getShoppingList } from './db';
 import { getFridayBinType } from './scheduler';
 import { getRunForDate } from './schoolrun';
 import { getLocalEventsTicker } from './ai';
@@ -349,16 +349,17 @@ export async function getDashboardData(): Promise<DashboardData> {
   const raw: Array<{ name: string; days: number; emoji: string }> = [];
   const dbBdayNames = new Set<string>();
   try {
-    const bdays = await getUpcomingBirthdays(45);
+    const [bdays, allBdays] = await Promise.all([getUpcomingBirthdays(45), getBirthdays()]);
     for (const b of bdays) {
       raw.push({ name: `${b.name}${b.relation ? ` (${b.relation})` : ''}`, days: b.days_until, emoji: '🎂' });
-      dbBdayNames.add(b.name.trim().toLowerCase());
     }
+    // Full list (any date) so a child tracked in the DB is never re-added from
+    // config with a placeholder DOB, even if their birthday is outside the window.
+    for (const b of allBdays) dbBdayNames.add(b.name.trim().toLowerCase());
   } catch (err) {
     console.error('Dashboard: birthdays fetch failed:', err);
   }
-  // The family's own children — their birthdays live in config (their DOBs), not
-  // the birthdays table, so add them here (skipping any already in the DB).
+  // Any child NOT tracked in the birthdays table falls back to their config DOB.
   const nextBirthday = (dob: string): { days: number; turning: number } => {
     const b = new Date(`${dob}T12:00:00`);
     const anchor = new Date(`${todayStr}T12:00:00`);

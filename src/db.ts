@@ -128,16 +128,24 @@ export async function getBirthdays(): Promise<Array<{ id: number; name: string; 
 export async function getUpcomingBirthdays(daysAhead: number = 14): Promise<Array<{ id: number; name: string; date: string; relation: string | null; days_until: number }>> {
   const birthdays = await getBirthdays();
   const now = new Date();
+  // Anchor on local midnight today so we compare whole days, not time-of-day —
+  // otherwise a birthday "today" flips to next year because its midnight is < now.
+  const todayMid = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const results: Array<{ id: number; name: string; date: string; relation: string | null; days_until: number }> = [];
 
   for (const b of birthdays) {
-    const [, month, day] = b.date.split('-').map(Number);
-    const thisYear = new Date(now.getFullYear(), (month as number) - 1, day as number);
-    const nextYear = new Date(now.getFullYear() + 1, (month as number) - 1, day as number);
+    // Tolerate timestamps or stray formats — only trust a leading YYYY-MM-DD.
+    const m = String(b.date).slice(0, 10).match(/^\d{4}-(\d{2})-(\d{2})$/);
+    if (!m) {
+      console.warn(`Birthday for "${b.name}" has an unparseable date: ${b.date}`);
+      continue;
+    }
+    const month = Number(m[1]);
+    const day = Number(m[2]);
 
-    const upcoming = thisYear >= now ? thisYear : nextYear;
-    const diffMs = upcoming.getTime() - now.getTime();
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    let next = new Date(todayMid.getFullYear(), month - 1, day);
+    if (next.getTime() < todayMid.getTime()) next = new Date(todayMid.getFullYear() + 1, month - 1, day);
+    const diffDays = Math.round((next.getTime() - todayMid.getTime()) / (1000 * 60 * 60 * 24));
 
     if (diffDays <= daysAhead) {
       results.push({ ...b, days_until: diffDays });
