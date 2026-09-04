@@ -347,11 +347,29 @@ export async function getDashboardData(): Promise<DashboardData> {
 
   // Countdowns: birthdays + Evie milestones + back-to-school, soonest first.
   const raw: Array<{ name: string; days: number; emoji: string }> = [];
+  const dbBdayNames = new Set<string>();
   try {
     const bdays = await getUpcomingBirthdays(45);
-    for (const b of bdays) raw.push({ name: `${b.name}${b.relation ? ` (${b.relation})` : ''}`, days: b.days_until, emoji: '🎂' });
+    for (const b of bdays) {
+      raw.push({ name: `${b.name}${b.relation ? ` (${b.relation})` : ''}`, days: b.days_until, emoji: '🎂' });
+      dbBdayNames.add(b.name.trim().toLowerCase());
+    }
   } catch (err) {
     console.error('Dashboard: birthdays fetch failed:', err);
+  }
+  // The family's own children — their birthdays live in config (their DOBs), not
+  // the birthdays table, so add them here (skipping any already in the DB).
+  const nextBirthday = (dob: string): { days: number; turning: number } => {
+    const b = new Date(`${dob}T12:00:00`);
+    const anchor = new Date(`${todayStr}T12:00:00`);
+    let next = new Date(anchor.getFullYear(), b.getMonth(), b.getDate(), 12, 0, 0);
+    if (next.getTime() < anchor.getTime()) next = new Date(anchor.getFullYear() + 1, b.getMonth(), b.getDate(), 12, 0, 0);
+    return { days: Math.round((next.getTime() - anchor.getTime()) / 86400000), turning: next.getFullYear() - b.getFullYear() };
+  };
+  for (const child of config.family.children) {
+    if (dbBdayNames.has(child.name.trim().toLowerCase())) continue;
+    const { days, turning } = nextBirthday(child.dob);
+    if (days >= 0 && days <= 45) raw.push({ name: `${child.name} turns ${turning}`, days, emoji: '🎂' });
   }
   // Evie's next developmental milestone
   const dobC = config.family.babyBorn;
