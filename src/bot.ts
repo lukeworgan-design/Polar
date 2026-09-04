@@ -5,7 +5,7 @@ import { config, getUserName } from './config';
 import { generateResponse, ImageData, loadBabyArrival } from './ai';
 import { initScheduler } from './scheduler';
 import { transcribeAudio } from './transcribe';
-import { getDashboardData, renderDashboardPage, parseOptions, localBgFiles, emojifyHtml } from './dashboard';
+import { getDashboardData, renderDashboardPage, parseOptions, localBgFiles } from './dashboard';
 import { initRing, getDoorbellStatus, getDoorbellSnapshot, getMotionSnapshot, triggerTestDing } from './ring';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { createReadStream } from 'fs';
@@ -623,27 +623,6 @@ bot.catch((err, ctx) => {
 
 const WEBHOOK_PATH = '/webhook';
 
-// ── Emoji proxy (Twemoji PNGs, cached in memory) ──────────────────────────────
-const TRANSPARENT_PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-  'base64',
-);
-const emojiCache = new Map<string, Buffer>();
-async function getEmojiPng(name: string): Promise<Buffer | null> {
-  const cached = emojiCache.get(name);
-  if (cached) return cached;
-  try {
-    const r = await fetch(`https://cdn.jsdelivr.net/npm/twemoji@14.0.2/assets/72x72/${name}.png`);
-    if (!r.ok) return null;
-    const buf = Buffer.from(await r.arrayBuffer());
-    if (emojiCache.size > 500) emojiCache.clear(); // simple bound
-    emojiCache.set(name, buf);
-    return buf;
-  } catch {
-    return null;
-  }
-}
-
 function readRequestBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -704,33 +683,13 @@ async function handleHttp(
     }
     try {
       const data = await getDashboardData();
-      const html = emojifyHtml(renderDashboardPage(data, parseOptions(url.searchParams)));
+      const html = renderDashboardPage(data, parseOptions(url.searchParams));
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
     } catch (err) {
       console.error('Dashboard render error:', err);
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('Dashboard temporarily unavailable.');
-    }
-    return;
-  }
-
-  // Emoji images, proxied from the Twemoji CDN so the wall TV (which can't reach
-  // external CDNs, but can reach us) always gets them. Cached in memory.
-  if (req.method === 'GET' && path.startsWith('/emoji/')) {
-    const name = path.slice('/emoji/'.length).replace(/\.png$/i, '');
-    if (!/^[0-9a-f]+(-[0-9a-f]+)*$/.test(name)) {
-      res.writeHead(400, { 'Content-Type': 'text/plain' }); res.end('bad emoji');
-      return;
-    }
-    const buf = await getEmojiPng(name);
-    if (buf) {
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=604800' });
-      res.end(buf);
-    } else {
-      // Transparent 1x1 rather than a broken-image icon if the fetch fails.
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
-      res.end(TRANSPARENT_PNG);
     }
     return;
   }

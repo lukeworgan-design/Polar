@@ -447,20 +447,6 @@ function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// Replace emoji with Twemoji images server-side, so even the wall TV's old
-// browser (which can't draw newer emoji like 🦦 and may not run our scripts)
-// shows every emoji as an image baked straight into the HTML.
-const EMOJI_SEQ = /\p{Extended_Pictographic}(\uFE0F|[\u{1F3FB}-\u{1F3FF}])?(\u200D\p{Extended_Pictographic}\uFE0F?)*/gu;
-export function emojifyHtml(html: string): string {
-  return html.replace(EMOJI_SEQ, (seq) => {
-    const cps = Array.from(seq).map((c) => c.codePointAt(0)!).filter((cp) => cp !== 0xfe0f);
-    if (cps.length === 0) return seq;
-    const name = cps.map((cp) => cp.toString(16)).join('-');
-    // Served from Rose's own origin (the TV can reach that, but not external CDNs).
-    return `<img class="emoji" alt="${seq}" src="/emoji/${name}.png">`;
-  });
-}
-
 function eventRow(e: DashEvent): string {
   return `<li><span class="ev-when">${esc(e.when)}</span><span class="ev-name">${esc(e.summary)}${
     e.location ? `<span class="ev-loc">📍 ${esc(e.location)}</span>` : ''
@@ -745,9 +731,6 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   #motion img { width: 16vw; max-height: 12vh; object-fit: cover; border-radius: 10px; display: none; }
   #motion .m-txt { font-size: 2.4vh; font-weight: 700; }
   #motion .m-sub { font-size: 1.9vh; color: var(--muted); font-weight: 500; margin-top: .4vh; }
-  /* Twemoji renders emoji as inline images so newer ones (🦦 etc.) show on the
-     TV's old browser font. Size them to the surrounding text. */
-  img.emoji { height: 1em; width: 1em; margin: 0 .08em; vertical-align: -0.12em; display: inline-block; }
 </style>
 </head>
 <body class="${hasTicker ? 'has-ticker' : ''}"${d.night ? ' data-night="1"' : ''}>
