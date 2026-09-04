@@ -134,15 +134,20 @@ export async function getUpcomingBirthdays(daysAhead: number = 14): Promise<Arra
   const results: Array<{ id: number; name: string; date: string; relation: string | null; days_until: number }> = [];
 
   for (const b of birthdays) {
-    // Tolerate timestamps and non-padded parts — trust a leading YYYY-M-D,
-    // ignoring any time component that follows.
-    const m = String(b.date).match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-    if (!m) {
+    // Dates are stored as "MM-DD" (no year); also tolerate a full "YYYY-M-D"
+    // (with any trailing time component) for safety.
+    const s = String(b.date).trim();
+    let month: number, day: number;
+    const iso = s.match(/^\d{4}-(\d{1,2})-(\d{1,2})/);
+    const md = s.match(/^(\d{1,2})-(\d{1,2})$/);
+    if (iso) {
+      month = Number(iso[1]); day = Number(iso[2]);
+    } else if (md) {
+      month = Number(md[1]); day = Number(md[2]);
+    } else {
       console.warn(`Birthday for "${b.name}" has an unparseable date: ${b.date}`);
       continue;
     }
-    const month = Number(m[2]);
-    const day = Number(m[3]);
 
     let next = new Date(todayMid.getFullYear(), month - 1, day);
     if (next.getTime() < todayMid.getTime()) next = new Date(todayMid.getFullYear() + 1, month - 1, day);

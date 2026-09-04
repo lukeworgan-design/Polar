@@ -350,7 +350,11 @@ export async function getDashboardData(): Promise<DashboardData> {
   const dbBdayNames = new Set<string>();
   try {
     const [bdays, allBdays] = await Promise.all([getUpcomingBirthdays(45), getBirthdays()]);
+    const seenBday = new Set<string>();
     for (const b of bdays) {
+      const key = `${b.name.trim().toLowerCase()}|${b.days_until}`;
+      if (seenBday.has(key)) continue; // skip duplicate rows (e.g. two identical "Alex" entries)
+      seenBday.add(key);
       raw.push({ name: `${b.name}${b.relation ? ` (${b.relation})` : ''}`, days: b.days_until, emoji: '🎂' });
     }
     // Full list (any date) so a child tracked in the DB is never re-added from
