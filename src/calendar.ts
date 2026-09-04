@@ -197,7 +197,8 @@ const EVENT_EMOJI: Array<[RegExp, string]> = [
   [/\b(beach|seaside)\b/i, '🏖'],
   [/\bzoo\b/i, '🦁'],
   [/\bfarm\b/i, '🚜'],
-  [/\b(scouts|beavers|cubs|brownies|rainbows|guides)\b/i, '🏕'],
+  [/\bbeavers\b/i, '🦦'], // Billy's Beavers — he loves otters (checked before the Scouts group)
+  [/\b(scouts|cubs|brownies|rainbows|guides)\b/i, '🏕'],
   [/\b(church|mass|christening|communion)\b/i, '⛪'],
   [/\b(vet|vets)\b/i, '🐾'],
   [/\b(school|inset|parents evening|assembly|sports day|nursery|pre[-\s]?school)\b/i, '🏫'],
