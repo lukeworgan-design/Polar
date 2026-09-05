@@ -89,6 +89,10 @@ interface DashboardData {
   baby: { name: string; ageText: string; fact: string | null } | null;
   shopping: string[];
   reminders: string[];
+  pocketMoney: {
+    kids: Array<{ name: string; done: number; total: number; pence: number; weekPence: number }>;
+    paydayDays: number;
+  } | null;
   ticker: string[];
   night: boolean;
   generatedAt: string;
@@ -454,8 +458,26 @@ export async function getDashboardData(): Promise<DashboardData> {
   const dayIndex = Math.floor(Date.now() / 86400000);
   const dailyFun = DAILY_FUN[dayIndex % DAILY_FUN.length]!;
 
+  // Pocket-money jobs (kids), if set up.
+  let pocketMoney: DashboardData['pocketMoney'] = null;
+  try {
+    const pm = await import('./pocketmoney');
+    if (await pm.isConfigured()) {
+      const kidsData = [];
+      for (const name of pm.childNames()) {
+        const t = await pm.todayProgress(name);
+        const w = await pm.weekProgress(name);
+        kidsData.push({ name, done: t.done, total: t.total, pence: t.pence, weekPence: w.pence });
+      }
+      const dow = new Date(`${todayStr}T12:00:00Z`).getUTCDay(); // 0 = Sunday
+      pocketMoney = { kids: kidsData, paydayDays: dow === 0 ? 0 : 7 - dow };
+    }
+  } catch (err) {
+    console.error('Dashboard: pocket money fetch failed:', err);
+  }
+
   return {
-    headerDate, today, upcoming, weather, meals, bin, schoolRun, countdowns, dailyFun, baby, shopping, reminders,
+    headerDate, today, upcoming, weather, meals, bin, schoolRun, countdowns, dailyFun, baby, shopping, reminders, pocketMoney,
     ticker: getLocalEventsTicker(),
     night,
     generatedAt: fmtTime(now.toISOString()),
@@ -495,6 +517,28 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         ? `<ul class="shop-list">${shopShown.map((i) => `<li>${esc(i)}</li>`).join('')}${shopMore > 0 ? `<li class="more">+${shopMore} more…</li>` : ''}</ul>`
         : `<p class="empty">All caught up — nothing on the list 🎉</p>`}
     </div>`;
+
+  // Pocket-money jobs card — rotates between Today / This week / Payday.
+  const gbp = (p: number) => (p < 100 ? `${p}p` : `£${(p / 100).toFixed(2)}`);
+  const jobsCard = d.pocketMoney && d.pocketMoney.kids.length
+    ? (() => {
+        const pm = d.pocketMoney!;
+        const dots = (done: number, total: number) => '●'.repeat(done) + '○'.repeat(Math.max(0, total - done));
+        const todayView = pm.kids.map((k) =>
+          `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-dots">${dots(k.done, k.total)}</span><span class="jm-val">${gbp(k.pence)}</span></li>`).join('');
+        const weekView = pm.kids.map((k) =>
+          `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-val">${gbp(k.weekPence)} this week</span></li>`).join('');
+        const payLabel = pm.paydayDays === 0 ? '💰 Payday today!' : pm.paydayDays === 1 ? '💰 Payday tomorrow' : `💰 Payday Sunday · ${pm.paydayDays} days`;
+        const payView = `<li class="jm-pay">${payLabel}</li>` + pm.kids.map((k) =>
+          `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-val">${gbp(k.weekPence)}</span></li>`).join('');
+        return `<div class="card jobs-card">
+        <h2>🌟 Pocket money</h2>
+        <ul class="jobs-view" data-jv="0">${todayView}</ul>
+        <ul class="jobs-view" data-jv="1" hidden>${weekView}</ul>
+        <ul class="jobs-view" data-jv="2" hidden>${payView}</ul>
+      </div>`;
+      })()
+    : '';
 
   // "Don't forget" kit card — only rendered when there's something to pack.
   const remindersCard = d.reminders.length
@@ -680,6 +724,15 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .today-card { flex: 0 0 auto; }
   .reminders-card { flex: 0 0 auto; }
+  /* Pocket-money jobs card (rotates views) */
+  .jobs-card { flex: 0 0 auto; }
+  .jobs-view { list-style: none; display: flex; flex-direction: column; gap: .8vh; margin-top: .6vh; }
+  .jobs-view[hidden] { display: none; }
+  .jobs-view li { display: flex; align-items: baseline; gap: 1.2vw; font-size: 2.6vh; font-weight: 600; }
+  .jm-name { flex: 0 0 auto; min-width: 9vw; }
+  .jm-dots { flex: 1; color: var(--accent2); letter-spacing: .35vw; font-size: 2.3vh; white-space: nowrap; overflow: hidden; }
+  .jm-val { flex: 0 0 auto; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .jm-pay { color: var(--accent2); font-weight: 700; }
   .reminders { list-style: none; display: flex; flex-direction: column; gap: .8vh; margin-top: .6vh; }
   .reminders li { font-size: 2.5vh; font-weight: 600; display: flex; gap: 1.2vw; align-items: baseline; }
   .reminders .rm-tag { flex: 0 0 auto; min-width: 11vw; color: var(--accent2); font-weight: 700; }
@@ -771,6 +824,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         ${todayList}
       </div>
       ${remindersCard}
+      ${jobsCard}
       <div class="card events-card">
         <h2>Coming up</h2>
         ${upcomingList}
@@ -812,6 +866,18 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
       if (el) el.textContent = h + ':' + m;
     }
     tick(); setInterval(tick, 10000);
+
+    // Pocket-money card — rotate Today / This week / Payday every 12s.
+    (function () {
+      var views = document.querySelectorAll('.jobs-view');
+      if (views.length < 2) return;
+      var i = 0;
+      setInterval(function () {
+        views[i].hidden = true;
+        i = (i + 1) % views.length;
+        views[i].hidden = false;
+      }, 12000);
+    })();
 
     // Background photo slideshow — cross-fade every 18s if more than one image.
     (function () {

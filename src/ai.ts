@@ -636,6 +636,74 @@ const tools: Anthropic.Tool[] = [
     description: "Reset the whole PE / Forest-School kit schedule back to the usual pattern.",
     input_schema: { type: 'object' as const, properties: {}, required: [] },
   },
+  {
+    name: 'get_jobs_status',
+    description: "Read the kids' pocket-money jobs: each child's jobs for today (with exact names and pennies), what's ticked off, and the running weekly total. Call this before marking jobs off (so you use the exact job names) and whenever asked about jobs or pocket money.",
+    input_schema: { type: 'object' as const, properties: {}, required: [] },
+  },
+  {
+    name: 'mark_job_done',
+    description: "Tick off pocket-money job(s) for a child today, e.g. 'Poppy made her bed'. Pass the EXACT job name(s) from get_jobs_status (comma-separated for several), or 'all' for everything today. Always check get_jobs_status first so the names match.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        child: { type: 'string', description: 'Which child (e.g. Poppy or Billy)' },
+        jobs: { type: 'string', description: "Exact job name(s) from the list, comma-separated, or 'all'" },
+      },
+      required: ['child', 'jobs'],
+    },
+  },
+  {
+    name: 'undo_job',
+    description: "Un-tick pocket-money job(s) for a child today (a mistake or mis-tap). Pass the exact job name(s) or 'all'.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        child: { type: 'string', description: 'Which child' },
+        jobs: { type: 'string', description: "Exact job name(s), comma-separated, or 'all'" },
+      },
+      required: ['child', 'jobs'],
+    },
+  },
+  {
+    name: 'add_pocket_money_job',
+    description: "Add or update a pocket-money job. Use 'both' for the child to add it to all kids. Only when asked to change the job list.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        child: { type: 'string', description: "Child name, or 'both'" },
+        name: { type: 'string', description: 'The job name (short, e.g. "Feed Charlie")' },
+        value_pence: { type: 'number', description: 'Pence it is worth (optional, defaults to the standard value)' },
+        days: { type: 'string', enum: ['daily', 'weekdays'], description: "'daily' or 'weekdays' (optional, default daily)" },
+      },
+      required: ['child', 'name'],
+    },
+  },
+  {
+    name: 'remove_pocket_money_job',
+    description: "Remove a pocket-money job for a child (or 'both'). Pass the job name.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        child: { type: 'string', description: "Child name, or 'both'" },
+        job: { type: 'string', description: 'The job to remove' },
+      },
+      required: ['child', 'job'],
+    },
+  },
+  {
+    name: 'set_job_value',
+    description: "Set how many pence job(s) are worth. Pass pence, and optionally a job name (default all jobs) and/or a child (default both).",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        pence: { type: 'number', description: 'New value in pence' },
+        job: { type: 'string', description: "Optional job name, or 'all' for every job" },
+        child: { type: 'string', description: 'Optional child to limit to' },
+      },
+      required: ['pence'],
+    },
+  },
 ];
 
 // ── Tool execution ─────────────────────────────────────────────────────────────
@@ -1155,6 +1223,62 @@ async function executeTool(
         return `${await resetKit()} Confirm briefly.`;
       }
 
+      case 'get_jobs_status': {
+        const { describeState } = await import('./pocketmoney');
+        return `Pocket-money jobs right now:\n${await describeState()}`;
+      }
+
+      case 'mark_job_done': {
+        const pm = await import('./pocketmoney');
+        const child = pm.resolveChild(toolInput['child'] as string || '');
+        if (!child) return `Which child? I track jobs for ${pm.childNames().join(' and ')}.`;
+        const jobs = (toolInput['jobs'] as string || '').trim();
+        if (!jobs) return 'Which job(s)?';
+        const r = await pm.markDone(child, jobs);
+        if (!r.ok) return `I couldn't find a job matching "${jobs}" for ${child} today. Call get_jobs_status to see the exact names, then try again.`;
+        const week = await pm.weekProgress(child);
+        const bits: string[] = [];
+        if (r.matched.length) bits.push(`ticked off ${r.matched.join(', ')}`);
+        if (r.alreadyDone.length) bits.push(`(${r.alreadyDone.join(', ')} already done)`);
+        return `Done — ${child}: ${bits.join(' ')}. This week so far: ${pm.money(week.pence)}. Confirm warmly and briefly.`;
+      }
+
+      case 'undo_job': {
+        const pm = await import('./pocketmoney');
+        const child = pm.resolveChild(toolInput['child'] as string || '');
+        if (!child) return 'Which child?';
+        const r = await pm.undoDone(child, (toolInput['jobs'] as string || '').trim());
+        return r.ok ? `Un-ticked ${r.undone.join(', ')} for ${child}. Confirm briefly.` : `Nothing to undo there for ${child} today.`;
+      }
+
+      case 'add_pocket_money_job': {
+        const pm = await import('./pocketmoney');
+        const name = (toolInput['name'] as string || '').trim();
+        if (!name) return 'What is the job called?';
+        const rawChild = (toolInput['child'] as string || '').trim();
+        const child = /both|all|them/i.test(rawChild) ? 'both' : (pm.resolveChild(rawChild) || rawChild);
+        const days = (toolInput['days'] as string) === 'weekdays' ? 'weekdays' : 'daily';
+        const added = await pm.addJob(child, name, toolInput['value_pence'] as number | undefined, days);
+        return added.length ? `Added "${name}" for ${added.join(' and ')}. Confirm briefly.` : `Couldn't add that job.`;
+      }
+
+      case 'remove_pocket_money_job': {
+        const pm = await import('./pocketmoney');
+        const rawChild = (toolInput['child'] as string || '').trim();
+        const child = /both|all|them/i.test(rawChild) ? 'both' : (pm.resolveChild(rawChild) || rawChild);
+        const removed = await pm.removeJob(child, (toolInput['job'] as string || '').trim());
+        return removed.length ? `Removed ${removed.join('; ')}. Confirm briefly.` : `Couldn't find that job to remove.`;
+      }
+
+      case 'set_job_value': {
+        const pm = await import('./pocketmoney');
+        const pence = Number(toolInput['pence']);
+        if (!Number.isFinite(pence) || pence < 0) return 'What value in pence?';
+        const child = toolInput['child'] ? (pm.resolveChild(toolInput['child'] as string) || undefined) : undefined;
+        const n = await pm.setValue(pence, (toolInput['job'] as string) || 'all', child);
+        return `Set ${n} job${n === 1 ? '' : 's'} to ${pm.money(pence)} each. Confirm briefly.`;
+      }
+
       default:
         return `Unknown tool: ${toolName}`;
     }
@@ -1387,6 +1511,13 @@ CALENDAR:
 - NO INVENTED COMMENTARY: Do not add observations, tips, or context that aren't grounded in actual data you have access to (e.g. traffic conditions, journey times, weather on a specific future date unless you've checked the forecast tool). Stick to what you know from the calendar, tools, or what the user has told you.
 - TRAVEL AWARENESS: Luke works from home by default. If you detect a travel event being added (a day trip, overnight stay, work trip, conference, site visit, etc.), always ask whether a dog walker has been arranged. If they confirm the dog walker is sorted, immediately create a calendar event titled "Dog walker ✓" (or "Dog walker ✓ - [trip name]" if helpful) as an all-day event on the travel date(s) — this is how the dog walker confirmation is tracked so you can look it up later. If they share a list of dog walker dates (e.g. "dog walker booked: 22 April, 5 May, 12 May"), create one separate "Dog walker ✓" all-day event per date — do not combine them into one event. If a travel event already exists on the calendar, look for a "Dog walker ✓" event on the same date(s) before asking: if one exists, the dog walker is sorted — don't ask again. If no such event exists, a gentle "Have you sorted the dog walker for that one?" is fine.
 
+POCKET MONEY & JOBS (Poppy and Billy):
+- The kids earn pocket money by doing daily jobs, each worth a few pence. Parents tell you when a job's done and you tick it off.
+- WORKFLOW: when someone says a child did a job ("Poppy made her bed", "Billy did all his jobs", "Poppy tidied up and fed Charlie"), FIRST call get_jobs_status to see that child's exact job names for today, THEN call mark_job_done with the EXACT name(s) (comma-separated) or "all". Never guess the names — use the ones the tool returns.
+- To correct a mistake, use undo_job. To change the job list or values, use add_pocket_money_job / remove_pocket_money_job / set_job_value.
+- For "what has Poppy earned?" / "what jobs are left?", call get_jobs_status and answer from it.
+- WRITING — CRITICAL (same rule as the calendar): to tick a job off you MUST call mark_job_done in this reply. Saying "done, ticked off" as text without the tool saves NOTHING. Confirm warmly and briefly only AFTER the tool succeeds, and mention the running weekly total when natural. Keep it encouraging — this is for the kids.
+
 WEB SEARCH:
 - You have a web_search tool — use it freely whenever current or local information would help: finding a restaurant, checking opening times, looking up a service, researching a product, getting local event details, etc.
 - Don't tell the user you "can't browse the web" — you can. Search first, then answer with real results.
@@ -1419,6 +1550,7 @@ const WRITE_TOOLS = new Set<string>([
   'log_baby_event', 'log_baby_weight', 'record_baby_arrival',
   'add_baby_checklist_item', 'complete_baby_checklist_item',
   'set_school_run', 'reset_school_run', 'set_kit', 'remove_kit', 'reset_kit',
+  'mark_job_done', 'undo_job', 'add_pocket_money_job', 'remove_pocket_money_job', 'set_job_value',
 ]);
 
 // Phrases where Rose claims a change was completed. If she says one of these but

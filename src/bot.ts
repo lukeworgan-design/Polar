@@ -536,6 +536,29 @@ bot.command('birthdays', async (ctx) => {
   }
 });
 
+// Handle /jobs command — quick pocket-money status
+bot.command('jobs', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  try {
+    const pm = await import('./pocketmoney');
+    if (!(await pm.isConfigured())) {
+      await ctx.reply('No pocket-money jobs are set up yet.');
+      return;
+    }
+    const lines: string[] = ['🌟 *Pocket money today*', ''];
+    for (const name of pm.childNames()) {
+      const t = await pm.todayProgress(name);
+      const w = await pm.weekProgress(name);
+      const left = t.remaining.length ? `left: ${t.remaining.join(', ')}` : 'all done! 🎉';
+      lines.push(`*${name}* — ${t.done}/${t.total} today (${pm.money(t.pence)}), ${pm.money(w.pence)} this week\n_${left}_`);
+    }
+    await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('Error in /jobs:', err);
+    await ctx.reply("Couldn't pull up the jobs just now.");
+  }
+});
+
 // Handle /help command
 bot.command('help', async (ctx) => {
   if (!isFromGroup(ctx)) return;
@@ -558,6 +581,7 @@ bot.command('help', async (ctx) => {
 🏫 */friday* — Friday school's-out check-in with local events and weather
 🗑️ */bin* — Which bin goes out tomorrow
 🔊 */say [message]* — Say it out loud everywhere (or \`/say @lounge …\` for one room). Or just ask "Rose, announce … in the kitchen"
+🌟 */jobs* — Pocket-money jobs. Just tell me "Poppy made her bed" / "Billy did all his jobs" and I'll tick them off
 
 👶 *Baby tracking* — "Fed Evie 90ml", "dirty nappy", "she's asleep", "gave her vitamin D" — I'll log it. Ask "when did she last feed?" or "how's she done today?"
 ⚖️ *Weigh-ins & jabs* — "Evie was 4.2kg today" / "when are her jabs?"

@@ -142,6 +142,17 @@ export function initScheduler(sendFn: SendMessageFn): void {
     }
   }, { timezone: config.timezone });
 
+  // Pocket-money payout — every Sunday at 5pm
+  cron.schedule('0 17 * * 0', async () => {
+    try {
+      const { payoutMessage } = await import('./pocketmoney');
+      const msg = await payoutMessage();
+      if (msg) await sendToGroup(msg);
+    } catch (err) {
+      console.error('Error sending pocket-money payout:', err);
+    }
+  }, { timezone: config.timezone });
+
   // Weekly pregnancy update — every Monday at 8am
   cron.schedule('0 8 * * 1', async () => {
     try {
