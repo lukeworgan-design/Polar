@@ -188,13 +188,34 @@ const BABY_FACTS: Array<{ from: number; text: string }> = [
   { from: 112, text: 'may be rolling from tummy to back around this stage.' },
   { from: 140, text: 'is grabbing everything — and it\'s all heading for her mouth!' },
   { from: 168, text: 'might be ready to start sitting with support soon.' },
+  // More variety, especially in the newborn weeks (order doesn't matter — the
+  // picker sorts by age).
+  { from: 0, text: 'can only make out bold black-and-white patterns for now — colour comes later.' },
+  { from: 1, text: 'has a soft spot on her head that lets her skull flex and grow.' },
+  { from: 2, text: 'cries without tears for the first few weeks while her tear ducts get going.' },
+  { from: 4, text: 'breathes about twice as fast as you do — perfectly normal for a newborn.' },
+  { from: 6, text: 'finds a heartbeat and a gentle "shh" soothing — it\'s what she heard for nine months.' },
+  { from: 8, text: 'is growing fast, often putting on around 150–200g a week.' },
+  { from: 10, text: 'knows your voice above all others and settles when she hears it.' },
+  { from: 11, text: 'has a surprisingly strong grip — those little fingers really hold on.' },
+  { from: 13, text: 'would rather look at your face than any toy in the room.' },
+  { from: 16, text: 'is beginning to tell day from night — bright mornings help set her clock.' },
+  { from: 20, text: 'may flash little smiles in her sleep as her brain busily wires up.' },
+  { from: 24, text: 'can focus a bit further now — about cuddle distance.' },
+  { from: 26, text: 'is making new brain connections at a staggering rate right now.' },
+  { from: 30, text: 'might turn towards a familiar voice or a soft sound.' },
+  { from: 38, text: 'is starting to enjoy gentle "chats" — pause and she may coo back.' },
+  { from: 50, text: 'finds tummy time hard work, but it\'s building real neck strength.' },
+  { from: 63, text: 'may take wobbly swipes at a toy that catches her eye.' },
+  { from: 90, text: 'is finding her feet fascinating — hello, toes!' },
 ];
 
 function babyFactFor(ageDays: number, dayIndex: number): string | null {
-  const eligible = BABY_FACTS.filter((f) => f.from <= ageDays);
+  // Sort by age so "near her age" holds regardless of array order, then rotate
+  // through a wide window (up to ~16) so facts don't repeat every few days.
+  const eligible = BABY_FACTS.filter((f) => f.from <= ageDays).sort((a, b) => a.from - b.from);
   if (eligible.length === 0) return null;
-  // Prefer facts near her current age, rotating daily.
-  const recent = eligible.slice(-6);
+  const recent = eligible.slice(-Math.min(eligible.length, 16));
   return recent[dayIndex % recent.length]!.text;
 }
 
