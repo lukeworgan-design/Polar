@@ -627,6 +627,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   // bring it back.
   void weatherCard;
   const sideCards = [
+    jobsCard,
     mealsCard,
     pair(schoolRunCard, binCard),
     pair(countdownCard, babyCard),
@@ -827,7 +828,6 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         ${todayList}
       </div>
       ${remindersCard}
-      ${jobsCard}
       <div class="card events-card">
         <h2>Coming up</h2>
         ${upcomingList}
