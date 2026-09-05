@@ -1379,6 +1379,7 @@ ${(() => {
 CALENDAR:
 - The shared calendar is called "Family"
 - CRITICAL — ALWAYS FETCH BEFORE ANSWERING: Any question about what is or isn't on the calendar — for today, tomorrow, a specific date, or any period — MUST start with a tool call (get_todays_events, get_upcoming_events, or get_events_for_period). NEVER answer calendar questions from memory, conversation history, or anything the user previously said. If the tool returns no events, say the calendar is clear. Stating that events exist without calling a tool first is a serious error.
+- WRITING — CRITICAL: To add, move, rename, or cancel ANYTHING on the calendar you MUST emit the matching tool call (create_calendar_event, update_calendar_event, or delete_calendar_event) in this same reply. Saying "done, I've added it / moved it / popped it in the diary" as text WITHOUT calling the tool saves NOTHING — the event never reaches the calendar and you have misled the family. So for ANY add/move/cancel request: call the tool FIRST, wait for its result, and only then confirm — reading the day and time back from the tool's result. NEVER confirm a calendar change you have not actually made through a tool call in THIS reply.
 - When creating events, always check for conflicts and mention them conversationally
 - For recurring events, use proper RRULE format (e.g., RRULE:FREQ=WEEKLY;BYDAY=SA for every Saturday)
 - Tag events with which family member(s) they involve where relevant (e.g. "Poppy - swimming", "Billy - football")
@@ -1407,6 +1408,22 @@ function splitListItems(s: string): string[] {
     .filter(Boolean)
     .map((x) => x.charAt(0).toUpperCase() + x.slice(1));
 }
+
+// Tools that actually change state — used to detect the "confirmed a change but
+// never called the tool" failure (Rose says "added it" but nothing was saved).
+const WRITE_TOOLS = new Set<string>([
+  'create_calendar_event', 'update_calendar_event', 'delete_calendar_event',
+  'add_shopping_item', 'remove_shopping_item', 'clear_shopping_list',
+  'add_todo', 'complete_todo', 'clear_todo_list',
+  'add_reminder', 'add_birthday', 'set_meal', 'clear_meal',
+  'log_baby_event', 'log_baby_weight', 'record_baby_arrival',
+  'add_baby_checklist_item', 'complete_baby_checklist_item',
+  'set_school_run', 'reset_school_run', 'set_kit', 'remove_kit', 'reset_kit',
+]);
+
+// Phrases where Rose claims a change was completed. If she says one of these but
+// no write tool ran this turn, the confirmation is almost certainly false.
+const CLAIMED_WRITE_RE = /\b(added|created|booked|scheduled|rescheduled|moved|cancell?ed|deleted|removed|logged|put (it|that|them|you|him|her)\b|popped (it|that|you|him|her)\b|set (a|the|your) reminder|it'?s (now )?(in|on) (the|your) (calendar|diary|list)|in the diary|on the calendar|sorted (it|that))\b/i;
 
 /** Drop placeholder locations ("None", "N/A", "-") so they're never stored. */
 function sanitizeLocation(loc: string | undefined): string | undefined {
@@ -1579,49 +1596,83 @@ export async function generateResponse(
     messages,
   });
 
-  // Agentic loop — keep going while there are tool calls
-  while (response.stop_reason === 'tool_use') {
-    const toolUseBlocks = response.content.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use'
-    );
+  // Track whether any action-taking (write) tool actually ran this turn, so we can
+  // catch the "narrated success without calling the tool" failure — where Rose
+  // says "done, added it" but never emitted create_calendar_event, so nothing saved.
+  let writeToolCalled = false;
+  let correctionDone = false;
+  let responseText = '';
 
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    // Agentic loop — keep going while there are tool calls
+    while (response.stop_reason === 'tool_use') {
+      const toolUseBlocks = response.content.filter(
+        (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use'
+      );
 
-    for (const toolUse of toolUseBlocks) {
-      let result: string;
-      try {
-        result = await executeTool(
-          toolUse.name,
-          toolUse.input as Record<string, unknown>,
-          userName
-        );
-      } catch (err) {
-        console.error(`Tool "${toolUse.name}" failed:`, err);
-        result = `ERROR: "${toolUse.name}" failed — ${err instanceof Error ? err.message : String(err)}. Tell the user this action did not complete and they should try again.`;
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+      for (const toolUse of toolUseBlocks) {
+        if (WRITE_TOOLS.has(toolUse.name)) writeToolCalled = true;
+        let result: string;
+        try {
+          result = await executeTool(
+            toolUse.name,
+            toolUse.input as Record<string, unknown>,
+            userName
+          );
+        } catch (err) {
+          console.error(`Tool "${toolUse.name}" failed:`, err);
+          result = `ERROR: "${toolUse.name}" failed — ${err instanceof Error ? err.message : String(err)}. Tell the user this action did not complete and they should try again.`;
+        }
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: result,
+        });
       }
-      toolResults.push({
-        type: 'tool_result',
-        tool_use_id: toolUse.id,
-        content: result,
+
+      // Add assistant response and tool results to messages
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({ role: 'user', content: toolResults });
+
+      response = await createMessage({
+        model: config.anthropic.model,
+        max_tokens: 4096,
+        system: systemPrompt,
+        tools,
+        messages,
       });
     }
 
-    // Add assistant response and tool results to messages
-    messages.push({ role: 'assistant', content: response.content });
-    messages.push({ role: 'user', content: toolResults });
+    // Extract text response
+    const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
+    responseText = textBlock?.text || "Sorry, I couldn't think of a response just now!";
 
-    response = await createMessage({
-      model: config.anthropic.model,
-      max_tokens: 4096,
-      system: systemPrompt,
-      tools,
-      messages,
-    });
+    // Safety net: if Rose confirmed she added/changed/logged something but no write
+    // tool actually ran, she may have narrated a save that never happened. Nudge her
+    // once to actually call the tool (or admit no change was needed).
+    if (!writeToolCalled && !correctionDone && CLAIMED_WRITE_RE.test(responseText)) {
+      correctionDone = true;
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({
+        role: 'user',
+        content:
+          'SYSTEM CHECK (not from the family): Your reply above told them you added, moved, cancelled, logged, or set something — but you did NOT call any tool this turn, so NOTHING was actually saved. If they asked you to add/move/cancel a calendar event, set a reminder, change a list, log the baby, or similar, call the correct tool NOW with the exact details, then confirm from the tool result. If no change was actually needed, reply normally and do not claim you saved anything.',
+      });
+      response = await createMessage({
+        model: config.anthropic.model,
+        max_tokens: 4096,
+        system: systemPrompt,
+        tools,
+        messages,
+      });
+      continue; // re-run the tool loop on the corrected response
+    }
+
+    break;
   }
-
-  // Extract text response
-  const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
-  const responseText = textBlock?.text || "Sorry, I couldn't think of a response just now!";
 
   // Store assistant response in conversation history
   await addConversationMessage('assistant', responseText);
