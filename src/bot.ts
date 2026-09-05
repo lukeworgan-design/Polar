@@ -559,6 +559,33 @@ bot.command('jobs', async (ctx) => {
   }
 });
 
+// Handle /jobsdebug command — dump the raw pocket-money record for diagnosis
+bot.command('jobsdebug', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  try {
+    const { getSetting } = await import('./db');
+    const { todayStr } = await import('./pocketmoney');
+    const raw = await getSetting('pocket_money');
+    if (!raw) {
+      await ctx.reply('pocket_money record is empty (nothing stored yet).');
+      return;
+    }
+    const parsed = JSON.parse(raw);
+    // Compact view: today's date, job ids, and completions by date
+    const jobIds = (parsed.jobs || []).map((j: any) => j.id);
+    const summary = {
+      today: todayStr(),
+      weeklyTargetPence: parsed.weeklyTargetPence,
+      jobIds,
+      completions: parsed.completions || {},
+    };
+    const out = JSON.stringify(summary, null, 1);
+    await ctx.reply('```\n' + out.slice(0, 3500) + '\n```', { parse_mode: 'Markdown' });
+  } catch (err) {
+    await ctx.reply(`jobsdebug failed: ${(err as Error).message}`);
+  }
+});
+
 // Handle /help command
 bot.command('help', async (ctx) => {
   if (!isFromGroup(ctx)) return;
