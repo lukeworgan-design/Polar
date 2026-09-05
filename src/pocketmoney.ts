@@ -90,6 +90,20 @@ async function write(cfg: PMConfig): Promise<void> {
   await setSetting(KEY, JSON.stringify(cfg));
 }
 
+// Serialize every read-modify-write so ticking two kids at once (two rapid
+// mutations of the same app_settings blob) can't lose an update.
+let chain: Promise<unknown> = Promise.resolve();
+async function mutate<T>(fn: (cfg: PMConfig) => T | Promise<T>): Promise<T> {
+  const run = chain.then(async () => {
+    const cfg = await read();
+    const result = await fn(cfg);
+    await write(cfg);
+    return result;
+  });
+  chain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 // ── Dates (family timezone) ────────────────────────────────────────────────────
 export function todayStr(): string {
   return new Date().toLocaleDateString('en-CA', { timeZone: config.timezone });
@@ -212,71 +226,71 @@ export async function weekProgress(child: string, dateStr = todayStr()): Promise
 
 /** Mark job(s) done today for a child. `phrase` = 'all' or a loose job description. */
 export async function markDone(child: string, phrase: string): Promise<{ ok: boolean; matched: string[]; alreadyDone: string[] }> {
-  const cfg = await read();
-  const today = todayStr();
-  const active = jobsForChildOn(cfg, child, today);
-  const target = /\ball\b|everything|the lot/i.test(phrase) ? active : matchList(active, phrase);
-  if (target.length === 0) return { ok: false, matched: [], alreadyDone: [] };
+  return mutate((cfg) => {
+    const today = todayStr();
+    const active = jobsForChildOn(cfg, child, today);
+    const target = /\ball\b|everything|the lot/i.test(phrase) ? active : matchList(active, phrase);
+    if (target.length === 0) return { ok: false, matched: [], alreadyDone: [] };
 
-  cfg.completions[today] ??= {};
-  cfg.completions[today][child] ??= [];
-  const set = new Set(cfg.completions[today][child]);
-  const matched: string[] = [], alreadyDone: string[] = [];
-  for (const j of target) {
-    if (set.has(j.id)) alreadyDone.push(j.name);
-    else { set.add(j.id); matched.push(j.name); }
-  }
-  cfg.completions[today][child] = [...set];
-  await write(cfg);
-  return { ok: true, matched, alreadyDone };
+    cfg.completions[today] ??= {};
+    cfg.completions[today][child] ??= [];
+    const set = new Set(cfg.completions[today][child]);
+    const matched: string[] = [], alreadyDone: string[] = [];
+    for (const j of target) {
+      if (set.has(j.id)) alreadyDone.push(j.name);
+      else { set.add(j.id); matched.push(j.name); }
+    }
+    cfg.completions[today][child] = [...set];
+    return { ok: true, matched, alreadyDone };
+  });
 }
 
 /** Un-tick job(s) done today (a mis-tap). */
 export async function undoDone(child: string, phrase: string): Promise<{ ok: boolean; undone: string[] }> {
-  const cfg = await read();
-  const today = todayStr();
-  const done = cfg.completions[today]?.[child];
-  if (!done || done.length === 0) return { ok: false, undone: [] };
-  const active = jobsForChildOn(cfg, child, today);
-  const target = /\ball\b|everything/i.test(phrase) ? active : matchList(active, phrase);
-  const removeIds = new Set(target.map((j) => j.id));
-  const undone = cfg.jobs.filter((j) => done.includes(j.id) && removeIds.has(j.id)).map((j) => j.name);
-  cfg.completions[today][child] = done.filter((id) => !removeIds.has(id));
-  await write(cfg);
-  return { ok: undone.length > 0, undone };
+  return mutate((cfg) => {
+    const today = todayStr();
+    const done = cfg.completions[today]?.[child];
+    if (!done || done.length === 0) return { ok: false, undone: [] };
+    const active = jobsForChildOn(cfg, child, today);
+    const target = /\ball\b|everything/i.test(phrase) ? active : matchList(active, phrase);
+    const removeIds = new Set(target.map((j) => j.id));
+    const undone = cfg.jobs.filter((j) => done.includes(j.id) && removeIds.has(j.id)).map((j) => j.name);
+    cfg.completions[today][child] = done.filter((id) => !removeIds.has(id));
+    return { ok: undone.length > 0, undone };
+  });
 }
 
 /** Add or update a job for a child (or 'both'). */
 export async function addJob(child: string, name: string, valuePence?: number, days: JobDays = 'daily'): Promise<string[]> {
-  const cfg = await read();
-  const targets = child.toLowerCase() === 'both' || child.toLowerCase() === 'all' ? kids() : [child];
-  const added: string[] = [];
-  for (const c of targets) {
-    const id = jobId(c, name);
-    const existing = cfg.jobs.find((j) => j.id === id);
-    if (existing) {
-      if (valuePence != null) existing.valuePence = valuePence;
-      existing.days = days;
-    } else {
-      cfg.jobs.push({ id, child: c, name: name.trim(), valuePence: valuePence ?? DEFAULT_VALUE, days });
+  return mutate((cfg) => {
+    const targets = child.toLowerCase() === 'both' || child.toLowerCase() === 'all' ? kids() : [child];
+    const added: string[] = [];
+    for (const c of targets) {
+      const id = jobId(c, name);
+      const existing = cfg.jobs.find((j) => j.id === id);
+      if (existing) {
+        if (valuePence != null) existing.valuePence = valuePence;
+        existing.days = days;
+      } else {
+        cfg.jobs.push({ id, child: c, name: name.trim(), valuePence: valuePence ?? DEFAULT_VALUE, days });
+      }
+      added.push(c);
     }
-    added.push(c);
-  }
-  await write(cfg);
-  return added;
+    return added;
+  });
 }
 export async function removeJob(child: string, phrase: string): Promise<string[]> {
-  const cfg = await read();
-  const targets = child.toLowerCase() === 'both' || child.toLowerCase() === 'all' ? kids() : [child];
-  const removed: string[] = [];
-  for (const c of targets) {
-    const match = matchList(cfg.jobs.filter((j) => j.child === c), phrase);
-    for (const j of match) { removed.push(`${c}: ${j.name}`); }
-    const ids = new Set(match.map((j) => j.id));
-    cfg.jobs = cfg.jobs.filter((j) => !ids.has(j.id));
-  }
-  await write(cfg);
-  return removed;
+  return mutate((cfg) => {
+    const targets = child.toLowerCase() === 'both' || child.toLowerCase() === 'all' ? kids() : [child];
+    const removed: string[] = [];
+    for (const c of targets) {
+      const match = matchList(cfg.jobs.filter((j) => j.child === c), phrase);
+      for (const j of match) { removed.push(`${c}: ${j.name}`); }
+      const ids = new Set(match.map((j) => j.id));
+      cfg.jobs = cfg.jobs.filter((j) => !ids.has(j.id));
+    }
+    return removed;
+  });
 }
 /** The full weekly pocket money each child can earn. */
 export async function getWeeklyTarget(): Promise<number> {
@@ -284,9 +298,7 @@ export async function getWeeklyTarget(): Promise<number> {
 }
 /** Set the weekly pocket-money target (in pence) for every child. */
 export async function setWeeklyTarget(pence: number): Promise<void> {
-  const cfg = await read();
-  cfg.weeklyTargetPence = Math.max(0, Math.round(pence));
-  await write(cfg);
+  await mutate((cfg) => { cfg.weeklyTargetPence = Math.max(0, Math.round(pence)); });
 }
 
 /** Text summary of the current jobs + today's/week's progress, for prompts/ground truth. */
