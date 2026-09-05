@@ -142,8 +142,8 @@ export function initScheduler(sendFn: SendMessageFn): void {
     }
   }, { timezone: config.timezone });
 
-  // Pocket-money payout — every Sunday at 5pm
-  cron.schedule('0 17 * * 0', async () => {
+  // Pocket-money payout — every Friday at 4pm (payday)
+  cron.schedule('0 16 * * 5', async () => {
     try {
       const { payoutMessage } = await import('./pocketmoney');
       const msg = await payoutMessage();

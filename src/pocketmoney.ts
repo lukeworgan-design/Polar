@@ -112,28 +112,31 @@ function isWeekday(dateStr: string): boolean {
   const wd = new Date(`${dateStr}T12:00:00`).toLocaleDateString('en-GB', { weekday: 'short', timeZone: config.timezone });
   return wd !== 'Sat' && wd !== 'Sun';
 }
-/** Dates from Monday of the current week up to `dateStr` (inclusive). */
+// The pocket-money week runs Saturday → Friday, so Friday is payday (the last day).
+function sinceWeekStart(dow: number): number {
+  return (dow + 1) % 7; // days since Saturday (Sat=0 … Fri=6)
+}
+/** Dates from the week's Saturday up to `dateStr` (inclusive). */
 function weekDates(dateStr: string): string[] {
   const d = new Date(`${dateStr}T12:00:00Z`);
-  const sinceMon = (d.getUTCDay() + 6) % 7; // 0 on Monday
+  const since = sinceWeekStart(d.getUTCDay());
   const out: string[] = [];
-  for (let i = sinceMon; i >= 0; i--) {
+  for (let i = since; i >= 0; i--) {
     const dd = new Date(d);
     dd.setUTCDate(d.getUTCDate() - i);
     out.push(dd.toISOString().slice(0, 10));
   }
   return out;
 }
-/** Full Mon–Sun week containing `dateStr` (for the payout summary). */
+/** Full Sat–Fri week containing `dateStr` (for the payout summary). */
 function fullWeekDates(dateStr: string): string[] {
   const d = new Date(`${dateStr}T12:00:00Z`);
-  const sinceMon = (d.getUTCDay() + 6) % 7;
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() - sinceMon);
+  const start = new Date(d);
+  start.setUTCDate(d.getUTCDate() - sinceWeekStart(d.getUTCDay()));
   const out: string[] = [];
   for (let i = 0; i < 7; i++) {
-    const dd = new Date(monday);
-    dd.setUTCDate(monday.getUTCDate() + i);
+    const dd = new Date(start);
+    dd.setUTCDate(start.getUTCDate() + i);
     out.push(dd.toISOString().slice(0, 10));
   }
   return out;
@@ -209,6 +212,14 @@ export async function todayProgress(child: string): Promise<TodayProgress> {
     pence: earnedPence(cfg, child, doneJobs.length, today),
     remaining: jobs.filter((j) => !doneIds.has(j.id)).map((j) => j.name),
   };
+}
+
+/** Today's jobs for a child, each with whether it's ticked off. */
+export async function todayChecklist(child: string): Promise<Array<{ name: string; done: boolean }>> {
+  const cfg = await read();
+  const today = todayStr();
+  const doneIds = new Set(cfg.completions[today]?.[child] ?? []);
+  return jobsForChildOn(cfg, child, today).map((j) => ({ name: j.name, done: doneIds.has(j.id) }));
 }
 
 export interface WeekProgress { count: number; pence: number; }
