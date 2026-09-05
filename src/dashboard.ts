@@ -506,16 +506,24 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     ? `<ul class="events">${d.today.map(eventRow).join('')}</ul>`
     : `<p class="empty">Nothing in the diary today 🎉</p>`;
 
-  const upcomingList = d.upcoming.length
-    ? `<ul class="events autoscroll">${d.upcoming.map(eventRow).join('')}</ul>`
-    : `<p class="empty">Clear for the next couple of weeks</p>`;
+  // Coming Up and Shopping are hidden entirely when empty (no point showing a
+  // big card with just a header). The neighbouring card then grows to fill.
+  const upcomingShown = d.upcoming.length > 0;
+  const shoppingShown = d.shopping.length > 0;
 
-  const shoppingCard = `<div class="card shop-card">
-      <h2>🛒 Shopping${d.shopping.length ? ` (${d.shopping.length})` : ''}</h2>
-      ${d.shopping.length
-        ? `<ul class="shop-list autoscroll">${d.shopping.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>`
-        : `<p class="empty">All caught up — nothing on the list 🎉</p>`}
-    </div>`;
+  const comingUpCard = upcomingShown
+    ? `<div class="card events-card">
+        <h2>Coming up</h2>
+        <ul class="events autoscroll">${d.upcoming.map(eventRow).join('')}</ul>
+      </div>`
+    : '';
+
+  const shoppingCard = shoppingShown
+    ? `<div class="card shop-card">
+        <h2>🛒 Shopping (${d.shopping.length})</h2>
+        <ul class="shop-list autoscroll">${d.shopping.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>
+      </div>`
+    : '';
 
   // Two per-kid pocket-money cards (bottom of the left column): a clear checklist
   // of today's jobs + the weekly total, with a Friday payday line.
@@ -534,7 +542,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
             <ul class="kid-jobs autoscroll">${rows}</ul>
           </div>`;
         };
-        return `<div class="side-pair kid-pair">${pm.kids.map(card).join('')}</div>`;
+        return `<div class="side-pair kid-pair${upcomingShown ? '' : ' kid-grow'}">${pm.kids.map(card).join('')}</div>`;
       })()
     : '';
 
@@ -605,7 +613,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     babyCard = `<div class="card"><h2>${esc(d.baby.name)}</h2><p class="big">👶 ${esc(d.baby.ageText)}</p>${details}</div>`;
   }
 
-  const funCard = `<div class="card fun-card">
+  const funCard = `<div class="card fun-card${shoppingShown ? '' : ' fun-grow'}">
       <h2>${esc(d.dailyFun.header)}</h2>
       <p class="fun-text">${esc(d.dailyFun.text)}</p>
     </div>`;
@@ -728,6 +736,8 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .reminders-card { flex: 0 0 auto; }
   /* Per-kid pocket-money checklist cards (bottom-left, side by side) */
   .kid-pair { flex: 0 1 auto; min-height: 0; align-items: stretch; }
+  .kid-pair.kid-grow { flex: 1 1 auto; }
+  .fun-card.fun-grow { flex: 1 1 auto; justify-content: center; }
   .kid-pair > .kid-card { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
   .jm-of { color: var(--muted); font-weight: 500; font-size: .8em; }
   .kid-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1vw; }
@@ -831,10 +841,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         ${todayList}
       </div>
       ${remindersCard}
-      <div class="card events-card">
-        <h2>Coming up</h2>
-        ${upcomingList}
-      </div>
+      ${comingUpCard}
       ${jobsCards}
     </div>
 
