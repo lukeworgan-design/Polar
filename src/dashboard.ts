@@ -542,7 +542,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
             <ul class="kid-jobs autoscroll">${rows}</ul>
           </div>`;
         };
-        return `<div class="side-pair kid-pair${upcomingShown ? '' : ' kid-grow'}">${pm.kids.map(card).join('')}</div>`;
+        return `<div class="side-pair kid-pair">${pm.kids.map(card).join('')}</div>`;
       })()
     : '';
 
@@ -613,7 +613,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     babyCard = `<div class="card"><h2>${esc(d.baby.name)}</h2><p class="big">👶 ${esc(d.baby.ageText)}</p>${details}</div>`;
   }
 
-  const funCard = `<div class="card fun-card${shoppingShown ? '' : ' fun-grow'}">
+  const funCard = `<div class="card fun-card">
       <h2>${esc(d.dailyFun.header)}</h2>
       <p class="fun-text">${esc(d.dailyFun.text)}</p>
     </div>`;
@@ -734,10 +734,12 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .today-card { flex: 0 0 auto; }
   .reminders-card { flex: 0 0 auto; }
-  /* Per-kid pocket-money checklist cards (bottom-left, side by side) */
-  .kid-pair { flex: 0 1 auto; min-height: 0; align-items: stretch; }
-  .kid-pair.kid-grow { flex: 1 1 auto; }
-  .fun-card.fun-grow { flex: 1 1 auto; justify-content: center; }
+  /* Per-kid pocket-money checklist cards (bottom-left, side by side). They share
+     the left column's flexible space with Coming Up (each scrolls internally). */
+  .kid-pair { flex: 1 1 0; min-height: 21vh; align-items: stretch; }
+  /* When Shopping is hidden, spread the right-hand cards evenly instead of
+     letting one card balloon. */
+  .col.side.spread { justify-content: space-between; }
   .kid-pair > .kid-card { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
   .jm-of { color: var(--muted); font-weight: 500; font-size: .8em; }
   .kid-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1vw; }
@@ -753,7 +755,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .reminders { list-style: none; display: flex; flex-direction: column; gap: .8vh; margin-top: .6vh; }
   .reminders li { font-size: 2.5vh; font-weight: 600; display: flex; gap: 1.2vw; align-items: baseline; }
   .reminders .rm-tag { flex: 0 0 auto; min-width: 11vw; color: var(--accent2); font-weight: 700; }
-  .events-card { flex: 1.7; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .events-card { flex: 1.3 1 0; min-height: 14vh; display: flex; flex-direction: column; overflow: hidden; }
   .events-card .events { flex: 1; min-height: 0; overflow: hidden; }
   .shop-card { flex: 1 1 0; min-height: 6vh; display: flex; flex-direction: column; overflow: hidden; }
   .shop-list { list-style: none; flex: 1; min-height: 0; overflow: hidden;
@@ -845,7 +847,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
       ${jobsCards}
     </div>
 
-    <div class="col side">
+    <div class="col side${shoppingShown ? '' : ' spread'}">
       ${sideCards}
     </div>
   </div>
