@@ -667,13 +667,12 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: 'add_pocket_money_job',
-    description: "Add or update a pocket-money job. Use 'both' for the child to add it to all kids. Only when asked to change the job list.",
+    description: "Add a pocket-money job. Use 'both' for the child to add it to all kids. Only when asked to change the job list. (Each child earns a fixed weekly total split evenly across their jobs, so no per-job value is needed.)",
     input_schema: {
       type: 'object' as const,
       properties: {
         child: { type: 'string', description: "Child name, or 'both'" },
         name: { type: 'string', description: 'The job name (short, e.g. "Feed Charlie")' },
-        value_pence: { type: 'number', description: 'Pence it is worth (optional, defaults to the standard value)' },
         days: { type: 'string', enum: ['daily', 'weekdays'], description: "'daily' or 'weekdays' (optional, default daily)" },
       },
       required: ['child', 'name'],
@@ -692,14 +691,12 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
-    name: 'set_job_value',
-    description: "Set how many pence job(s) are worth. Pass pence, and optionally a job name (default all jobs) and/or a child (default both).",
+    name: 'set_weekly_pocket_money',
+    description: "Set the full weekly pocket money each child can earn by doing all their jobs (e.g. £5 → 500 pence). Doing all jobs earns the full amount; missing some earns proportionally less.",
     input_schema: {
       type: 'object' as const,
       properties: {
-        pence: { type: 'number', description: 'New value in pence' },
-        job: { type: 'string', description: "Optional job name, or 'all' for every job" },
-        child: { type: 'string', description: 'Optional child to limit to' },
+        pence: { type: 'number', description: 'The weekly amount in pence (e.g. 500 for £5)' },
       },
       required: ['pence'],
     },
@@ -1258,7 +1255,7 @@ async function executeTool(
         const rawChild = (toolInput['child'] as string || '').trim();
         const child = /both|all|them/i.test(rawChild) ? 'both' : (pm.resolveChild(rawChild) || rawChild);
         const days = (toolInput['days'] as string) === 'weekdays' ? 'weekdays' : 'daily';
-        const added = await pm.addJob(child, name, toolInput['value_pence'] as number | undefined, days);
+        const added = await pm.addJob(child, name, undefined, days);
         return added.length ? `Added "${name}" for ${added.join(' and ')}. Confirm briefly.` : `Couldn't add that job.`;
       }
 
@@ -1270,13 +1267,12 @@ async function executeTool(
         return removed.length ? `Removed ${removed.join('; ')}. Confirm briefly.` : `Couldn't find that job to remove.`;
       }
 
-      case 'set_job_value': {
+      case 'set_weekly_pocket_money': {
         const pm = await import('./pocketmoney');
         const pence = Number(toolInput['pence']);
-        if (!Number.isFinite(pence) || pence < 0) return 'What value in pence?';
-        const child = toolInput['child'] ? (pm.resolveChild(toolInput['child'] as string) || undefined) : undefined;
-        const n = await pm.setValue(pence, (toolInput['job'] as string) || 'all', child);
-        return `Set ${n} job${n === 1 ? '' : 's'} to ${pm.money(pence)} each. Confirm briefly.`;
+        if (!Number.isFinite(pence) || pence < 0) return 'What weekly amount (in pence, e.g. 500 for £5)?';
+        await pm.setWeeklyTarget(pence);
+        return `Set the weekly pocket money to ${pm.money(pence)} each (for doing all their jobs). Confirm briefly.`;
       }
 
       default:
@@ -1512,7 +1508,7 @@ CALENDAR:
 - TRAVEL AWARENESS: Luke works from home by default. If you detect a travel event being added (a day trip, overnight stay, work trip, conference, site visit, etc.), always ask whether a dog walker has been arranged. If they confirm the dog walker is sorted, immediately create a calendar event titled "Dog walker ✓" (or "Dog walker ✓ - [trip name]" if helpful) as an all-day event on the travel date(s) — this is how the dog walker confirmation is tracked so you can look it up later. If they share a list of dog walker dates (e.g. "dog walker booked: 22 April, 5 May, 12 May"), create one separate "Dog walker ✓" all-day event per date — do not combine them into one event. If a travel event already exists on the calendar, look for a "Dog walker ✓" event on the same date(s) before asking: if one exists, the dog walker is sorted — don't ask again. If no such event exists, a gentle "Have you sorted the dog walker for that one?" is fine.
 
 POCKET MONEY & JOBS (Poppy and Billy):
-- The kids earn pocket money by doing daily jobs, each worth a few pence. Parents tell you when a job's done and you tick it off.
+- Each child can earn a fixed weekly total (default £5) by doing their daily jobs. Every job is an equal share of that £5 — do them all and they get the full £5, miss some and they earn proportionally less. Parents tell you when a job's done and you tick it off. To change the £5, use set_weekly_pocket_money.
 - WORKFLOW: when someone says a child did a job ("Poppy made her bed", "Billy did all his jobs", "Poppy tidied up and fed Charlie"), FIRST call get_jobs_status to see that child's exact job names for today, THEN call mark_job_done with the EXACT name(s) (comma-separated) or "all". Never guess the names — use the ones the tool returns.
 - To correct a mistake, use undo_job. To change the job list or values, use add_pocket_money_job / remove_pocket_money_job / set_job_value.
 - For "what has Poppy earned?" / "what jobs are left?", call get_jobs_status and answer from it.
@@ -1550,7 +1546,7 @@ const WRITE_TOOLS = new Set<string>([
   'log_baby_event', 'log_baby_weight', 'record_baby_arrival',
   'add_baby_checklist_item', 'complete_baby_checklist_item',
   'set_school_run', 'reset_school_run', 'set_kit', 'remove_kit', 'reset_kit',
-  'mark_job_done', 'undo_job', 'add_pocket_money_job', 'remove_pocket_money_job', 'set_job_value',
+  'mark_job_done', 'undo_job', 'add_pocket_money_job', 'remove_pocket_money_job', 'set_weekly_pocket_money',
 ]);
 
 // Phrases where Rose claims a change was completed. If she says one of these but

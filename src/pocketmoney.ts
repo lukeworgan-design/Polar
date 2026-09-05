@@ -17,10 +17,13 @@ interface PMConfig {
   jobs: Job[];
   // date (YYYY-MM-DD) → child → list of completed job ids that day
   completions: Record<string, Record<string, string[]>>;
+  // The full weekly pocket money each child can earn by doing all their jobs.
+  weeklyTargetPence?: number;
 }
 
 const KEY = 'pocket_money';
-const DEFAULT_VALUE = 5; // pence per job (easily changed via Rose)
+const DEFAULT_VALUE = 0; // per-job value is unused now — earnings are a share of the weekly target
+const DEFAULT_TARGET = 500; // £5 per child per week
 
 // Seeded from Luke's list (names refinable via Rose). Weekday-only where it makes sense.
 const DEFAULT_JOBS: Array<{ name: string; days: JobDays }> = [
@@ -53,7 +56,21 @@ function seed(): PMConfig {
       jobs.push({ id: jobId(child, j.name), child, name: j.name, valuePence: DEFAULT_VALUE, days: j.days });
     }
   }
-  return { jobs, completions: {} };
+  return { jobs, completions: {}, weeklyTargetPence: DEFAULT_TARGET };
+}
+
+function targetPence(cfg: PMConfig): number {
+  return cfg.weeklyTargetPence ?? DEFAULT_TARGET;
+}
+/** Total job-slots a child could tick across the full Mon–Sun week. */
+function weekPossible(cfg: PMConfig, child: string, dateStr: string): number {
+  return fullWeekDates(dateStr).reduce((sum, date) => sum + jobsForChildOn(cfg, child, date).length, 0);
+}
+/** Money earned for `doneCount` completed job-slots this week — a share of the target. */
+function earnedPence(cfg: PMConfig, child: string, doneCount: number, dateStr: string): number {
+  const possible = weekPossible(cfg, child, dateStr);
+  if (possible <= 0) return 0;
+  return Math.round((targetPence(cfg) * doneCount) / possible);
 }
 
 async function read(): Promise<PMConfig> {
@@ -61,7 +78,7 @@ async function read(): Promise<PMConfig> {
     const s = await getSetting(KEY);
     if (s) {
       const cfg = JSON.parse(s) as PMConfig;
-      if (Array.isArray(cfg.jobs)) return { jobs: cfg.jobs, completions: cfg.completions || {} };
+      if (Array.isArray(cfg.jobs)) return { jobs: cfg.jobs, completions: cfg.completions || {}, weeklyTargetPence: cfg.weeklyTargetPence ?? DEFAULT_TARGET };
     }
   } catch {
     /* fall through to seed */
@@ -175,7 +192,7 @@ export async function todayProgress(child: string): Promise<TodayProgress> {
   return {
     done: doneJobs.length,
     total: jobs.length,
-    pence: doneJobs.reduce((s, j) => s + j.valuePence, 0),
+    pence: earnedPence(cfg, child, doneJobs.length, today),
     remaining: jobs.filter((j) => !doneIds.has(j.id)).map((j) => j.name),
   };
 }
@@ -184,14 +201,13 @@ export interface WeekProgress { count: number; pence: number; }
 export async function weekProgress(child: string, dateStr = todayStr()): Promise<WeekProgress> {
   const cfg = await read();
   const byId = new Map(cfg.jobs.map((j) => [j.id, j]));
-  let pence = 0, count = 0;
+  let count = 0;
   for (const date of weekDates(dateStr)) {
     for (const id of cfg.completions[date]?.[child] ?? []) {
-      const job = byId.get(id);
-      if (job) { pence += job.valuePence; count++; }
+      if (byId.has(id)) count++;
     }
   }
-  return { count, pence };
+  return { count, pence: earnedPence(cfg, child, count, dateStr) };
 }
 
 /** Mark job(s) done today for a child. `phrase` = 'all' or a loose job description. */
@@ -262,14 +278,15 @@ export async function removeJob(child: string, phrase: string): Promise<string[]
   await write(cfg);
   return removed;
 }
-/** Set the pence value — for one matched job, or all jobs if phrase is 'all'/empty. */
-export async function setValue(pence: number, phrase = 'all', child?: string): Promise<number> {
+/** The full weekly pocket money each child can earn. */
+export async function getWeeklyTarget(): Promise<number> {
+  return targetPence(await read());
+}
+/** Set the weekly pocket-money target (in pence) for every child. */
+export async function setWeeklyTarget(pence: number): Promise<void> {
   const cfg = await read();
-  const scope = child ? cfg.jobs.filter((j) => j.child === child) : cfg.jobs;
-  const targets = /^all$|^every|^each/i.test(phrase.trim()) || !phrase.trim() ? scope : matchJobs(scope, phrase);
-  for (const j of targets) j.valuePence = pence;
+  cfg.weeklyTargetPence = Math.max(0, Math.round(pence));
   await write(cfg);
-  return targets.length;
 }
 
 /** Text summary of the current jobs + today's/week's progress, for prompts/ground truth. */
@@ -277,15 +294,16 @@ export async function describeState(): Promise<string> {
   const cfg = await read();
   const today = todayStr();
   const lines: string[] = [];
+  const target = targetPence(cfg);
   for (const child of kids()) {
     const t = await todayProgress(child);
     const w = await weekProgress(child, today);
     const jobs = jobsForChildOn(cfg, child, today);
     const doneIds = new Set(cfg.completions[today]?.[child] ?? []);
-    const list = jobs.map((j) => `${doneIds.has(j.id) ? '✓' : '○'} ${j.name} (${money(j.valuePence)})`).join(', ');
-    lines.push(`${child}: today ${t.done}/${t.total} done (${money(t.pence)}), this week ${money(w.pence)}. Jobs today — ${list || 'none'}`);
+    const list = jobs.map((j) => `${doneIds.has(j.id) ? '✓' : '○'} ${j.name}`).join(', ');
+    lines.push(`${child}: today ${t.done}/${t.total} jobs done, earned ${money(w.pence)} of ${money(target)} this week. Jobs today — ${list || 'none'}`);
   }
-  return lines.join('\n');
+  return `Weekly pocket money: ${money(target)} each if all jobs are done.\n${lines.join('\n')}`;
 }
 
 export interface PayoutRow { child: string; pence: number; count: number; }
@@ -294,14 +312,13 @@ export async function weeklyPayout(dateStr = todayStr()): Promise<PayoutRow[]> {
   const cfg = await read();
   const byId = new Map(cfg.jobs.map((j) => [j.id, j]));
   return kids().map((child) => {
-    let pence = 0, count = 0;
+    let count = 0;
     for (const date of fullWeekDates(dateStr)) {
       for (const id of cfg.completions[date]?.[child] ?? []) {
-        const job = byId.get(id);
-        if (job) { pence += job.valuePence; count++; }
+        if (byId.has(id)) count++;
       }
     }
-    return { child, pence, count };
+    return { child, pence: earnedPence(cfg, child, count, dateStr), count };
   });
 }
 
@@ -314,7 +331,8 @@ export async function isConfigured(): Promise<boolean> {
 export async function payoutMessage(): Promise<string | null> {
   const rows = await weeklyPayout();
   if (!rows.some((r) => r.pence > 0)) return null;
-  const lines = rows.map((r) => `• ${r.child}: *${money(r.pence)}* (${r.count} job${r.count === 1 ? '' : 's'})`);
+  const target = await getWeeklyTarget();
+  const lines = rows.map((r) => `• ${r.child}: *${money(r.pence)}* of ${money(target)} (${r.count} job${r.count === 1 ? '' : 's'})`);
   const total = rows.reduce((s, r) => s + r.pence, 0);
   return `💰 *Pocket money — this week*\n\n${lines.join('\n')}\n\nTotal to pay out: *${money(total)}*. Great work this week! 🌟`;
 }

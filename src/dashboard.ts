@@ -92,6 +92,7 @@ interface DashboardData {
   pocketMoney: {
     kids: Array<{ name: string; done: number; total: number; pence: number; weekPence: number; remaining: string[] }>;
     paydayDays: number;
+    target: number;
   } | null;
   ticker: string[];
   night: boolean;
@@ -470,7 +471,7 @@ export async function getDashboardData(): Promise<DashboardData> {
         kidsData.push({ name, done: t.done, total: t.total, pence: t.pence, weekPence: w.pence, remaining: t.remaining });
       }
       const dow = new Date(`${todayStr}T12:00:00Z`).getUTCDay(); // 0 = Sunday
-      pocketMoney = { kids: kidsData, paydayDays: dow === 0 ? 0 : 7 - dow };
+      pocketMoney = { kids: kidsData, paydayDays: dow === 0 ? 0 : 7 - dow, target: await pm.getWeeklyTarget() };
     }
   } catch (err) {
     console.error('Dashboard: pocket money fetch failed:', err);
@@ -534,7 +535,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         }).join('');
         const payLabel = pm.paydayDays === 0 ? 'Payday today!' : pm.paydayDays === 1 ? 'Payday tomorrow' : `Payday Sunday · ${pm.paydayDays} days`;
         const payRows = pm.kids.map((k) =>
-          `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-val">${gbp(k.weekPence)}</span></li>`).join('');
+          `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-val">${gbp(k.weekPence)} <span class="jm-of">of ${gbp(pm.target)}</span></span></li>`).join('');
         const view = (jv: number, title: string, rows: string) =>
           `<div class="jobs-view" data-jv="${jv}"${jv ? ' hidden' : ''}><div class="jm-title">${title}</div><ul class="jm-rows">${rows}</ul></div>`;
         return `<div class="card jobs-card">
@@ -743,6 +744,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .jm-name { flex: 0 0 auto; min-width: 8.5vw; }
   .jm-dots { flex: 1; color: var(--accent2); letter-spacing: .35vw; font-size: 2.2vh; white-space: nowrap; overflow: hidden; }
   .jm-val { flex: 0 0 auto; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .jm-of { color: var(--muted); font-weight: 500; font-size: .85em; }
   /* "Jobs left" view: name on its own line, jobs listed full-width below so the
      list wraps to fewer lines and every job fits. */
   .jobs-view[data-jv="1"] .jm-rows { gap: .2vh; }
