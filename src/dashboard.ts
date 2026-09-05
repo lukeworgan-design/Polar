@@ -90,7 +90,7 @@ interface DashboardData {
   shopping: string[];
   reminders: string[];
   pocketMoney: {
-    kids: Array<{ name: string; done: number; total: number; pence: number; weekPence: number }>;
+    kids: Array<{ name: string; done: number; total: number; pence: number; weekPence: number; remaining: string[] }>;
     paydayDays: number;
   } | null;
   ticker: string[];
@@ -467,7 +467,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       for (const name of pm.childNames()) {
         const t = await pm.todayProgress(name);
         const w = await pm.weekProgress(name);
-        kidsData.push({ name, done: t.done, total: t.total, pence: t.pence, weekPence: w.pence });
+        kidsData.push({ name, done: t.done, total: t.total, pence: t.pence, weekPence: w.pence, remaining: t.remaining });
       }
       const dow = new Date(`${todayStr}T12:00:00Z`).getUTCDay(); // 0 = Sunday
       pocketMoney = { kids: kidsData, paydayDays: dow === 0 ? 0 : 7 - dow };
@@ -526,15 +526,21 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         const dots = (done: number, total: number) => '●'.repeat(done) + '○'.repeat(Math.max(0, total - done));
         const todayView = pm.kids.map((k) =>
           `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-dots">${dots(k.done, k.total)}</span><span class="jm-val">${gbp(k.pence)}</span></li>`).join('');
-        const weekView = pm.kids.map((k) =>
-          `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-val">${gbp(k.weekPence)} this week</span></li>`).join('');
+        // What's left today — capped so a busy morning can't overgrow the card.
+        const CAP = 5;
+        const todoView = pm.kids.map((k) => {
+          const left = k.remaining.length === 0
+            ? '<span class="jm-done">all done! 🎉</span>'
+            : esc(k.remaining.slice(0, CAP).join(', ')) + (k.remaining.length > CAP ? ` +${k.remaining.length - CAP}` : '');
+          return `<li class="jm-todo"><span class="jm-name">${esc(k.name)}</span><span class="jm-left">${left}</span></li>`;
+        }).join('');
         const payLabel = pm.paydayDays === 0 ? '💰 Payday today!' : pm.paydayDays === 1 ? '💰 Payday tomorrow' : `💰 Payday Sunday · ${pm.paydayDays} days`;
         const payView = `<li class="jm-pay">${payLabel}</li>` + pm.kids.map((k) =>
-          `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-val">${gbp(k.weekPence)}</span></li>`).join('');
+          `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-val">${gbp(k.weekPence)} this week</span></li>`).join('');
         return `<div class="card jobs-card">
         <h2>🌟 Pocket money</h2>
         <ul class="jobs-view" data-jv="0">${todayView}</ul>
-        <ul class="jobs-view" data-jv="1" hidden>${weekView}</ul>
+        <ul class="jobs-view" data-jv="1" hidden>${todoView}</ul>
         <ul class="jobs-view" data-jv="2" hidden>${payView}</ul>
       </div>`;
       })()
@@ -737,6 +743,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .jm-dots { flex: 1; color: var(--accent2); letter-spacing: .35vw; font-size: 2.3vh; white-space: nowrap; overflow: hidden; }
   .jm-val { flex: 0 0 auto; color: var(--accent); font-variant-numeric: tabular-nums; }
   .jm-pay { color: var(--accent2); font-weight: 700; }
+  .jobs-view li.jm-todo { align-items: baseline; }
+  .jm-left { flex: 1; min-width: 0; font-size: 2.2vh; font-weight: 500; line-height: 1.3; color: var(--text); }
+  .jm-done { color: var(--accent2); font-weight: 600; }
   .reminders { list-style: none; display: flex; flex-direction: column; gap: .8vh; margin-top: .6vh; }
   .reminders li { font-size: 2.5vh; font-weight: 600; display: flex; gap: 1.2vw; align-items: baseline; }
   .reminders .rm-tag { flex: 0 0 auto; min-width: 11vw; color: var(--accent2); font-weight: 700; }
