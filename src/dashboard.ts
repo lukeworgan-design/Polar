@@ -622,8 +622,11 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     if (present.length === 1) return present[0]!;
     return `<div class="side-pair">${present.join('')}</div>`;
   };
+  // Weather card removed from the wall (everyone has it on their phones) — frees
+  // up the right column. `weatherCard` is still built above; re-add it here to
+  // bring it back.
+  void weatherCard;
   const sideCards = [
-    weatherCard,
     mealsCard,
     pair(schoolRunCard, binCard),
     pair(countdownCard, babyCard),
