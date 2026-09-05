@@ -524,24 +524,24 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     ? (() => {
         const pm = d.pocketMoney!;
         const dots = (done: number, total: number) => '●'.repeat(done) + '○'.repeat(Math.max(0, total - done));
-        const todayView = pm.kids.map((k) =>
+        const todayRows = pm.kids.map((k) =>
           `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-dots">${dots(k.done, k.total)}</span><span class="jm-val">${gbp(k.pence)}</span></li>`).join('');
-        // What's left today — capped so a busy morning can't overgrow the card.
-        const CAP = 5;
-        const todoView = pm.kids.map((k) => {
+        const todoRows = pm.kids.map((k) => {
           const left = k.remaining.length === 0
             ? '<span class="jm-done">all done! 🎉</span>'
-            : esc(k.remaining.slice(0, CAP).join(', ')) + (k.remaining.length > CAP ? ` +${k.remaining.length - CAP}` : '');
+            : esc(k.remaining.join(', '));
           return `<li class="jm-todo"><span class="jm-name">${esc(k.name)}</span><span class="jm-left">${left}</span></li>`;
         }).join('');
-        const payLabel = pm.paydayDays === 0 ? '💰 Payday today!' : pm.paydayDays === 1 ? '💰 Payday tomorrow' : `💰 Payday Sunday · ${pm.paydayDays} days`;
-        const payView = `<li class="jm-pay">${payLabel}</li>` + pm.kids.map((k) =>
-          `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-val">${gbp(k.weekPence)} this week</span></li>`).join('');
+        const payLabel = pm.paydayDays === 0 ? 'Payday today!' : pm.paydayDays === 1 ? 'Payday tomorrow' : `Payday Sunday · ${pm.paydayDays} days`;
+        const payRows = pm.kids.map((k) =>
+          `<li><span class="jm-name">${esc(k.name)}</span><span class="jm-val">${gbp(k.weekPence)}</span></li>`).join('');
+        const view = (jv: number, title: string, rows: string) =>
+          `<div class="jobs-view" data-jv="${jv}"${jv ? ' hidden' : ''}><div class="jm-title">${title}</div><ul class="jm-rows">${rows}</ul></div>`;
         return `<div class="card jobs-card">
         <h2>🌟 Pocket money</h2>
-        <ul class="jobs-view" data-jv="0">${todayView}</ul>
-        <ul class="jobs-view" data-jv="1" hidden>${todoView}</ul>
-        <ul class="jobs-view" data-jv="2" hidden>${payView}</ul>
+        ${view(0, 'Today', todayRows)}
+        ${view(1, 'Jobs left today', todoRows)}
+        ${view(2, `💰 ${payLabel}`, payRows)}
       </div>`;
       })()
     : '';
@@ -736,16 +736,20 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .reminders-card { flex: 0 0 auto; }
   /* Pocket-money jobs card (rotates views) */
   .jobs-card { flex: 0 0 auto; }
-  .jobs-view { list-style: none; display: flex; flex-direction: column; gap: .8vh; margin-top: .6vh; }
   .jobs-view[hidden] { display: none; }
-  .jobs-view li { display: flex; align-items: baseline; gap: 1.2vw; font-size: 2.6vh; font-weight: 600; }
-  .jm-name { flex: 0 0 auto; min-width: 9vw; }
-  .jm-dots { flex: 1; color: var(--accent2); letter-spacing: .35vw; font-size: 2.3vh; white-space: nowrap; overflow: hidden; }
+  .jm-title { font-size: 1.85vh; letter-spacing: 1.2px; text-transform: uppercase; color: var(--accent2); font-weight: 700; margin: 0 0 .3vh; }
+  .jm-rows { list-style: none; display: flex; flex-direction: column; gap: .6vh; }
+  .jm-rows li { display: flex; align-items: baseline; gap: 1.2vw; font-size: 2.5vh; font-weight: 600; }
+  .jm-name { flex: 0 0 auto; min-width: 8.5vw; }
+  .jm-dots { flex: 1; color: var(--accent2); letter-spacing: .35vw; font-size: 2.2vh; white-space: nowrap; overflow: hidden; }
   .jm-val { flex: 0 0 auto; color: var(--accent); font-variant-numeric: tabular-nums; }
-  .jm-pay { color: var(--accent2); font-weight: 700; }
-  .jobs-view li.jm-todo { align-items: baseline; }
-  .jm-left { flex: 1; min-width: 0; font-size: 2.2vh; font-weight: 500; line-height: 1.3; color: var(--text); }
-  .jm-done { color: var(--accent2); font-weight: 600; }
+  /* "Jobs left" view: name on its own line, jobs listed full-width below so the
+     list wraps to fewer lines and every job fits. */
+  .jobs-view[data-jv="1"] .jm-rows { gap: .2vh; }
+  .jm-rows li.jm-todo { flex-direction: column; gap: 0; }
+  .jm-todo .jm-name { font-size: 1.8vh; color: var(--accent); }
+  .jm-left { font-size: 1.6vh; font-weight: 500; line-height: 1.16; color: var(--text); }
+  .jm-done { color: var(--accent2); font-weight: 600; font-size: 2vh; }
   .reminders { list-style: none; display: flex; flex-direction: column; gap: .8vh; margin-top: .6vh; }
   .reminders li { font-size: 2.5vh; font-weight: 600; display: flex; gap: 1.2vw; align-items: baseline; }
   .reminders .rm-tag { flex: 0 0 auto; min-width: 11vw; color: var(--accent2); font-weight: 700; }
