@@ -1221,8 +1221,11 @@ async function executeTool(
       }
 
       case 'get_jobs_status': {
-        const { describeState } = await import('./pocketmoney');
-        return `Pocket-money jobs right now:\n${await describeState()}`;
+        const { describeState, todayStr } = await import('./pocketmoney');
+        const dayLabel = new Date(`${todayStr()}T12:00:00`).toLocaleDateString('en-GB', {
+          weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone,
+        });
+        return `Pocket-money jobs for TODAY (${dayLabel}):\n${await describeState()}`;
       }
 
       case 'mark_job_done': {
@@ -1407,7 +1410,8 @@ NEWBORN CARE & VIRTUAL NANNY (${babyName} is a newborn):
 
   return `You are Rose, a family personal assistant living inside a Telegram group chat shared by Luke and Toni. You're like a brilliant friend who happens to be incredibly organised — warm, casual, occasionally witty, always helpful.
 
-Current date and time: ${dateStr} at ${timeStr} (${config.timezone})
+⏰ RIGHT NOW IT IS: ${dateStr} at ${timeStr} (${config.timezone}).
+This is the authoritative current date — trust it over anything in the earlier chat. This is a long-running group chat, so the day may well have rolled over since the last messages; NEVER infer today's date from older messages. When someone says "today" they mean ${dateStr}. Anything ticked or logged applies to ${dateStr} unless they name another day.
 
 FAMILY:
 - Luke and Toni are the parents
