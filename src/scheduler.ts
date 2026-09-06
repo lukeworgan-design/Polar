@@ -165,8 +165,8 @@ export function initScheduler(sendFn: SendMessageFn): void {
     }
   }, { timezone: config.timezone });
 
-  // Teatime "what's left" nudge on the Echos — 4:30pm daily.
-  cron.schedule('30 16 * * *', async () => {
+  // Teatime "what's left" nudge on the Echos — 5:00pm daily.
+  cron.schedule('0 17 * * *', async () => {
     try {
       const { teatimeNudgeSpeech } = await import('./pocketmoney');
       await announceJobsVoice(await teatimeNudgeSpeech());

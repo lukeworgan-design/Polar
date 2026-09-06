@@ -580,6 +580,18 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'announce_jobs',
+    description: "Read the kids' pocket-money jobs out loud on the Echo(s) using the ready-made, up-to-date wording (correct names, jobs still to do, and weekly totals). Use this — NOT announce_on_alexa — whenever someone asks to announce/call out/say the jobs aloud, e.g. 'announce what's left', 'tell the kids what jobs they've still got', 'read out today's jobs on Alexa', 'do the payday shout-out'. For a plain chat question like 'what's left for the kids?' (no request to say it aloud), just answer from get_jobs_status instead of announcing.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        which: { type: 'string', enum: ['morning', 'left', 'payday'], description: "'left' = what each kid still has to do today (default), 'morning' = the full list of today's jobs, 'payday' = what each kid earned this week" },
+        room: { type: 'string', description: "Optional room (e.g. 'kitchen', 'lounge and bedroom'). Omit for every room." },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'set_school_run',
     description: "Record a change to the school-run rota for Poppy and Billy. Use for a LASTING change to a weekday (pass 'day', e.g. 'Wednesday') OR a ONE-OFF change on a specific date (pass 'date' as YYYY-MM-DD — for 'this Thursday'/'tomorrow' work out the actual date first). Only call this when someone tells you the school run has changed; never guess.",
     input_schema: {
@@ -1153,6 +1165,29 @@ async function executeTool(
         return `Failed to announce on Alexa (${result.reason ?? 'unknown error'}). Tell the family it did not play out loud — do NOT claim it was announced.`;
       }
 
+      case 'announce_jobs': {
+        const { speakOnAlexa, isVoiceEnabled } = await import('./voice');
+        if (!isVoiceEnabled()) {
+          return 'Alexa speech is not set up yet — Voice Monkey needs configuring (VOICE_MONKEY_TOKEN and VOICE_MONKEY_DEVICES). Tell the family you could not say it aloud.';
+        }
+        const pm = await import('./pocketmoney');
+        const which = (toolInput['which'] as string || 'left').trim().toLowerCase();
+        const text = which === 'morning' ? await pm.morningJobsSpeech()
+          : which === 'payday' ? await pm.paydaySpeech()
+          : await pm.teatimeNudgeSpeech();
+        if (!text) {
+          return which === 'payday'
+            ? 'No pocket money has been earned yet this week, so there is nothing to announce. Tell the family gently.'
+            : 'No pocket-money jobs are set up, so there is nothing to announce. Tell the family.';
+        }
+        const room = (toolInput['room'] as string || '').trim() || undefined;
+        const result = await speakOnAlexa(text, { target: room });
+        if (result.ok) {
+          return `Announced the jobs aloud in ${result.spokenOn.join(', ')}: "${text}". Confirm briefly to the family that it was said on Alexa.`;
+        }
+        return `Failed to announce on Alexa (${result.reason ?? 'unknown error'}). Tell the family it did not play out loud — do NOT claim it was announced.`;
+      }
+
       case 'set_school_run': {
         const note = (toolInput['note'] as string || '').trim();
         if (!note) return 'What should the school run say (who does drop-off/pick-up)?';
@@ -1523,7 +1558,7 @@ POCKET MONEY & JOBS (Poppy and Billy):
 - A statement like "Both kids made beds today" or "Billy did his homework" is a CONFIRMATION that it happened — always just tick it off (or acknowledge it's already ticked). It is NEVER a question. Do not ask "are you asking me to tick it off again, or just confirming?" — that's confusing; act on it and give a short, warm reply.
 - If get_jobs_status shows a job is already ticked for today, don't treat that as a problem or ask what to do — a simple "already got that one ✓" is perfect. Ticking the same job twice never double-pays; each job counts once.
 - To correct a mistake, use undo_job. To change the job list or values, use add_pocket_money_job / remove_pocket_money_job / set_job_value.
-- For "what has Poppy earned?" / "what jobs are left?", call get_jobs_status and answer from it.
+- For "what has Poppy earned?" / "what jobs are left?" asked in chat, call get_jobs_status and answer from it in text. But if they ask you to SAY or ANNOUNCE the jobs out loud ("announce what's left", "read out the jobs on Alexa", "tell the kids what they've still got", "do the payday shout-out"), call announce_jobs instead (which='left' for what's still to do, 'morning' for the full list, 'payday' for earnings) — don't hand-write the words for announce_on_alexa.
 - WRITING — CRITICAL (same rule as the calendar): to tick a job off you MUST call mark_job_done in this reply. Saying "done, ticked off" as text without the tool saves NOTHING. Confirm warmly and briefly only AFTER the tool succeeds, and mention the running weekly total when natural. Keep it encouraging — this is for the kids.
 
 WEB SEARCH:
