@@ -1234,10 +1234,16 @@ async function executeTool(
         const r = await pm.markDone(child, jobs);
         if (!r.ok) return `I couldn't find a job matching "${jobs}" for ${child} today. Call get_jobs_status to see the exact names, then try again.`;
         const week = await pm.weekProgress(child);
-        const bits: string[] = [];
-        if (r.matched.length) bits.push(`ticked off ${r.matched.join(', ')}`);
-        if (r.alreadyDone.length) bits.push(`(${r.alreadyDone.join(', ')} already done)`);
-        return `Done — ${child}: ${bits.join(' ')}. This week so far: ${pm.money(week.pence)}. Confirm warmly and briefly.`;
+        const total = `${child}'s week so far: ${pm.money(week.pence)}.`;
+        // Nothing new ticked — it was all already done. Just warmly confirm; never
+        // ask whether to tick it "again" (a parent saying "they did X" is always a
+        // confirmation to record, not a question).
+        if (!r.matched.length && r.alreadyDone.length) {
+          return `${r.alreadyDone.join(', ')} was already ticked off for ${child} today — nothing to change. ${total} Give a quick, warm acknowledgement (e.g. "already got that one ✓"); do NOT ask whether to tick it off again.`;
+        }
+        let msg = `Ticked off ${r.matched.join(', ')} for ${child}.`;
+        if (r.alreadyDone.length) msg += ` (${r.alreadyDone.join(', ')} was already done.)`;
+        return `${msg} ${total} Confirm warmly and briefly — no questions.`;
       }
 
       case 'undo_job': {
@@ -1510,6 +1516,8 @@ CALENDAR:
 POCKET MONEY & JOBS (Poppy and Billy):
 - Each child can earn a fixed weekly total (default £5) by doing their daily jobs. Every job is an equal share of that £5 — do them all and they get the full £5, miss some and they earn proportionally less. Parents tell you when a job's done and you tick it off. To change the £5, use set_weekly_pocket_money.
 - WORKFLOW: when someone says a child did a job ("Poppy made her bed", "Billy did all his jobs", "Poppy tidied up and fed Charlie"), FIRST call get_jobs_status to see that child's exact job names for today, THEN call mark_job_done with the EXACT name(s) (comma-separated) or "all". Never guess the names — use the ones the tool returns.
+- A statement like "Both kids made beds today" or "Billy did his homework" is a CONFIRMATION that it happened — always just tick it off (or acknowledge it's already ticked). It is NEVER a question. Do not ask "are you asking me to tick it off again, or just confirming?" — that's confusing; act on it and give a short, warm reply.
+- If get_jobs_status shows a job is already ticked for today, don't treat that as a problem or ask what to do — a simple "already got that one ✓" is perfect. Ticking the same job twice never double-pays; each job counts once.
 - To correct a mistake, use undo_job. To change the job list or values, use add_pocket_money_job / remove_pocket_money_job / set_job_value.
 - For "what has Poppy earned?" / "what jobs are left?", call get_jobs_status and answer from it.
 - WRITING — CRITICAL (same rule as the calendar): to tick a job off you MUST call mark_job_done in this reply. Saying "done, ticked off" as text without the tool saves NOTHING. Confirm warmly and briefly only AFTER the tool succeeds, and mention the running weekly total when natural. Keep it encouraging — this is for the kids.
