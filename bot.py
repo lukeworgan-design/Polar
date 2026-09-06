@@ -1,6 +1,6 @@
 """
-bot.py - Polar Ultra Running Coach Telegram Bot v8.3
-Athlete: Luke Worgan | Cotswold Way Ultra 100km 13 Jun 2026 ✅ COMPLETED
+bot.py - Polar Running Coach Telegram Bot v8.2
+Athlete: Luke Worgan | Goal: London Marathon 27 Apr 2026 + Ultra marathons
 Watch: Polar Grit X2 | Deployed: Railway.app
 """
 
@@ -25,16 +25,6 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-from collections import deque
-_log_buffer: deque = deque(maxlen=50)
-class _BufHandler(logging.Handler):
-    def emit(self, record):
-        if record.levelno >= logging.WARNING:
-            _log_buffer.append(self.format(record))
-_buf_handler = _BufHandler()
-_buf_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-logging.getLogger().addHandler(_buf_handler)
-
 TELEGRAM_TOKEN      = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_API_KEY   = os.environ["ANTHROPIC_API_KEY"]
 POLAR_ACCESS_TOKEN  = os.environ["POLAR_ACCESS_TOKEN"]
@@ -42,6 +32,7 @@ POLAR_CLIENT_ID     = os.environ["POLAR_CLIENT_ID"]
 POLAR_CLIENT_SECRET = os.environ["POLAR_CLIENT_SECRET"]
 POLAR_USER_ID       = os.environ["POLAR_USER_ID"]
 YOUR_TELEGRAM_ID    = int(os.environ["YOUR_TELEGRAM_ID"])
+GROUP_CHAT_ID       = -5260916370
 SUPABASE_URL        = os.environ["SUPABASE_URL"].rstrip("/")
 SUPABASE_KEY        = os.environ["SUPABASE_KEY"]
 
@@ -49,19 +40,13 @@ bot      = telebot.TeleBot(TELEGRAM_TOKEN)
 claude   = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-RUNNING_SPORTS      = {"RUNNING", "TRAIL_RUNNING", "TREADMILL_RUNNING"}
-ALLOWED_SPORTS      = RUNNING_SPORTS | {"STRENGTH_TRAINING", "FUNCTIONAL_TRAINING", "FLEXIBILITY_TRAINING", "YOGA", "STRETCHING", "CORE", "CROSS_TRAINING", "BOOTCAMP", "OTHER"}
+ALLOWED_SPORTS      = {"RUNNING", "TRAIL_RUNNING", "TREADMILL_RUNNING"}
 POLAR_BASE          = "https://www.polaraccesslink.com/v3"
-STRAVA_BASE         = "https://www.strava.com/api/v3"
-STRAVA_CLIENT_ID    = os.environ.get("STRAVA_CLIENT_ID", "")
-STRAVA_CLIENT_SECRET= os.environ.get("STRAVA_CLIENT_SECRET", "")
 RESTING_HR_BASELINE = 47
 AEROBIC_THRESHOLD   = 149
 ANAEROBIC_THRESHOLD = 178
 MAX_HR              = 198
-MARATHON_DATE       = datetime(2026, 6, 13).date()  # Cotswold Way Ultra ✅ COMPLETED
-NEXT_RACE_NAME      = None   # set when next A-race is confirmed
-NEXT_RACE_DATE      = None   # set when next A-race is confirmed
+MARATHON_DATE       = datetime(2026, 4, 27).date()
 
 debriefed_today:    set = set()
 alerts_fired_today: set = set()
@@ -70,119 +55,6 @@ alerts_fired_today: set = set()
 
 def polar_headers():
     return {"Authorization": f"Bearer {POLAR_ACCESS_TOKEN}", "Accept": "application/json"}
-
-# ── STRAVA ─────────────────────────────────────────────────────────────────
-
-def get_strava_access_token() -> str | None:
-    """Return a valid Strava access token, refreshing if needed."""
-    if not STRAVA_CLIENT_ID or not STRAVA_CLIENT_SECRET:
-        return None
-    try:
-        r = supabase.table("strava_tokens").select("*").eq("id", 1).limit(1).execute()
-        if not r.data:
-            return None
-        tok = r.data[0]
-        if time.time() > tok["expires_at"] - 300:
-            resp = requests.post("https://www.strava.com/oauth/token", data={
-                "client_id": STRAVA_CLIENT_ID, "client_secret": STRAVA_CLIENT_SECRET,
-                "grant_type": "refresh_token", "refresh_token": tok["refresh_token"],
-            })
-            if not resp.ok:
-                log.error(f"Strava token refresh failed: {resp.text}")
-                return None
-            new_tok = resp.json()
-            supabase.table("strava_tokens").upsert({
-                "id": 1, "access_token": new_tok["access_token"],
-                "refresh_token": new_tok["refresh_token"], "expires_at": new_tok["expires_at"],
-            }).execute()
-            return new_tok["access_token"]
-        return tok["access_token"]
-    except Exception as e:
-        log.error(f"Strava token error: {e}")
-        return None
-
-def strava_headers() -> dict | None:
-    tok = get_strava_access_token()
-    return {"Authorization": f"Bearer {tok}"} if tok else None
-
-def find_strava_activity(date_str: str, dist_m: float) -> dict | None:
-    """Find Strava activity matching the Polar exercise by date and distance."""
-    hdrs = strava_headers()
-    if not hdrs:
-        return None
-    try:
-        dt     = datetime.strptime(date_str[:10], "%Y-%m-%d")
-        after  = int(dt.replace(hour=0,  minute=0,  second=0,  tzinfo=timezone.utc).timestamp())
-        before = int(dt.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc).timestamp())
-        r = requests.get(f"{STRAVA_BASE}/athlete/activities",
-                         params={"after": after, "before": before, "per_page": 10},
-                         headers=hdrs, timeout=10)
-        if not r.ok:
-            log.error(f"Strava activities error: {r.status_code}")
-            return None
-        activities = [a for a in r.json() if a.get("type") in ("Run", "TrailRun", "VirtualRun")]
-        if not activities:
-            return None
-        if dist_m:
-            for act in activities:
-                if abs(act.get("distance", 0) - dist_m) < 500:
-                    return act
-        return activities[0]
-    except Exception as e:
-        log.error(f"Strava find activity error: {e}")
-        return None
-
-def strava_elevation_by_km(activity_id: int) -> dict:
-    """Return {km_idx: (ascent_m, descent_m)} from Strava's corrected altitude stream."""
-    hdrs = strava_headers()
-    if not hdrs:
-        return {}
-    try:
-        r = requests.get(f"{STRAVA_BASE}/activities/{activity_id}/streams",
-                         params={"keys": "altitude,distance", "series_type": "distance"},
-                         headers=hdrs, timeout=15)
-        if not r.ok:
-            log.error(f"Strava streams error {activity_id}: {r.status_code}")
-            return {}
-        streams  = {s["type"]: s["data"] for s in r.json()}
-        alt_data = streams.get("altitude", [])
-        dst_data = streams.get("distance", [])
-        if not alt_data or not dst_data:
-            return {}
-        buckets  = {}
-        prev_alt = None
-        for dist, alt in zip(dst_data, alt_data):
-            km_idx = int(dist / 1000)
-            if km_idx not in buckets:
-                buckets[km_idx] = [0.0, 0.0]
-            if prev_alt is not None:
-                diff = alt - prev_alt
-                if diff > 0:   buckets[km_idx][0] += diff
-                elif diff < 0: buckets[km_idx][1] += abs(diff)
-            prev_alt = alt
-        return {k: (round(v[0], 1) or None, round(v[1], 1) or None) for k, v in buckets.items()}
-    except Exception as e:
-        log.error(f"Strava stream error {activity_id}: {e}")
-        return {}
-
-def enrich_splits_with_strava(split_rows: list, date_str: str, dist_m: float):
-    """Enrich split_rows with Strava elevation. Returns (split_rows, strava_id, total_ascent)."""
-    act = find_strava_activity(date_str, dist_m)
-    if not act:
-        return split_rows, None, None
-    strava_id    = act["id"]
-    strava_ascent = sf(act.get("total_elevation_gain"))
-    elev_map     = strava_elevation_by_km(strava_id)
-    if elev_map and split_rows:
-        for s in split_rows:
-            km_idx = s.get("lap_number", s.get("km_number", 1) - 1)
-            if km_idx in elev_map:
-                s["ascent_m"], s["descent_m"] = elev_map[km_idx]
-        total_asc = round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or strava_ascent
-    else:
-        total_asc = strava_ascent
-    log.info(f"Strava enriched {date_str}: activity {strava_id}, total ascent {total_asc}m")
-    return split_rows, strava_id, total_asc
 
 def parse_pt_seconds(pt: str) -> float:
     if not pt: return 0.0
@@ -225,17 +97,8 @@ def si(v):
     try: return int(float(v)) if v not in (None, "", "N/A") else None
     except: return None
 
-def days_to_race() -> str:
-    if NEXT_RACE_DATE:
-        d = (NEXT_RACE_DATE - datetime.now().date()).days
-        return f"{d}d to {NEXT_RACE_NAME or 'next race'}"
-    days_since = (datetime.now().date() - MARATHON_DATE).days
-    return f"Cotswold Way COMPLETED ({days_since}d ago) — no A-race set"
-
 def days_to_marathon() -> int:
-    if NEXT_RACE_DATE:
-        return (NEXT_RACE_DATE - datetime.now().date()).days
-    return 0
+    return (MARATHON_DATE - datetime.now().date()).days
 
 def recharge_emoji(status: str) -> str:
     if not status: return "⚪"
@@ -273,16 +136,8 @@ def readiness_emoji(score: float) -> str:
 
 def sport_emoji(sport: str) -> str:
     if not sport: return "🏃"
-    if "TRAIL" in sport:       return "🏔️"
-    if "TREADMILL" in sport:   return "⚙️"
-    if "STRENGTH" in sport:    return "🏋️"
-    if "FUNCTIONAL" in sport:  return "🏋️"
-    if "YOGA" in sport:        return "🧘"
-    if "FLEX" in sport or "STRETCH" in sport: return "🧘"
-    if "CORE" in sport:        return "💪"
-    if "CROSS" in sport or "BOOTCAMP" in sport: return "⚡"
-    if sport == "OTHER": return "💪"
-    if sport in RUNNING_SPORTS: return "🏃"
+    if "TRAIL" in sport:     return "🏔️"
+    if "TREADMILL" in sport: return "⚙️"
     return "🏃"
 
 def fmt_date(date_str: str) -> str:
@@ -432,22 +287,19 @@ def recommend_session(readiness: dict) -> str:
     score = readiness["score"]
     dtm   = days_to_marathon()
     ratio = readiness["raw_data"].get("load_ratio", 1.0)
-    if 0 < dtm <= 7:
-        if score >= 7: return f"TAPER ({dtm}d to Cotswold): 20-30min easy jog, no hills. Keep legs ticking."
-        else:          return f"TAPER ({dtm}d to Cotswold): Rest or 20min walk only. Arrive fresh."
-    if 8 <= dtm <= 14:
-        if score >= 7: return f"TAPER ({dtm}d to Cotswold): Easy 6-8km trail @ conversational pace, HR <{AEROBIC_THRESHOLD}bpm."
-        else:          return f"TAPER ({dtm}d to Cotswold): 20-30min very easy, walk the hills. Recovery focus."
-    if 15 <= dtm <= 21:
-        if score >= 8:   return f"PEAK ({dtm}d to Cotswold): Long trail run 18-22km, walk every hill, fuel every 20min."
-        elif score >= 6: return f"PEAK ({dtm}d to Cotswold): Trail 14-16km easy, hills walked, HR <{AEROBIC_THRESHOLD}bpm."
-        else:            return f"PEAK ({dtm}d to Cotswold): Easy 8km flat, HR <140bpm. Recovery priority."
-    if score >= 8:   return f"BUILD ({dtm}d to Cotswold): Long trail run 14-18km @ easy effort, walk uphills, practice fueling."
+    if 0 < dtm <= 14:
+        if score >= 7: return f"TAPER ({dtm}d to London): 6-8km easy @ 5:30-6:00/km, HR <{AEROBIC_THRESHOLD}bpm. Strides only."
+        else:          return f"TAPER ({dtm}d to London): 20-30min very easy jog @ 6:00+/km. Keep legs moving only."
+    if 15 <= dtm <= 56:
+        if score >= 8:   return f"PEAK ({dtm}d to London): 10km w/ 5km @ marathon pace (4:58/km), HR {AEROBIC_THRESHOLD}-{ANAEROBIC_THRESHOLD}bpm."
+        elif score >= 6: return f"PEAK ({dtm}d to London): Steady aerobic 12-16km @ 5:20-5:45/km, HR <{AEROBIC_THRESHOLD}bpm."
+        else:            return f"PEAK ({dtm}d to London): Recovery run 8km easy @ 6:00+/km, HR <140bpm."
+    if score >= 8:   return f"BUILD ({dtm}d to London): 6x1km @ 4:45/km w/ 90s rest, or 18-22km long run @ 5:20/km."
     elif score >= 6:
-        if ratio > 1.1: return f"BUILD ({dtm}d to Cotswold): Load building — hill steady 8-10km, conversational effort only."
-        return f"BUILD ({dtm}d to Cotswold): Easy trail 10-12km @ HR <{AEROBIC_THRESHOLD}bpm, walk hills."
-    elif score >= 4: return f"BUILD ({dtm}d to Cotswold): Easy 5-8km @ conversational pace, HR <140bpm."
-    else:            return f"REST ({dtm}d to Cotswold): Readiness {score}/10 — walk, stretch, roll only."
+        if ratio > 1.1: return f"BUILD ({dtm}d to London): Load building — steady 14-16km @ 5:30/km. No intensity."
+        return f"BUILD ({dtm}d to London): 14km @ 5:20-5:40/km, HR <{AEROBIC_THRESHOLD}bpm."
+    elif score >= 4: return f"BUILD ({dtm}d to London): Easy 8-10km @ 6:00/km, HR <140bpm."
+    else:            return f"REST ({dtm}d to London): Readiness {score}/10 — walk, stretch, roll only."
 
 
 def check_and_push_alerts():
@@ -465,7 +317,7 @@ def check_and_push_alerts():
                 recent = supabase.table("polar_exercises").select("date").gte("date", five_days_ago).limit(1).execute()
                 if not recent.data:
                     alerts_fired_today.add("detraining_alert")
-                    alerts.append(f"⬇️ *DETRAINING RISK*\nNo runs in 5+ days. Load ratio: {float(ratio):.2f}\nEven 20 mins easy maintains fitness.")
+                    alerts.append(f"⬇️ *DETRAINING RISK*\nNo runs in 5+ days. Load ratio: {float(ratio):.2f}\n{days_to_marathon()} days to London — even 20 mins easy maintains fitness.")
     except Exception as e:
         log.error(f"Alert check cardio load: {e}")
 
@@ -517,15 +369,15 @@ def check_and_push_alerts():
     if dtm in milestones and milestone_key not in alerts_fired_today:
         alerts_fired_today.add(milestone_key)
         if dtm == 1:
-            msg = "🎯 *TOMORROW IS RACE DAY*\nEasy 10 min shakeout max.\nKit ready. Fuel sorted. Sleep early. Trust the training."
+            msg = "🎯 *TOMORROW IS RACE DAY*\nLondon Marathon is tomorrow. 10 min shakeout max.\nKit laid out. Nutrition ready. Sleep early. You've done the work."
         elif dtm <= 7:
-            msg = f"🎯 *{dtm} DAYS TO COTSWOLD WAY*\nFinal taper. Short and easy only. Legs should feel fresh — that's the goal."
+            msg = f"🎯 *{dtm} DAYS TO LONDON*\nFinal taper week. Short and easy from here. Trust the fitness — it's banked."
         elif dtm <= 14:
-            msg = f"🎯 *{dtm} DAYS TO COTSWOLD WAY*\nTaper in full effect. Resist adding miles. Arrive at the start line fresh."
+            msg = f"🎯 *{dtm} DAYS TO LONDON*\nTaper in full effect. Resist adding miles — trust the plan."
         elif dtm == 21:
-            msg = "🎯 *3 WEEKS TO COTSWOLD WAY*\nLast long run window. Max 22km this weekend, then taper begins. Walk the hills. Practice fueling."
+            msg = "🎯 *3 WEEKS TO LONDON*\nLast big effort window. One more quality long run if readiness allows, then taper. Target: 4:58/km."
         else:
-            msg = f"🎯 *{dtm} DAYS TO COTSWOLD WAY*\nBuild phase — consistency over volume. Keep long runs easy, walk every hill in training."
+            msg = f"🎯 *{dtm} DAYS TO LONDON*\nSub 3:30 target: 4:58/km. Keep building aerobic base. Threshold work is key."
         alerts.append(msg)
 
     for alert in alerts:
@@ -564,347 +416,46 @@ def format_status_dashboard() -> str:
         f"{cl_emoji} 🔥 Load ratio {ratio} · {status_str} · {cl_score}/10 _(30%)_",
         f"{hr_emoji} ❤️ Resting HR {avg_rhr}bpm · {hr_score}/10 _(20%)_",
         f"{hrv_emoji} 📉 HRV {hrv_this} vs {hrv_last}wk · {hrv_score}/10 _(20%)_",
-        "", f"🎯 *{days_to_race()}*",
+        "", f"🎯 *London: {dtm}d away*",
         f"💡 _{session}_",
     ]
     return "\n".join(lines)
 # ── FIT FILE PARSING ───────────────────────────────────────────────────────
 
-def _build_splits_from_laps(fitfile, exercise_id: str, session_date: str, expected_laps) -> list:
-    """Parse km splits from FIT 'lap' messages."""
-    all_laps = []
-    lap_num  = 0
-    for record in fitfile.get_messages("lap"):
-        data            = {d.name: d.value for d in record}
-        lap_dur         = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
-        dist_m          = sf(data.get("total_distance"))
-        avg_speed       = sf(data.get("avg_speed") or data.get("enhanced_avg_speed"))
-        pace_s          = (1000 / avg_speed) if (avg_speed and avg_speed > 0) else (lap_dur / (dist_m / 1000) if (lap_dur and dist_m and dist_m > 0) else None)
-        cadence_raw     = sf(data.get("avg_running_cadence") or data.get("avg_cadence"))
-        cadence_max_raw = sf(data.get("max_running_cadence") or data.get("max_cadence"))
-        all_laps.append({
-            "exercise_id": exercise_id, "session_date": session_date,
-            "lap_number": lap_num, "km_number": lap_num + 1,
-            "duration_seconds": lap_dur, "split_time_seconds": sf(data.get("total_elapsed_time")),
-            "distance_m": dist_m, "pace_min_per_km": sf(pace_s / 60) if pace_s else None,
-            "pace_display": seconds_to_pace(pace_s) if pace_s else "N/A",
-            "hr_avg": si(data.get("avg_heart_rate")), "hr_max": si(data.get("max_heart_rate")),
-            "power_avg": si(data.get("avg_power")), "power_max": si(data.get("max_power")),
-            "cadence_avg": si(cadence_raw * 2) if cadence_raw else None,
-            "cadence_max": si(cadence_max_raw * 2) if cadence_max_raw else None,
-            "ascent_m":  sf(data.get("total_ascent")),
-            "descent_m": sf(data.get("total_descent")),
-        })
-        lap_num += 1
-
-    if not all_laps:
-        return []
-
-    # Detect interval/terrain laps by checking avg distance across ALL laps before capping.
-    # 800m threshold separates km auto-laps (~1000m) from interval/terrain segments (<700m).
-    avg_dist = sum(s.get("distance_m") or 0 for s in all_laps) / len(all_laps)
-    if avg_dist < 800:
-        return []
-
-    # Cap to ceil(distance/km) to include partial final km (e.g. 0.9km on a 5.9km run)
-    max_laps = (expected_laps + 1) if expected_laps else len(all_laps)
-    return all_laps[:max_laps]
-
-
-def _build_splits_from_records(fitfile, exercise_id: str, session_date: str) -> list:
-    """Aggregate per-second FIT 'record' messages into 1km splits."""
-    buckets: dict[int, dict] = {}  # km_index -> accumulated data
-    prev_dist = 0.0
-    prev_alt  = None
-    for record in fitfile.get_messages("record"):
-        data      = {d.name: d.value for d in record}
-        dist_m    = sf(data.get("distance"))
-        if dist_m is None:
-            continue
-        km_idx    = int(dist_m / 1000)
-        speed     = sf(data.get("speed") or data.get("enhanced_speed"))
-        hr        = si(data.get("heart_rate"))
-        power     = si(data.get("power"))
-        cad_raw   = sf(data.get("running_cadence") or data.get("cadence"))
-        cad       = si(cad_raw * 2) if cad_raw else None
-        raw_alt   = data.get("enhanced_altitude") if data.get("enhanced_altitude") is not None else data.get("altitude")
-        alt       = sf(raw_alt)
-        if km_idx not in buckets:
-            buckets[km_idx] = {"speeds": [], "hrs": [], "hr_max": None, "powers": [], "cads": [], "ascent": 0.0, "descent": 0.0, "count": 0}
-        b = buckets[km_idx]
-        b["count"]  += 1
-        if speed:  b["speeds"].append(speed)
-        if hr:
-            b["hrs"].append(hr)
-            if b["hr_max"] is None or hr > b["hr_max"]: b["hr_max"] = hr
-        if power:  b["powers"].append(power)
-        if cad:    b["cads"].append(cad)
-        if alt is not None and prev_alt is not None:
-            diff = alt - prev_alt
-            if diff > 0:   b["ascent"]  += diff
-            elif diff < 0: b["descent"] += abs(diff)
-        prev_alt  = alt
-        prev_dist = dist_m
-
-    split_rows = []
-    for km_idx in sorted(buckets.keys()):
-        b         = buckets[km_idx]
-        km_number = km_idx + 1
-        avg_speed = (sum(b["speeds"]) / len(b["speeds"])) if b["speeds"] else None
-        pace_s    = (1000 / avg_speed) if (avg_speed and avg_speed > 0) else None
-        lap_dur   = sf(pace_s) if pace_s else None
-        split_rows.append({
-            "exercise_id": exercise_id, "session_date": session_date,
-            "lap_number": km_idx, "km_number": km_number,
-            "duration_seconds": lap_dur, "split_time_seconds": None,
-            "distance_m": 1000.0, "pace_min_per_km": sf(pace_s / 60) if pace_s else None,
-            "pace_display": seconds_to_pace(pace_s) if pace_s else "N/A",
-            "hr_avg": si(sum(b["hrs"]) / len(b["hrs"])) if b["hrs"] else None,
-            "hr_max": b["hr_max"],
-            "power_avg": si(sum(b["powers"]) / len(b["powers"])) if b["powers"] else None,
-            "power_max": None,
-            "cadence_avg": si(sum(b["cads"]) / len(b["cads"])) if b["cads"] else None,
-            "cadence_max": None,
-            "ascent_m":  round(b["ascent"], 1)  if b["ascent"]  else None,
-            "descent_m": round(b["descent"], 1) if b["descent"] else None,
-        })
-    return split_rows
-
-
-def _elevation_from_gps(fitfile, session_asc=None, session_des=None) -> dict:
-    """
-    Per-km elevation from GPS + Open-Meteo DEM.
-
-    Samples DEM every 200m (fewer points = less noise accumulation vs 50m).
-    For loop/out-and-back routes (end GPS within 300m of start), applies
-    linear detrending to remove the GPS-drift-induced altitude tilt across
-    the DEM profile before accumulating per-km ascent/descent.
-    """
-    import math
-
-    SAMPLE_EVERY_M = 200
-    SMOOTH_N       = 5   # centred moving average on the DEM profile
-
-    gps_samples = []
-    last_dist   = -SAMPLE_EVERY_M
-    for record in fitfile.get_messages("record"):
-        data   = {d.name: d.value for d in record}
-        dist_m = sf(data.get("distance"))
-        lat    = data.get("position_lat")
-        lon    = data.get("position_long")
-        if dist_m is None or lat is None or lon is None:
-            continue
-        lat_deg = lat * 180.0 / (2 ** 31)
-        lon_deg = lon * 180.0 / (2 ** 31)
-        if dist_m - last_dist >= SAMPLE_EVERY_M:
-            gps_samples.append((dist_m, lat_deg, lon_deg))
-            last_dist = dist_m
-
-    if len(gps_samples) < 5:
-        return {}
-
-    # Query Open-Meteo DEM in batches of 100
-    elevs: list = []
-    for i in range(0, len(gps_samples), 100):
-        batch = gps_samples[i:i + 100]
-        try:
-            r = requests.get(
-                "https://api.open-meteo.com/v1/elevation",
-                params={"latitude":  ",".join(f"{p[1]:.6f}" for p in batch),
-                        "longitude": ",".join(f"{p[2]:.6f}" for p in batch)},
-                timeout=15,
-            )
-            if not r.ok:
-                log.warning(f"Open-Meteo elevation API error: {r.status_code}")
-                return {}
-            elevs.extend(r.json().get("elevation", [None] * len(batch)))
-        except Exception as e:
-            log.warning(f"Open-Meteo elevation failed: {e}")
-            return {}
-
-    if len(elevs) != len(gps_samples) or None in elevs:
-        return {}
-
-    # Loop/out-and-back: apply linear detrend to remove GPS-drift DEM tilt.
-    # GPS drifts ~linearly over time; on a returning route this makes the DEM
-    # profile appear to ascend throughout.  Removing the linear trend restores
-    # the true shape: detrended[i] = raw[i] - net_drift * (dist_i / total_dist)
-    start_lat, start_lon = gps_samples[0][1],  gps_samples[0][2]
-    end_lat,   end_lon   = gps_samples[-1][1], gps_samples[-1][2]
-    dlat_m = (end_lat  - start_lat) * 111320
-    dlon_m = (end_lon  - start_lon) * 111320 * math.cos(math.radians((start_lat + end_lat) / 2))
-    loop_dist = math.hypot(dlat_m, dlon_m)
-    if loop_dist < 300:
-        net_drift  = elevs[-1] - elevs[0]
-        total_dist = gps_samples[-1][0]
-        for i, (d, _, __) in enumerate(gps_samples):
-            elevs[i] -= net_drift * (d / total_dist)
-        log.info(f"Loop ({loop_dist:.0f}m): removed {net_drift:.1f}m linear DEM drift")
-
-    # 5-point centred moving average to further suppress DEM pixel noise
-    half = SMOOTH_N // 2
-    smoothed = [
-        sum(elevs[max(0, i - half):min(len(elevs), i + half + 1)]) /
-        len(elevs[max(0, i - half):min(len(elevs), i + half + 1)])
-        for i in range(len(elevs))
-    ]
-
-    log.info(f"GPS DEM: {len(gps_samples)} pts, loop_dist={loop_dist:.0f}m, "
-             f"drift={(elevs[-1]-elevs[0]) if loop_dist>=300 else 0:.1f}m")
-
-    # Accumulate per-km ascent/descent from the smoothed DEM profile
-    buckets: dict[int, list] = {}
-    prev_elev = None
-    for (dist_m, _, __), elev in zip(gps_samples, smoothed):
-        km_idx = int(dist_m / 1000)
-        if km_idx not in buckets:
-            buckets[km_idx] = [0.0, 0.0]
-        if prev_elev is not None:
-            diff = elev - prev_elev
-            if diff > 0:   buckets[km_idx][0] += diff
-            elif diff < 0: buckets[km_idx][1] += abs(diff)
-        prev_elev = elev
-
-    # Scale to FIT session totals
-    if session_asc is not None:
-        raw_asc = sum(v[0] for v in buckets.values())
-        scale   = (session_asc / raw_asc) if raw_asc > 0 else 0.0
-        for k in buckets: buckets[k][0] = round(buckets[k][0] * scale, 1)
-
-    if session_des is not None:
-        raw_des = sum(v[1] for v in buckets.values())
-        scale   = (session_des / raw_des) if raw_des > 0 else 0.0
-        for k in buckets: buckets[k][1] = round(buckets[k][1] * scale, 1)
-
-    return {k: (v[0] or None, v[1] or None) for k, v in buckets.items()}
-
-
-def _ascent_by_km_from_records(fitfile, session_asc=None, session_des=None) -> dict:
-    """
-    Per-km net elevation from barometer: compare km-boundary altitudes.
-    Uses first vs last altitude seen within each km bucket — immune to cumulative
-    drift that breaks rolling-average approaches on out-and-back or loop routes.
-    Scaled to FIT session totals when available to correct residual drift.
-    """
-    km_first: dict[int, float] = {}
-    km_last:  dict[int, float] = {}
-
-    for record in fitfile.get_messages("record"):
-        data    = {d.name: d.value for d in record}
-        dist_m  = sf(data.get("distance"))
-        if dist_m is None: continue
-        raw_alt = data.get("enhanced_altitude") if data.get("enhanced_altitude") is not None else data.get("altitude")
-        alt     = sf(raw_alt)
-        if alt is None: continue
-        km_idx  = int(dist_m / 1000)
-        if km_idx not in km_first:
-            km_first[km_idx] = alt
-        km_last[km_idx] = alt
-
-    buckets: dict[int, list] = {}
-    for km_idx, start_alt in km_first.items():
-        net = km_last.get(km_idx, start_alt) - start_alt
-        buckets[km_idx] = [net if net > 0 else 0.0, -net if net < 0 else 0.0]
-
-    # Scale per-km values to match FIT session totals (corrects residual barometric drift)
-    if session_asc is not None:
-        raw_asc = sum(v[0] for v in buckets.values())
-        scale   = (session_asc / raw_asc) if raw_asc > 0 else 0.0
-        for k in buckets: buckets[k][0] = round(buckets[k][0] * scale, 1)
-
-    if session_des is not None:
-        raw_des = sum(v[1] for v in buckets.values())
-        scale   = (session_des / raw_des) if raw_des > 0 else 0.0
-        for k in buckets: buckets[k][1] = round(buckets[k][1] * scale, 1)
-
-    return {k: (v[0] or None, v[1] or None) for k, v in buckets.items()}
-
-
-def _read_fit_session_elevation(fitfile) -> tuple:
-    """Read total_ascent / total_descent from the FIT session summary message."""
-    for msg in fitfile.get_messages("session"):
-        data = {d.name: d.value for d in msg}
-        asc  = sf(data.get("total_ascent"))
-        des  = sf(data.get("total_descent"))
-        if asc is not None or des is not None:
-            return asc, des
-    return None, None
-
-
 def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_distance_m: float = None) -> list:
     if not fitparse: return []
     try:
         fitfile       = fitparse.FitFile(io.BytesIO(fit_bytes))
+        split_rows    = []
+        lap_num       = 0
         expected_laps = int((total_distance_m or 0) / 1000) if total_distance_m else None
-
-        # Try lap messages first
-        split_rows = _build_splits_from_laps(fitfile, exercise_id, session_date, expected_laps)
-
-        # Fall back to per-second records if laps are missing, sparse, or terrain-based
-        if not split_rows or (expected_laps and len(split_rows) < max(5, expected_laps // 2)):
-            log.info(f"FIT {exercise_id}: {len(split_rows)} lap rows for {expected_laps}km — falling back to record aggregation")
-            record_splits = _build_splits_from_records(fitfile, exercise_id, session_date)
-            if len(record_splits) > len(split_rows):
-                return record_splits
-
-        # Backfill missing stats (HR/power/cadence) from record messages for any lap that lacks them
-        null_laps = {s["lap_number"] for s in split_rows
-                     if s.get("hr_avg") is None or s.get("power_avg") is None or s.get("cadence_avg") is None}
-        if null_laps:
-            rec_buckets: dict = {}
-            for record in fitfile.get_messages("record"):
-                rdata  = {d.name: d.value for d in record}
-                rdist  = sf(rdata.get("distance"))
-                if rdist is None: continue
-                kidx   = int(rdist / 1000)
-                if kidx not in null_laps: continue
-                if kidx not in rec_buckets:
-                    rec_buckets[kidx] = {"hrs": [], "hr_max": None, "powers": [], "cads": []}
-                rb = rec_buckets[kidx]
-                hr = si(rdata.get("heart_rate"))
-                if hr:
-                    rb["hrs"].append(hr)
-                    if rb["hr_max"] is None or hr > rb["hr_max"]: rb["hr_max"] = hr
-                pw = si(rdata.get("power"))
-                if pw: rb["powers"].append(pw)
-                craw = sf(rdata.get("running_cadence") or rdata.get("cadence"))
-                if craw: rb["cads"].append(craw * 2)
-            for s in split_rows:
-                rb = rec_buckets.get(s["lap_number"])
-                if not rb: continue
-                if s.get("hr_avg") is None and rb["hrs"]:
-                    s["hr_avg"] = si(sum(rb["hrs"]) / len(rb["hrs"]))
-                    s["hr_max"] = rb["hr_max"]
-                if s.get("power_avg") is None and rb["powers"]:
-                    s["power_avg"] = si(sum(rb["powers"]) / len(rb["powers"]))
-                if s.get("cadence_avg") is None and rb["cads"]:
-                    s["cadence_avg"] = si(sum(rb["cads"]) / len(rb["cads"]))
-
-        # Read FIT session summary first — needed for barometer scaling
-        session_asc, session_des = _read_fit_session_elevation(fitfile)
-        if session_asc is not None:
-            log.info(f"FIT session elevation: {session_asc}m ascent / {session_des}m descent")
-            for s in split_rows:
-                s["_session_asc"] = session_asc
-                s["_session_des"] = session_des
-
-        # Enrich per-km elevation — GPS boundary DEM preferred (no cumulative noise),
-        # scaled barometer fallback when GPS unavailable.
-        baro_map   = _ascent_by_km_from_records(fitfile, session_asc, session_des)
-        ascent_map = baro_map or _elevation_from_gps(fitfile, session_asc, session_des)
-        elev_src   = ("baro-scaled" if session_asc is not None else "baro") if baro_map else "GPS"
-        for s in split_rows:
-            km_idx = s["lap_number"]
-            if km_idx in ascent_map:
-                # Only fill elevation when FIT lap message had no data — don't overwrite Polar's values
-                if s.get("ascent_m") is None:
-                    s["ascent_m"] = ascent_map[km_idx][0]
-                if s.get("descent_m") is None:
-                    s["descent_m"] = ascent_map[km_idx][1]
-
-        for s in split_rows:
-            s["_elev_src"] = elev_src
-
+        for record in fitfile.get_messages("lap"):
+            data = {d.name: d.value for d in record}
+            if expected_laps is not None and lap_num >= expected_laps: continue
+            lap_dur   = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
+            dist_m    = sf(data.get("total_distance"))
+            pace_s    = None
+            avg_speed = sf(data.get("avg_speed") or data.get("enhanced_avg_speed"))
+            if avg_speed and avg_speed > 0: pace_s = 1000 / avg_speed
+            elif lap_dur and dist_m and dist_m > 0: pace_s = lap_dur / (dist_m / 1000)
+            hr_avg          = si(data.get("avg_heart_rate"))
+            hr_max          = si(data.get("max_heart_rate"))
+            power_avg       = si(data.get("avg_power"))
+            power_max       = si(data.get("max_power"))
+            cadence_raw     = sf(data.get("avg_running_cadence") or data.get("avg_cadence"))
+            cadence_max_raw = sf(data.get("max_running_cadence") or data.get("max_cadence"))
+            cadence_avg     = si(cadence_raw * 2)     if cadence_raw     else None
+            cadence_max     = si(cadence_max_raw * 2) if cadence_max_raw else None
+            split_rows.append({
+                "exercise_id": exercise_id, "session_date": session_date,
+                "lap_number": lap_num, "km_number": lap_num + 1,
+                "duration_seconds": lap_dur, "split_time_seconds": sf(data.get("total_elapsed_time")),
+                "distance_m": dist_m, "pace_min_per_km": sf(pace_s / 60) if pace_s else None,
+                "pace_display": seconds_to_pace(pace_s) if pace_s else "N/A",
+                "hr_avg": hr_avg, "hr_max": hr_max, "power_avg": power_avg, "power_max": power_max,
+                "cadence_avg": cadence_avg, "cadence_max": cadence_max, "ascent_m": None, "descent_m": None,
+            })
+            lap_num += 1
         return split_rows
     except Exception as e:
         log.error(f"FIT parse error {exercise_id}: {e}")
@@ -933,84 +484,43 @@ def format_run_list(runs: list) -> str:
         source   = " ✏️" if r.get("source") == "manual" else ""
         pwr_str  = f"{r.get('avg_power')}W" if r.get("avg_power") else "?"
         cad_str  = f"{r.get('avg_cadence')}spm" if r.get("avg_cadence") else "?"
-        asc      = r.get("ascent")
-        asc_str  = f"  ⛰{int(asc)}m" if asc else ""
-        lines.append(f"{sport_emoji(r.get('sport',''))} *{fmt_date(r['date'])}*{source}  •  {dist_km:.1f}km  •  {int(dur_s//60)}min{asc_str}\n   💨 {seconds_to_pace(pace_s)}  ❤️ {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')}  ⚡ {pwr_str}  👟 {cad_str}{load_str}")
+        lines.append(f"{sport_emoji(r.get('sport',''))} *{fmt_date(r['date'])}*{source}  •  {dist_km:.1f}km  •  {int(dur_s//60)}min\n   💨 {seconds_to_pace(pace_s)}  ❤️ {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')}  ⚡ {pwr_str}  👟 {cad_str}{load_str}")
     return "\n".join(lines)
 
 def format_splits_table(splits: list, header: str) -> str:
     if not splits: return "No splits found."
-    has_elev = any(s.get("ascent_m") or s.get("descent_m") for s in splits)
-    if has_elev:
-        lines = [f"📊 *{header}*\n",
-                 "` KM │Pace  │  HR   │Pwr│Cad│↑↓`",
-                 "`────┼──────┼───────┼───┼───┼──`"]
-    else:
-        lines = [f"📊 *{header}*\n",
-                 "` KM │Pace  │  HR   │Pwr│Cad`",
-                 "`────┼──────┼───────┼───┼───`"]
+    lines = [f"📊 *{header}*\n", "`KM  │ Pace     │ HR      │  Power │ Cad`", "`────┼──────────┼─────────┼────────┼────`"]
     for s in splits:
-        dist_m = s.get("distance_m")
-        km_num = s.get("km_number", "?")
-        km     = f"{dist_m/1000:.1f}".rjust(3) if (dist_m is not None and dist_m < 950) else str(km_num).rjust(3)
-        pace   = (s.get("pace_display") or "N/A").replace("/km", "").strip().ljust(5)
-        hr     = f"{s.get('hr_avg') or '?'}/{s.get('hr_max') or '?'}".ljust(7)
-        pwr    = str(s.get("power_avg") or "?").rjust(3)
-        cad    = str(s.get("cadence_avg") or "?").rjust(3)
-        if has_elev:
-            asc  = str(int(s["ascent_m"]))  if s.get("ascent_m")  else "—"
-            des  = str(int(s["descent_m"])) if s.get("descent_m") else "—"
-            elev = f"{asc}/{des}"
-            lines.append(f"`{km} │{pace} │{hr}│{pwr}│{cad}│{elev}`")
-        else:
-            lines.append(f"`{km} │{pace} │{hr}│{pwr}│{cad}`")
+        km    = str(s.get("km_number", "?")).rjust(2)
+        pace  = (s.get("pace_display") or "N/A").ljust(8)
+        hr    = f"{s.get('hr_avg','?')}/{s.get('hr_max','?')}".ljust(7)
+        power = str(s.get("power_avg") or "?").rjust(4) + "W"
+        cad   = str(s.get("cadence_avg") or "?").rjust(3)
+        lines.append(f"`{km}  │ {pace} │ {hr} │ {power:>6} │ {cad}`")
     return "\n".join(lines)
 
-def format_recovery_dashboard(sleep_data: list, hrv_data: list, hr_by_date: dict = None) -> str:
+def format_recovery_dashboard(sleep_data: list, hrv_data: list) -> str:
     lines = ["💤 *Recovery*\n"]
-
-    # ── Recharge ──
     if hrv_data:
-        h       = hrv_data[0]
-        ans     = h.get('ans_charge')  or '—'
-        hrv_avg = h.get('hrv_avg')     or '—'
-        rmssd   = h.get('hrv_rmssd')   or '—'
-        br      = h.get('breathing_rate')
-        br_str  = f" · 🫁{br:.1f}" if br else ""
-        status  = recharge_emoji(h.get('recharge_status', ''))
-        lines.append(f"🔋 *Recharge* · {fmt_date(h['date'])}  {status}")
-        lines.append(f"ANS {ans} · HRV {hrv_avg}ms{br_str}\n")
-
-    # ── Sleep ──
+        h = hrv_data[0]
+        hrv_avg  = h.get('hrv_avg')  or '—'
+        hrv_rms  = h.get('hrv_rmssd') or '—'
+        ans      = h.get('ans_charge') or '—'
+        lines.append(f"{recharge_emoji(h.get('recharge_status',''))} *Recharge {h['date']}*\nANS {ans} · HRV {hrv_avg} · RMSSD {hrv_rms}\n")
     if sleep_data:
-        scores = [s.get("sleep_score") or 0 for s in sleep_data]
-        avg_score = sum(scores) / len(scores) if scores else 0
-        # Compute HR average across nights that have data
-        hr_vals = [v for v in [(hr_by_date or {}).get(s["date"][:10]) for s in sleep_data] if v]
-        hr_avg  = sum(hr_vals) / len(hr_vals) if hr_vals else None
-        hr_avg_str = f" · ❤️{hr_avg:.0f}" if hr_avg else ""
-        lines.append(f"😴 *7 nights*  _(score {avg_score:.0f}{hr_avg_str})_\n")
+        lines.append("😴 *Sleep — last 7 nights*\n")
         for s in sleep_data:
             total_s = s.get("total_sleep_seconds") or 0
             score   = s.get("sleep_score") or 0
             hrs     = total_s // 3600
             mins    = (total_s % 3600) // 60
-            rem_s   = s.get("rem_seconds") or 0
-            deep_s  = s.get("deep_sleep_seconds") or 0
-            def fmt_dur(secs):
-                h, m = divmod(secs // 60, 60)
-                return f"{h}h{m:02d}" if h else f"{m}m"
-            rem_str  = fmt_dur(rem_s)
-            deep_str = fmt_dur(deep_s)
-            sg     = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
-            min_hr = (hr_by_date or {}).get(s["date"][:10])
-            if min_hr and hr_avg:
-                diff   = min_hr - hr_avg
-                trend  = " ↑" if diff > 2 else " ↓" if diff < -2 else ""
-            else:
-                trend  = ""
-            hr_str = f"  ❤️{min_hr}{trend}" if min_hr else ""
-            lines.append(f"{sg} *{fmt_date(s['date'])}*  {hrs}h{mins:02d}  {score:.0f}{hr_str}\n   💚{rem_str}  💜{deep_str}")
+            rem_m   = (s.get("rem_seconds") or 0) // 60
+            deep_m  = (s.get("deep_sleep_seconds") or 0) // 60
+            hrv_val = s.get("avg_hrv") or '—'
+            filled  = int(score / 10)
+            bar     = "█" * filled + "░" * (10 - filled)
+            sg      = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
+            lines.append(f"{sg} *{s['date']}*  {hrs}h{mins:02d}m  Score {score:.0f}  HRV {hrv_val}\n{bar}  REM {rem_m}m · Deep {deep_m}m")
     return "\n".join(lines)
 
 def format_hr_dashboard(hr_data: list) -> str:
@@ -1048,7 +558,7 @@ def format_sleepwise_dashboard(sw_data: list) -> str:
     return "\n".join(lines)
 
 def format_goals(goals: list) -> str:
-    if not goals: return "No goals set. Add one with:\n`goal: Cotswold Way Ultra, 13 Jun 2026, 100km, finish`"
+    if not goals: return "No goals set. Add one with:\n`goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`"
     lines = ["🎯 *Goals & Target Races*\n"]
     for g in goals:
         days_to = ""
@@ -1069,23 +579,16 @@ def format_new_run_notification(ex: dict, exercise_id: str, splits_count: int) -
         hr      = ex.get("heart_rate", {}) or {}
         avg_hr  = hr.get("average") or hr.get("avg") or ex.get("avg_heart_rate", "?")
         max_hr  = hr.get("maximum") or hr.get("max") or ex.get("max_heart_rate", "?")
-        load_raw = ex.get("training_load") or ex.get("training_load_pro", {}).get("cardio-load")
-        load     = round(load_raw) if load_raw else "?"
+        load    = ex.get("training_load") or ex.get("training_load_pro", {}).get("cardio-load", "?")
         pace_s  = dur_s / dist_km if dist_km else 0
-        lines   = [f"{sport_emoji(sport)} *New {sport.replace('_',' ').title()} Synced!*\n"]
-        if dist_km > 0:
-            lines.append(f"📅 {fmt_date(ex.get('start_time') or ex.get('date',''))}  •  {dist_km:.2f}km  •  {int(dur_s//60)}min")
-            lines.append(f"💨 {seconds_to_pace(pace_s)}  ❤️ {avg_hr}/{max_hr}bpm")
-        else:
-            lines.append(f"📅 {fmt_date(ex.get('start_time') or ex.get('date',''))}  •  {int(dur_s//60)}min")
-            lines.append(f"❤️ {avg_hr}/{max_hr}bpm")
-        lines += [f"🔥 Load {load}", f"📊 {splits_count} km splits saved" if splits_count else ""]
+        lines   = [f"{sport_emoji(sport)} *New {sport.replace('_',' ').title()} Synced!*\n", f"📅 {fmt_date(ex.get('start_time') or ex.get('date',''))}  •  {dist_km:.2f}km  •  {int(dur_s//60)}min", f"💨 {seconds_to_pace(pace_s)}  ❤️ {avg_hr}/{max_hr}bpm", f"🔥 Load {load}", f"📊 {splits_count} km splits saved"]
         if splits_count > 0:
-            split_data = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m,distance_m").eq("exercise_id", exercise_id).order("lap_number").limit(5).execute()
+            split_data = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,power_avg,cadence_avg").eq("exercise_id", exercise_id).order("lap_number").limit(5).execute()
             if split_data.data:
-                table_lines = format_splits_table(split_data.data, "").split("\n")
                 lines.append("\n*First splits:*")
-                lines.extend(table_lines[1:])  # skip the "📊 *…*" header line
+                lines.append("`KM  │ Pace     │  HR │ Power │ Cad`")
+                for s in split_data.data:
+                    lines.append(f"`{str(s['km_number']).rjust(2)}  │ {(s.get('pace_display') or 'N/A').ljust(8)} │ {str(s.get('hr_avg') or '?').rjust(3)} │ {str(s.get('power_avg') or '?').rjust(4)}W │ {str(s.get('cadence_avg') or '?').rjust(3)}`")
         return "\n".join(lines)
     except Exception as e:
         log.error(f"Format notification error: {e}")
@@ -1103,7 +606,7 @@ def save_goal(text: str) -> str:
     try:
         text  = re.sub(r"^(goal|race|target)\s*[:：]\s*", "", text.strip(), flags=re.IGNORECASE)
         parts = [p.strip() for p in text.split(",")]
-        if len(parts) < 2: return "Format: `goal: Cotswold Way Ultra, 13 Jun 2026, 100km, finish`"
+        if len(parts) < 2: return "Format: `goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`"
         race_name = parts[0]; race_date = None; distance_km = None; target_time = None; notes = None
         for p in parts[1:]:
             date_match = re.search(r"(\d{1,2}\s+\w+\s+\d{4}|\d{4}-\d{2}-\d{2})", p)
@@ -1212,24 +715,16 @@ def save_wellness_checkin(text: str) -> str:
 def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) -> int:
     try:
         sport       = ex_data.get("sport", "")
-        if sport == "OTHER" and ex_data.get("detailed_sport_info"):
-            sport = ex_data["detailed_sport_info"]
         hr          = ex_data.get("heart_rate", {}) or {}
         load        = ex_data.get("training_load_pro", {}) or {}
         zones       = ex_data.get("heart_rate_zones", []) or []
         start       = ex_data.get("start_time", "")
         dur_s       = parse_pt_seconds(ex_data.get("duration", ""))
         dist_m      = sf(ex_data.get("distance"))
-        # Enrich splits with Strava elevation (better than FIT barometer)
-        date_str    = start[:10] if start else ""
-        split_rows, strava_id, strava_total_asc = enrich_splits_with_strava(split_rows, date_str, dist_m)
         cadence_obj = ex_data.get("cadence", {}) or {}
         power_obj   = ex_data.get("power", {}) or {}
         avg_cadence = si(cadence_obj.get("avg") or ex_data.get("avg_cadence"))
         max_cadence = si(cadence_obj.get("max") or ex_data.get("max_cadence"))
-        # Polar API returns single-leg cadence (strides/min) — double it
-        if avg_cadence and avg_cadence < 100: avg_cadence = avg_cadence * 2
-        if max_cadence and max_cadence < 100: max_cadence = max_cadence * 2
         avg_power   = si(power_obj.get("avg")   or ex_data.get("avg_power"))
         max_power   = si(power_obj.get("max")   or ex_data.get("max_power"))
         if avg_cadence is None and split_rows:
@@ -1248,14 +743,11 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
             "avg_heart_rate": si(hr.get("average")), "max_heart_rate": si(hr.get("maximum")),
             "avg_cadence": avg_cadence, "max_cadence": max_cadence, "avg_power": avg_power, "max_power": max_power,
             "training_load": cardio_load, "muscle_load": muscle_load,
-            "ascent":  next((s["_session_asc"] for s in split_rows if s.get("_session_asc") is not None), None) or round(sum(s["ascent_m"]  for s in split_rows if s.get("ascent_m")),  1) or strava_total_asc or None,
-            "descent": next((s["_session_des"] for s in split_rows if s.get("_session_des") is not None), None) or round(sum(s["descent_m"] for s in split_rows if s.get("descent_m")), 1) or None,
-            "strava_activity_id": strava_id,
+            "ascent": sf(ex_data.get("ascent")), "descent": sf(ex_data.get("descent")),
             "hr_zones": json.dumps(hr_zones_parsed), "raw_json": json.dumps(ex_data), "source": "polar",
         }, on_conflict="polar_exercise_id").execute()
         if split_rows:
-            clean = [{k: v for k, v in s.items() if not k.startswith("_")} for s in split_rows]
-            supabase.table("polar_km_splits").upsert(clean, on_conflict="exercise_id,lap_number").execute()
+            supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
         return len(split_rows)
     except Exception as e:
         log.error(f"Save exercise error {exercise_id}: {e}")
@@ -1271,41 +763,15 @@ def sync_new_polar_exercises() -> list:
         for ex in exercises:
             ex_id = str(ex.get("id", ""))
             if not ex_id or ex.get("sport", "") not in ALLOWED_SPORTS: continue
-            existing = supabase.table("polar_exercises").select("polar_exercise_id,distance_meters").eq("polar_exercise_id", ex_id).limit(1).execute()
-            if existing.data:
-                # Re-fetch if distance unknown (partial save) or splits missing for a running exercise
-                ex_dist_m   = sf((existing.data[0] or {}).get("distance_meters")) or 0
-                expected    = int(ex_dist_m / 1000)
-                split_count = supabase.table("polar_km_splits").select("id", count="exact").eq("exercise_id", ex_id).execute()
-                actual      = split_count.count or 0
-                sport_ex    = ex.get("sport", "")
-                needs_refetch = (
-                    (ex_dist_m == 0 and sport_ex in RUNNING_SPORTS) or
-                    (expected >= 5 and actual < max(5, expected // 2))
-                )
-                if needs_refetch:
-                    log.info(f"Exercise {ex_id}: dist={ex_dist_m} splits={actual}/{expected} — re-fetching")
-                    supabase.table("polar_km_splits").delete().eq("exercise_id", ex_id).execute()
-                    detail_r2 = requests.get(f"{POLAR_BASE}/exercises/{ex_id}?zones=true", headers=polar_headers())
-                    if detail_r2.ok:
-                        ex_data2   = detail_r2.json()
-                        split_rows = fetch_fit_and_parse(ex_id, ex_data2.get("start_time", "")[:10], ex_dist_m or sf(ex_data2.get("distance")))
-                        save_exercise_from_api(ex_data2, ex_id, split_rows)
-                continue
+            existing = supabase.table("polar_exercises").select("polar_exercise_id").eq("polar_exercise_id", ex_id).limit(1).execute()
+            if existing.data: continue
             detail_r = requests.get(f"{POLAR_BASE}/exercises/{ex_id}?zones=true", headers=polar_headers())
-            if not detail_r.ok:
-                log.warning(f"Exercise {ex_id}: detail fetch failed {detail_r.status_code}")
-                continue
+            if not detail_r.ok: continue
             ex_data    = detail_r.json()
-            sport      = ex_data.get("sport", "")
             dist_m     = sf(ex_data.get("distance"))
-            try:
-                split_rows = fetch_fit_and_parse(ex_id, ex_data.get("start_time", "")[:10], dist_m) if sport in RUNNING_SPORTS else []
-                splits     = save_exercise_from_api(ex_data, ex_id, split_rows)
-                new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits, "sport": sport})
-                log.info(f"Synced exercise {ex_id} {sport} {ex_data.get('start_time','')[:10]}")
-            except Exception as ex_err:
-                log.error(f"Exercise {ex_id} save failed: {ex_err}")
+            split_rows = fetch_fit_and_parse(ex_id, ex_data.get("start_time", "")[:10], dist_m)
+            splits     = save_exercise_from_api(ex_data, ex_id, split_rows)
+            new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits})
         return new_exercises
     except Exception as e:
         log.error(f"Exercises sync error: {e}")
@@ -1364,7 +830,6 @@ def sync_nightly_recharge() -> int:
                 "ans_charge":      sf(h.get("ans_charge")),
                 "sleep_charge":    si(h.get("ans_charge_status")),
                 "recharge_status": _recharge_status_label(h.get("nightly_recharge_status")),
-                "breathing_rate":  sf(h.get("breathing_rate_avg") or h.get("mean_nightly_breathing_rate") or h.get("breathing_rate")),
                 "raw_json":        json.dumps(h),
             }, on_conflict="date").execute()
             count += 1
@@ -1478,8 +943,6 @@ def sync_sleepwise() -> int:
         r2 = requests.get(f"{POLAR_BASE}/users/sleepwise/circadian-bedtime", headers=polar_headers())
         if r2.ok:
             cb      = r2.json()
-            if isinstance(cb, list):
-                cb = cb[0] if cb else {}
             today   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             start_t = cb.get("start") or cb.get("bedtime_start") or cb.get("circadian_start")
             end_t   = cb.get("end")   or cb.get("bedtime_end")   or cb.get("circadian_end")
@@ -1519,31 +982,31 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
 
         runs = supabase.table("polar_exercises").select("polar_exercise_id,date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load,ascent,descent,source").order("date", desc=True).limit(run_limit).execute()
         if runs.data:
-            parts.append(f"\n=== RECENT SESSIONS (last {len(runs.data)}) ===")
+            today_date = datetime.now(timezone.utc).date()
+            def recency_label(date_str: str) -> str:
+                try:
+                    d    = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+                    delta = (today_date - d).days
+                    day  = d.strftime("%A")
+                    if delta == 0: return f"TODAY ({day} {date_str[:10]})"
+                    if delta == 1: return f"YESTERDAY ({day} {date_str[:10]})"
+                    return f"{delta} days ago ({day} {date_str[:10]})"
+                except Exception:
+                    return date_str[:10]
+            parts.append(f"\n=== RECENT SESSIONS (last {len(runs.data)}, most-recent first) ===")
             for r in runs.data:
                 dist_km = (r.get("distance_meters") or 0) / 1000
                 dur_s   = r.get("duration_seconds") or 0
                 pace_s  = dur_s / dist_km if dist_km else 0
                 src     = " [manual]" if r.get("source") == "manual" else ""
-                try:
-                    day_name = datetime.strptime(r["date"][:10], "%Y-%m-%d").strftime("%A")
-                except Exception:
-                    day_name = ""
-                date_label = f"{day_name} {r['date'][:10]}" if day_name else r["date"][:10]
-                parts.append(f"  {date_label} | {r.get('sport','?')}{src} | {dist_km:.1f}km | {int(dur_s//60)}min | Pace: {seconds_to_pace(pace_s)} | HR: {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')} | Power: {r.get('avg_power','?')}W | Cadence: {r.get('avg_cadence','?')}spm | Load: {r.get('training_load','?')} | Ascent: {r.get('ascent','?')}m")
+                parts.append(f"  {recency_label(r['date'])} | {r.get('sport','?')}{src} | {dist_km:.1f}km | {int(dur_s//60)}min | Pace: {seconds_to_pace(pace_s)} | HR: {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')} | Power: {r.get('avg_power','?')}W | Cadence: {r.get('avg_cadence','?')}spm | Load: {r.get('training_load','?')} | Ascent: {r.get('ascent','?')}m")
             latest = get_latest_run_with_splits()
             if latest:
-                splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m,distance_m").eq("exercise_id", latest["polar_exercise_id"]).order("lap_number").execute()
+                splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", latest["polar_exercise_id"]).order("lap_number").execute()
                 if splits.data:
-                    try:
-                        split_day = datetime.strptime(latest["date"][:10], "%Y-%m-%d").strftime("%A")
-                    except Exception:
-                        split_day = ""
-                    split_label = f"{split_day} {latest['date'][:10]}" if split_day else latest["date"][:10]
-                    parts.append(f"\n=== KM SPLITS: {split_label} ({(latest.get('distance_meters') or 0)/1000:.1f}km) ===")
+                    parts.append(f"\n=== KM SPLITS: {recency_label(latest['date'])} ({(latest.get('distance_meters') or 0)/1000:.1f}km) ===")
                     for s in splits.data:
-                        asc_str = f" | Ascent {s['ascent_m']:.0f}m" if s.get('ascent_m') else ""
-                        parts.append(f"  KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cadence {s.get('cadence_avg','?')}spm{asc_str}")
+                        parts.append(f"  KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cadence {s.get('cadence_avg','?')}spm")
 
         now             = datetime.now(timezone.utc)
         week_start      = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
@@ -1608,108 +1071,46 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
         return "Training data temporarily unavailable."
 
 
-BASE_SYSTEM = """You are Luke Worgan's personal running coach and sports scientist.
+BASE_SYSTEM = """You are an elite running coach and sports scientist for Luke Worgan.
 
-═══ IMMUTABLE DIRECTIVE ═══
-The purpose of this coach is not to maximise Luke's performance. It is to maximise the probability that Luke is still running, healthy, curious and smiling in twenty years' time. Every recommendation should be judged against that objective.
+DATA INTEGRITY RULE — this overrides everything else:
+- NEVER say "this morning", "today", "yesterday" for a session unless the training context explicitly labels it TODAY or YESTERDAY.
+- NEVER invent specific details not in the data (wake times, exact routes, how a run felt) — if it's not in the numbers, say you don't have it.
+- The training context labels every session with its exact recency ("TODAY", "YESTERDAY", "3 days ago"). Use those labels exactly.
 
-═══ ATHLETE PROFILE ═══
-DOB: 1989-03-03 (age 37) | Height: 167cm | Weight: ~78kg | Target: 75–77kg
-VO2max: 55 | Max HR: 198bpm | Resting HR: 47bpm
-Aerobic threshold: 149bpm | Anaerobic threshold: 178bpm | FTP: 272W
-Watch: Polar Grit X2
-Family: Partner Toni | Children: Poppy, Billy, Charlie + third child expected
-Life: Product leadership role | Trains at 5am before the household wakes
+ATHLETE PROFILE:
+- DOB: 1989-03-03 (age 37) | Height: 167cm | Weight: 78kg
+- VO2max: 55 | Max HR: 198bpm | Resting HR: 47bpm
+- Aerobic threshold: 149bpm | Anaerobic threshold: 178bpm | FTP: 272W
+- Watch: Polar Grit X2
 
-═══ IDENTITY ═══
-Ultra runner before road racer. Explorer before competitor.
-Data-driven but emotionally influenced by recent runs.
-Loves trails, hills, sunrise and discovering new routes.
-Prefers 5am starts. Coffee is the post-run reward.
+PHASE: Base building / general fitness — check GOALS & TARGET RACES in context for any active upcoming races.
 
-═══ CURRENT STATUS ═══
-Post-Cotswold Way recovery. Expecting third child. No A-race set. Ticking over.
-FOCUS: Enjoyment, aerobic base, sustainability. No pressure, no plan.
-When a next race is named, NEXT_RACE_DATE and NEXT_RACE_NAME will be set in config.
+DATA ACCESS — 8 live streams: polar_exercises, polar_sleep, polar_hrv, polar_continuous_hr, polar_cardio_load, polar_sleepwise, polar_daily_activity, wellness_checkins
 
-═══ RACE ARCHIVE ═══
-- Sub-2 Half Marathon: confidence breakthrough
-- Forest of Dean Ultra: learned pacing and resilience
-- London Marathon: 27 Apr 2026 ✅
-- Cotswold Way Ultra: 13 Jun 2026 ✅ — 102.37km, ~2010m ascent, 19:01:15 — landmark achievement
+CARDIO LOAD: ratio 0.8-1.1 = MAINTAINING | 1.1-1.3 = PRODUCTIVE | >1.3 = OVERREACHING | <0.8 = DETRAINING
+SLEEPWISE: grade 8+ = strong | 5-8 = moderate | <5 = weak — easy day only
+RESTING HR: elevation >5bpm for 3 days = systemic fatigue signal
+CADENCE TARGET: 170-180spm for marathon efficiency
 
-═══ COACHING PHILOSOPHY ═══
-1. Always explain WHY — Luke wants to understand, not just comply
-2. Protect sleep above all else
-3. Consistency beats perfection — one missed session never matters; repeated behaviour does
-4. Use evidence, not emotion
-5. Never judge a run without context
-6. Challenge poor decisions calmly with data — never hype, never shame
-7. Celebrate trends, not hero sessions
-8. Data informs decisions; context makes decisions
+COACHING RULES:
+- Always reference Luke's actual numbers, never generic advice
+- Flag overreaching immediately and specifically
+- Connect every recommendation to London Marathon timeline ({days_to_marathon} days away)
+- Be direct — Luke wants honesty, not encouragement
+- Use min/km for pace, bpm for HR, watts for power
 
-═══ KNOWN HABITS (context before judgement) ═══
-- Easy runs silently become progression runs — common, flag if pattern repeats
-- Attacks hills automatically — normal, monitor load accumulation
-- Frequently discovers 'just one more trail' — part of the charm
-- Confidence drops quickly after isolated poor runs, recovers just as fast with objective evidence
-- Occasional Code Brown on early runs — occupational hazard, never mentioned unless Luke brings it up
-
-═══ TRAINING ENGINE ═══
-Default week: 2 easy runs + 1 quality session + 1 trail/long run when life allows
-Strength: 2×25–30min kettlebell sessions
-One interval session every 7–10 days is enough unless race-specific
-Shorten sessions before abandoning routine when family/work demand increases
-
-═══ DECISION MATRIX ═══
-IF sleep < 6h AND session = hard THEN → downgrade to easy or rest
-IF HR elevated AND HRV suppressed AND any illness sign THEN → recovery first
-IF cardio load ratio > 1.3 THEN → flag overreaching, protect next 48h
-IF cardio load ratio < 0.8 AND 5+ rest days THEN → gentle re-engagement nudge
-IF isolated poor run AND Luke seems worried THEN → show trend data, restore perspective
-IF family/work pressure high THEN → shorten sessions, keep frequency
-
-═══ METRICS INTERPRETATION ═══
-CARDIO LOAD RATIO: 0.8–1.1 = maintaining | 1.1–1.3 = productive | >1.3 = overreaching | <0.8 = detraining
-SLEEPWISE: grade 8+ = go | 5–8 = moderate — consider downgrade | <5 = easy only
-RESTING HR: >5bpm above baseline for 3+ consecutive days = systemic fatigue
-HRV: trends matter more than single nights — compare 7-day average
-Running Index: trend over 4+ weeks, not identity
-HR drift + perceived effort must always be interpreted together
-
-═══ NUTRITION ═══
-Race fuel: gels, chews, Rice Krispie squares, Skittles, electrolytes
-Fuel every 20–30 min from the gun — practise in training
-Post-race: recover first, then address body composition gradually
-
-═══ COACH COMMUNICATION RULES ═══
-- Be the knowledgeable mate, not a drill sergeant
-- Use humour naturally — it is part of the coaching relationship
-- Challenge Luke when catastrophising after one poor run
-- Never use empty hype or false promises
-- Always give one clear action, not a list of maybes
-- Units: min/km for pace, bpm for HR, watts for power, metres for elevation
-
-═══ RUNNING LORE ═══
-5am Crew | Code Brown | Tin Man | Filthy 4×4 | Found another hill...
-Luke Logic | Accidental progression run | If I can't keep my HR down, I may as well keep it up
-
-═══ DATA STREAMS ═══
-polar_exercises, polar_sleep, polar_hrv, polar_continuous_hr, polar_cardio_load, polar_sleepwise, polar_daily_activity, wellness_checkins
-
-═══ WRITE TRIGGERS ═══
-"save run: ..." → saves to database
-"goal: ..." → saves race goal
-"checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10" → logs wellness
+WRITE TRIGGERS:
+- "save run: ..." → saves to database
+- "goal: ..." → saves race goal
+- "checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10" → logs wellness
 
 After every substantive response end with:
 NOTE: <topic> | <one sentence summary>"""
 
 def build_system_prompt(run_limit: int = 10, sleep_days: int = 7) -> str:
-    system  = BASE_SYSTEM.replace("{days_to_marathon}", str(days_to_marathon()))
-    now     = datetime.now(timezone.utc)
-    datestr = now.strftime("%A %-d %B %Y")  # e.g. "Friday 31 July 2026"
-    return f"TODAY: {datestr}\n\n{system}\n\n{build_training_context(run_limit, sleep_days)}"
+    system = BASE_SYSTEM.replace("{days_to_marathon}", str(days_to_marathon()))
+    return f"{system}\n\n{build_training_context(run_limit, sleep_days)}"
 
 conversation_history = {}
 
@@ -1732,7 +1133,7 @@ def extract_and_save_note(reply: str, user_text: str):
 
 def format_full_summary() -> str:
     lines = [f"📊 *Full Summary — {datetime.now(timezone.utc).strftime('%-d %b %Y')}*",
-             f"🎯 *{days_to_race()}*\n"]
+             f"🎯 *London: {days_to_marathon()}d away* — sub 3:30 @ 4:58/km\n"]
 
     # ── Training ──
     try:
@@ -1768,7 +1169,7 @@ def format_full_summary() -> str:
                 rem_m   = (s.get("rem_seconds") or 0) // 60
                 deep_m  = (s.get("deep_sleep_seconds") or 0) // 60
                 sg      = "🟢" if score >= 70 else "🟡" if score >= 50 else "🔴"
-                lines.append(f"  {sg} {s['date']} · {hrs}h{mins:02d}m · 📊{score:.0f} · 💤{rem_m}m · 🔵{deep_m}m · 💓{s.get('avg_hrv') or '—'}")
+                lines.append(f"  {sg} {s['date']} · {hrs}h{mins:02d}m · 📊{score:.0f} · 💤{rem_m}m · 🔵{deep_m}m · 💓{s.get('avg_hrv','?')}")
             lines.append("")
     except: pass
 
@@ -1780,7 +1181,7 @@ def format_full_summary() -> str:
         if hrv.data:
             lines.append(f"⚡ *Recharge*")
             for h in hrv.data:
-                lines.append(f"  {recharge_emoji(h.get('recharge_status',''))} {h['date']} · {h.get('recharge_status','?')} · ANS {h.get('ans_charge') or '—'} · 💓 {h.get('hrv_avg') or '—'} · RMSSD {h.get('hrv_rmssd') or '—'}")
+                lines.append(f"  {recharge_emoji(h.get('recharge_status',''))} {h['date']} · {h.get('recharge_status','?')} · ANS {h.get('ans_charge','?')} · 💓 {h.get('hrv_avg','?')} · RMSSD {h.get('hrv_rmssd','?')}")
             lines.append("")
     except: pass
 
@@ -1809,11 +1210,7 @@ def format_full_summary() -> str:
                 status = (c.get("cardio_load_status") or "").replace("_"," ").title()
                 ratio  = c.get("cardio_load_ratio")
                 r_str  = f" · ×{ratio:.2f}" if ratio else ""
-                strain  = c.get('strain')
-                tol     = c.get('tolerance')
-                s_str   = f"{float(strain):.1f}" if strain is not None else '—'
-                t_str   = f"{float(tol):.1f}"    if tol     is not None else '—'
-                lines.append(f"  {load_emoji(c.get('cardio_load_status',''))} {c['date']} · {status} · 💪{s_str}/{t_str}{r_str}")
+                lines.append(f"  {load_emoji(c.get('cardio_load_status',''))} {c['date']} · {status} · 💪{c.get('strain','?')}/{c.get('tolerance','?')}{r_str}")
             lines.append("")
     except: pass
 
@@ -1838,12 +1235,10 @@ def format_full_summary() -> str:
             "date,steps,calories_total,active_calories,active_time_seconds"
         ).order("date", desc=True).limit(3).execute()
         if act.data:
-            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             lines.append(f"👟 *Activity*")
             for a in act.data:
                 active_min = round((a.get("active_time_seconds") or 0) / 60)
-                partial    = " _(partial sync — data still building)_" if a["date"] == today_str else ""
-                lines.append(f"  · {a['date']} · 👣 {a.get('steps','?')} · 🔥 {a.get('calories_total','?')}kcal · ⏱ {active_min}min{partial}")
+                lines.append(f"  · {a['date']} · 👣 {a.get('steps','?')} · 🔥 {a.get('calories_total','?')}kcal · ⏱ {active_min}min")
             lines.append("")
     except: pass
 
@@ -1921,12 +1316,10 @@ def send_morning_briefing():
 📅 WEEK AHEAD — day-by-day plan for remaining sessions this week. One line per day.
 ⚑ FLAG — one watch point from recent data."""
 
-        today_dow = datetime.now().strftime("%A")
-        today_date_str = datetime.now().strftime("%-d %b %Y")
         response = claude.messages.create(
             model="claude-sonnet-4-6", max_tokens=600,
             system=build_system_prompt(),
-            messages=[{"role": "user", "content": f"""{briefing_type}. Today is {today_dow} {today_date_str}. {days_to_race()}.{run_context}{sw_context}{load_context} Readiness score: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
+            messages=[{"role": "user", "content": f"""{briefing_type}. London Marathon is {days_to_marathon()} days away.{run_context}{sw_context}{load_context} Algorithmic readiness: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
 
 Structure your reply with clear emoji-led sections so it's easy to scan on mobile:
 
@@ -1952,7 +1345,7 @@ def send_post_run_debrief(exercise_id: str):
         run_resp = supabase.table("polar_exercises").select("*").eq("polar_exercise_id", exercise_id).limit(1).execute()
         if not run_resp.data: return
         run         = run_resp.data[0]
-        splits      = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m,distance_m").eq("exercise_id", exercise_id).order("lap_number").execute().data or []
+        splits      = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", exercise_id).order("lap_number").execute().data or []
         sleep_rows  = supabase.table("polar_sleep").select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds").order("date", desc=True).limit(3).execute().data or []
         hrv_resp    = supabase.table("polar_hrv").select("date,hrv_avg,ans_charge,recharge_status").order("date", desc=True).limit(1).execute()
         hrv         = hrv_resp.data[0] if hrv_resp.data else {}
@@ -1960,153 +1353,41 @@ def send_post_run_debrief(exercise_id: str):
         cl          = cl_resp.data[0] if cl_resp.data else {}
         now         = datetime.now(timezone.utc)
         week_start  = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
-        today_str2  = now.strftime("%Y-%m-%d")
-        week_runs   = supabase.table("polar_exercises").select("date,sport,distance_meters,training_load,duration_seconds,avg_heart_rate").gte("date", week_start).order("date").execute().data or []
-        goals_resp  = supabase.table("goals").select("race_name,race_date,distance_km,target_time").eq("active", True).gte("race_date", today_str2).execute()
-        goals_text  = "\n".join([f"- {g['race_name']} on {g['race_date']}: {g['distance_km']}km target {g['target_time']}" for g in (goals_resp.data or [])]) or "No active goals set — in base-building phase."
+        week_runs   = supabase.table("polar_exercises").select("date,distance_meters,training_load,duration_seconds").gte("date", week_start).order("date").execute().data or []
+        goals_resp  = supabase.table("goals").select("race_name,race_date,distance_km,target_time").eq("active", True).execute()
+        goals_text  = "\n".join([f"- {g['race_name']} on {g['race_date']}: {g['distance_km']}km target {g['target_time']}" for g in (goals_resp.data or [])]) or "No active goals."
         dist_km     = round((run.get("distance_meters") or 0) / 1000, 2)
         dur_s       = run.get("duration_seconds") or 0
         dur_str     = f"{dur_s // 3600}h {(dur_s % 3600) // 60}m" if dur_s >= 3600 else f"{dur_s // 60}m {dur_s % 60}s"
         pace_s      = (dur_s / dist_km) if dist_km > 0 else 0
-        # Derive run start hour from raw_json (Polar stores full ISO start_time there)
-        run_hour    = None
-        try:
-            rj = json.loads(run.get("raw_json") or "{}")
-            st = rj.get("start_time", "")
-            if "T" in st:
-                run_hour = int(st.split("T")[1][:2])
-        except Exception:
-            pass
-        is_5am      = run_hour is not None and run_hour < 7
-        time_ctx    = f"Run started at {run_hour:02d}:xx local time — {'this WAS a pre-dawn 5am Crew session' if is_5am else 'NOT a 5am run, so do NOT open with 5am Crew — adapt the opener to the actual time of day'}."
-        def session_label(r):
-            sp = r.get("sport","")
-            d  = round((r.get("distance_meters") or 0)/1000,1)
-            if sp in RUNNING_SPORTS: return f"🏃 {d}km run (HR {r.get('avg_heart_rate','?')})"
-            return f"💪 {sp.replace('_',' ').title()}"
-        def fmt_split(s):
-            dist = s.get("distance_m")
-            if dist is not None and dist < 200:
-                return f"  km{s['km_number']}: PARTIAL FINISH ({int(dist)}m only) — skip in narrative, just note run finished mid-km"
-            return f"  km{s['km_number']}: {s.get('pace_display','?')} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')}bpm | {s.get('power_avg','?')}W"
-        splits_text  = "\n".join([fmt_split(s) for s in splits[:20]]) if splits else "No splits."
-        weekly_km    = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
-        weekly_load  = sum((r.get("training_load") or 0) for r in week_runs)
-        week_summary = "\n".join([f"  {r['date'][:10]}: {session_label(r)}" for r in week_runs])
-        sleep_text   = " | ".join([f"{s['date'][:5]}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h score {s.get('sleep_score','?')}" for s in sleep_rows]) or "No sleep data."
-        hrv_text     = f"Recharge {hrv.get('recharge_status','?')}, HRV {hrv.get('hrv_avg','?')}, ANS {hrv.get('ans_charge','?')}" if hrv else "No HRV."
-        cl_text      = f"Load ratio {cl.get('cardio_load_ratio','?')} ({cl.get('cardio_load_status','?')}) | Strain {cl.get('strain','?')} / Tolerance {cl.get('tolerance','?')}" if cl else "No load data."
-        prompt = f"""You are Luke's running coach — a mate who really knows him. Write a post-run debrief that feels like a WhatsApp voice note transcribed: warm, funny, honest, uses his running lore.
+        splits_text = ("KM SPLITS:\n" + "\n".join([f"  km {s['km_number']}: {s.get('pace_display','?')} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cad {s.get('cadence_avg','?')}spm" for s in splits[:20]])) if splits else ""
+        weekly_km   = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
+        weekly_load = sum((r.get("training_load") or 0) for r in week_runs)
+        sleep_text  = "\n".join([f"  - {s['date']}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h, score {s.get('sleep_score','?')}, deep {(s.get('deep_sleep_seconds') or 0)//60}min" for s in sleep_rows]) or "No recent sleep data."
+        hrv_text    = f"Recharge: {hrv.get('recharge_status','?')}, ANS {hrv.get('ans_charge','?')}, HRV {hrv.get('hrv_avg','?')}" if hrv else "No HRV data."
+        cl_text     = f"Cardio load: {cl.get('cardio_load_status','?')} | Strain {cl.get('strain','?')} / Tolerance {cl.get('tolerance','?')} | Ratio {cl.get('cardio_load_ratio','?')}" if cl else "No cardio load data."
+        prompt = f"""Elite running coach. Luke just finished a run. 3 short paragraphs (max 280 tokens).
 
-ATHLETE: Luke Worgan | 37 | VO2max 55 | Max HR 198 | Aerobic threshold 149bpm | Anaerobic threshold 178bpm
-PHASE: {goals_text}
-RUNNING LORE: 5am Crew (his pre-dawn squad) | Code Brown | Tin Man | Luke Logic | "if I can't keep my HR down, may as well keep it up" | accidental progression run | found another hill
-TIMING: {time_ctx}
+ATHLETE: Luke Worgan, 37yo, 167cm, 78kg, VO2max 55, max HR 198, aerobic threshold 149bpm, anaerobic threshold 178bpm
+LONDON MARATHON: {days_to_marathon()} days away — target sub 3:30 (4:58/km)
+GOALS:\n{goals_text}
 
-TODAY'S RUN: {dist_km}km in {dur_str} @ avg {seconds_to_pace(pace_s)}
-HR: avg {run.get('avg_heart_rate','?')} / max {run.get('max_heart_rate','?')}bpm | Power {run.get('avg_power','?')}W | Load {round(run.get('training_load') or 0)}
-SPLITS:
+TODAY'S RUN:
+- Distance: {dist_km}km | Duration: {dur_str} | Avg pace: {seconds_to_pace(pace_s)}
+- Avg HR: {run.get('avg_heart_rate','?')}bpm | Max HR: {run.get('max_heart_rate','?')}bpm
+- Avg power: {run.get('avg_power','?')}W | Cadence: {run.get('avg_cadence','?')}spm
+- Training load: {run.get('training_load','?')} | Ascent: {run.get('ascent','?')}m
 {splits_text}
 
-WEEK SO FAR ({round(weekly_km,1)}km, {len(week_runs)} sessions):
-{week_summary}
+RECOVERY: {sleep_text}\n{hrv_text}\n{cl_text}
+WEEK SO FAR: {round(weekly_km,1)}km | load {round(weekly_load,0)} across {len(week_runs)} sessions
 
-RECOVERY: {sleep_text}
-{hrv_text}
-{cl_text}
+Para 1: Quality of run — effort, HR vs zones, pacing from splits.
+Para 2: One strength, one thing to work on.
+Para 3: Rest of today — nutrition, recovery, movement given cardio load.
 
---- EXAMPLE OF THE EXACT TONE AND STYLE TO MATCH ---
-(This is a real debrief for a different run. Learn the voice from it, don't copy the content.)
-
-🌅 Friday 5am Crew
-
-15 from 15.
-
-Don't overlook that.
-
-Three weeks ago the goal wasn't to get faster. It wasn't to smash intervals every morning. It was simply to become the bloke who gets up at 5 a.m. and trains before the house wakes up.
-
-Mission well and truly underway. 👊
-
-⸻
-
-Today's run was one of those that Strava will completely misunderstand.
-
-Nobody is giving kudos for 7:04/km.
-
-But I absolutely am.
-
-You set out to run easy… and you actually ran easy.
-
-No "I'll just see what happens."
-
-No accidental progression run.
-
-No convincing yourself that because HR was behaving you may as well wind it up.
-
-Just 42 minutes of proper aerobic work.
-
-The splits tell the story.
-
-First kilometre was the body waking up.
-
-Second and third settled into that familiar rhythm where you're just ticking over.
-
-Then something I really liked happened…
-
-Instead of fading because you were bored, you naturally picked things up again. Not because you were racing home or chasing a pace, but because your body had loosened up. Km 5 and 6 came back under seven-minute pace while your heart rate barely moved.
-
-That's efficient running.
-
-Your heart rate spent almost the entire run parked around 150–153 bpm. That's about as steady as it gets. The power eased off slightly through the middle before creeping back up at the end, and the cadence followed suit. Nothing dramatic. Just smooth.
-
-That's exactly what "easy" should look like.
-
-What I also can't ignore is the bigger picture.
-
-This week has had a lovely rhythm to it:
-
-🏃 Monday – Easy.
-
-💪 Tuesday – Kettlebell.
-
-🏃 Wednesday – Easy.
-
-💪 Thursday – Kettlebell.
-
-🏃 Friday – Easy.
-
-No ego.
-
-No trying to win training.
-
-Just stacking brick after brick.
-
-Your recovery metrics are backing that up too. Good HRV. Excellent recharge. Cardio load exactly where we'd want it. That's your body quietly saying: "Yep… I can absorb this."
-
-I reckon you've crossed a line over the last few weeks.
-
-Earlier in the year your easy runs often turned into threshold runs wearing a fake moustache.
-
-Now they actually have a purpose.
-
-And… perhaps my favourite statistic of the whole run…
-
-Zero code browns. 🚽🏆
-
-One thing for next time: leave your watch on the HR screen for the first 15 minutes. Ignore pace completely. Build the run around effort, and let the pace be whatever pace wants to turn up that morning. That's exactly how you keep turning "easy" into your secret weapon. 👊
---- END EXAMPLE ---
-
-Write in this structure (short punchy lines, phone-readable, emojis where natural):
-1. One-liner or short opener that nails the character of this run — honest, often funny
-2. Walk through the splits — what actually happened km by km, in plain language like you were there
-3. Verdict: was this smart training? what does it say about where Luke is right now?
-4. Week snapshot — celebrate the pattern, not just today
-5. One coach's note: the single most useful thing for next time
-
-No bullet-point walls. Short paragraphs. Sound like a person, not a report.
 End with: NOTE: post-run debrief | <10-word summary>"""
-        response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=700, messages=[{"role": "user", "content": prompt}])
+        response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
         reply    = extract_and_save_note(response.content[0].text, "post-run debrief")
         msg      = f"🏃 *Post-run debrief* — {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)}\n\n{reply}"
         bot.send_message(YOUR_TELEGRAM_ID, msg[:4000], parse_mode="Markdown")
@@ -2129,8 +1410,8 @@ def send_evening_debrief():
         cl            = cl_resp.data[0] if cl_resp.data else {}
         sw_resp       = supabase.table("polar_sleepwise").select("date,grade,grade_classification,circadian_bedtime_start,circadian_bedtime_end").order("date", desc=True).limit(1).execute()
         sw            = sw_resp.data[0] if sw_resp.data else {}
-        goals_resp    = supabase.table("goals").select("race_name,race_date,distance_km,target_time").eq("active", True).gte("race_date", today_str).execute()
-        goals_text    = "\n".join([f"- {g['race_name']} on {g['race_date']}: target {g['target_time']}" for g in (goals_resp.data or [])]) or "No active goals — base-building phase."
+        goals_resp    = supabase.table("goals").select("race_name,race_date,distance_km,target_time").eq("active", True).execute()
+        goals_text    = "\n".join([f"- {g['race_name']} on {g['race_date']}: target {g['target_time']}" for g in (goals_resp.data or [])]) or "No active goals."
         checkin_resp  = supabase.table("wellness_checkins").select("date,fatigue_score,sleep_score,mood_score,notes").order("date", desc=True).limit(1).execute()
         last_checkin  = checkin_resp.data[0] if checkin_resp.data else None
         checkin_today = last_checkin and last_checkin.get("date") == today_str
@@ -2155,7 +1436,7 @@ def send_evening_debrief():
             checkin_context = f"\nLast check-in ({last_checkin['date']}): fatigue {last_checkin.get('fatigue_score','?')}/10, mood {last_checkin.get('mood_score','?')}/10" if last_checkin else ""
             prompt = f"""Elite running coach. Evening data summary — short and scannable. Use emojis to lead each section so it's easy to read on mobile.
 
-ATHLETE: Luke Worgan | {days_to_race()}
+ATHLETE: Luke Worgan | LONDON MARATHON: {days_to_marathon()} days away — target sub 3:30
 GOALS:\n{goals_text}
 
 TODAY: Steps {steps} | Active {active_min}min
@@ -2174,11 +1455,11 @@ End with: NOTE: evening debrief | <10-word summary>"""
         else:
             prompt = f"""Elite running coach. Evening — data still syncing. Keep it short and emoji-led.
 
-WEEK: {round(weekly_km,1)}km | {len(week_runs)} runs | {days_to_race()}
+WEEK: {round(weekly_km,1)}km | {len(week_runs)} runs | LONDON: {days_to_marathon()} days
 {cl_text}\n{sw_text}
 
 📊 DATA STATUS — note data is still syncing, share what's available
-🌙 TONIGHT — one specific sleep/recovery tip for ultra prep
+🌙 TONIGHT — one specific sleep/recovery tip for marathon prep
 {f"Nudge Luke to log check-in: fatigue, sleep, mood out of 10." if not checkin_today else ""}
 End with: NOTE: evening debrief | data pending"""
         response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
@@ -2192,28 +1473,13 @@ End with: NOTE: evening debrief | data pending"""
 
 # ── BACKGROUND LOOPS ───────────────────────────────────────────────────────
 
-def _backfill_other_sports():
-    """Resolve sport=OTHER rows using detailed_sport_info stored in raw_json."""
-    try:
-        rows = supabase.table("polar_exercises").select("polar_exercise_id,raw_json").eq("sport","OTHER").execute()
-        for r in rows.data:
-            if not r.get("raw_json"): continue
-            d = json.loads(r["raw_json"])
-            detailed = d.get("detailed_sport_info")
-            if detailed and detailed != "OTHER":
-                supabase.table("polar_exercises").update({"sport": detailed}).eq("polar_exercise_id", r["polar_exercise_id"]).execute()
-                log.info(f"Backfilled {r['polar_exercise_id']}: OTHER → {detailed}")
-    except Exception as e:
-        log.error(f"_backfill_other_sports: {e}")
-
 def polar_sync_loop():
     while True:
         try:
             new = sync_new_polar_exercises()
             for ex in new:
                 bot.send_message(YOUR_TELEGRAM_ID, format_new_run_notification(ex["data"], ex["id"], ex["splits"]), parse_mode="Markdown")
-                if ex.get("sport", "") in RUNNING_SPORTS:
-                    threading.Thread(target=send_post_run_debrief, args=(ex["id"],), daemon=True).start()
+                threading.Thread(target=send_post_run_debrief, args=(ex["id"],), daemon=True).start()
             sleep_n     = sync_sleep()
             recharge_n  = sync_nightly_recharge()
             activity_n  = sync_daily_activity()
@@ -2250,7 +1516,7 @@ def scheduler_loop():
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     chat_id   = message.chat.id
-    if chat_id != YOUR_TELEGRAM_ID:
+    if chat_id not in (YOUR_TELEGRAM_ID, GROUP_CHAT_ID):
         bot.reply_to(message, "Unauthorised.")
         return
     user_text = message.text.strip()
@@ -2267,8 +1533,6 @@ def handle_message(message):
             "🌙 /evening — evening debrief now\n"
             "🏃 /runs — last 10 runs _(or /runs 30)_\n"
             "📈 /splits — km splits for last run\n"
-            "🔁 /resync — re-fetch FIT splits for last run _(or /resync 2026-04-26)_\n"
-            "🔁 /resyncall — backfill splits & ascent for all runs\n"
             "💤 /recovery — sleep & HRV\n"
             "📦 /load — weekly training load\n"
             "🔥 /cardio — cardio load trend\n"
@@ -2279,7 +1543,7 @@ def handle_message(message):
             "🗑 /clear — clear conversation\n\n"
             "✏️ *Log data*\n"
             "`save run: <Polar stats>`\n"
-            "`goal: Cotswold Way Ultra, 13 Jun 2026, 100km, finish`\n"
+            "`goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`\n"
             "`checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10`\n\n"
             "💬 _Or just ask me anything_"
         ), parse_mode="Markdown")
@@ -2307,44 +1571,6 @@ def handle_message(message):
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
-    if lower == "/stravaauth":
-        if not STRAVA_CLIENT_ID:
-            bot.reply_to(message, "⚠️ STRAVA_CLIENT_ID not set in Railway environment."); return
-        auth_url = (f"https://www.strava.com/oauth/authorize"
-                    f"?client_id={STRAVA_CLIENT_ID}"
-                    f"&redirect_uri=https://localhost/callback"
-                    f"&response_type=code"
-                    f"&approval_prompt=auto"
-                    f"&scope=activity:read_all")
-        bot.reply_to(message,
-            f"1️⃣ Open this URL:\n{auth_url}\n\n"
-            f"2️⃣ Click *Authorise* on Strava\n\n"
-            f"3️⃣ You'll get a 'localhost refused to connect' page — that's fine. "
-            f"Copy the full URL from your browser bar.\n\n"
-            f"4️⃣ Send me: `/stravacode CODE`\n"
-            f"_(the `code=` value from the URL)_", parse_mode="Markdown")
-        return
-
-    if lower.startswith("/stravacode "):
-        code = user_text.split(" ", 1)[1].strip()
-        try:
-            resp = requests.post("https://www.strava.com/oauth/token", data={
-                "client_id": STRAVA_CLIENT_ID, "client_secret": STRAVA_CLIENT_SECRET,
-                "code": code, "grant_type": "authorization_code",
-            })
-            if not resp.ok:
-                bot.reply_to(message, f"❌ Strava auth failed: {resp.text}"); return
-            tok     = resp.json()
-            athlete = tok.get("athlete", {})
-            supabase.table("strava_tokens").upsert({
-                "id": 1, "access_token": tok["access_token"],
-                "refresh_token": tok["refresh_token"], "expires_at": tok["expires_at"],
-            }).execute()
-            bot.reply_to(message, f"✅ Strava connected — {athlete.get('firstname','')} {athlete.get('lastname','')} 🎉\nElevation will now use Strava's corrected altitude stream.")
-        except Exception as e:
-            bot.reply_to(message, f"Error: {e}")
-        return
-
     if lower == "/sync":
         bot.reply_to(message, "🔄 Syncing all Polar data...")
         new         = sync_new_polar_exercises()
@@ -2357,8 +1583,7 @@ def handle_message(message):
         if new:
             for ex in new:
                 bot.send_message(chat_id, format_new_run_notification(ex["data"], ex["id"], ex["splits"]), parse_mode="Markdown")
-                if ex.get("sport", "") in RUNNING_SPORTS:
-                    threading.Thread(target=send_post_run_debrief, args=(ex["id"],), daemon=True).start()
+                threading.Thread(target=send_post_run_debrief, args=(ex["id"],), daemon=True).start()
         else:
             bot.send_message(chat_id, "No new exercises found.")
         parts = []
@@ -2369,156 +1594,6 @@ def handle_message(message):
         if load_n:      parts.append(f"🔥 {load_n} load days")
         if sleepwise_n: parts.append(f"🧠 {sleepwise_n} SleepWise days")
         if parts: bot.send_message(chat_id, "✅ Synced: " + "  •  ".join(parts))
-        return
-
-    if lower == "/synclogs":
-        lines = list(_log_buffer)
-        if not lines:
-            bot.reply_to(message, "No warnings or errors since last restart."); return
-        bot.reply_to(message, "⚠️ *Recent warnings/errors:*\n```\n" + "\n".join(lines[-20:]) + "\n```", parse_mode="Markdown")
-        return
-
-    if lower == "/backfillsports":
-        try:
-            rows = supabase.table("polar_exercises").select("polar_exercise_id,raw_json").eq("sport","OTHER").execute()
-            updated = []
-            for r in rows.data:
-                if not r.get("raw_json"): continue
-                d = json.loads(r["raw_json"])
-                detailed = d.get("detailed_sport_info")
-                if detailed and detailed != "OTHER":
-                    supabase.table("polar_exercises").update({"sport": detailed}).eq("polar_exercise_id", r["polar_exercise_id"]).execute()
-                    updated.append(f"{d.get('start_time','?')[:10]}: OTHER → {detailed}")
-            if updated:
-                bot.reply_to(message, "✅ Updated:\n" + "\n".join(updated))
-            else:
-                bot.reply_to(message, "No OTHER exercises with detailed_sport_info found.")
-        except Exception as e: bot.reply_to(message, f"Error: {e}")
-        return
-
-    if lower == "/otherdebug":
-        try:
-            rows = supabase.table("polar_exercises").select("date,sport,raw_json").eq("sport","OTHER").order("date",desc=True).limit(3).execute()
-            if not rows.data: bot.reply_to(message, "No OTHER exercises found."); return
-            out = []
-            for r in rows.data:
-                d = json.loads(r["raw_json"]) if r.get("raw_json") else {}
-                scalar = {k: v for k, v in d.items() if isinstance(v, (str, int, float, bool)) or v is None}
-                out.append(f"*{r['date'][:10]}*\n`{json.dumps(scalar, indent=2)[:800]}`")
-            bot.reply_to(message, "\n\n".join(out), parse_mode="Markdown")
-        except Exception as e: bot.reply_to(message, f"Error: {e}")
-        return
-
-    if lower == "/synccheck":
-        try:
-            r = requests.get(f"{POLAR_BASE}/exercises", headers=polar_headers())
-            if r.status_code == 204:
-                bot.reply_to(message, "Polar API returned 204 — no exercises available."); return
-            if not r.ok:
-                bot.reply_to(message, f"Polar API error: {r.status_code} {r.text[:200]}"); return
-            exercises = r.json()
-            if not isinstance(exercises, list): exercises = exercises.get("exercises", [])
-            if not exercises:
-                bot.reply_to(message, "Polar returned 0 exercises."); return
-            db_ids = {row["polar_exercise_id"] for row in (supabase.table("polar_exercises").select("polar_exercise_id").execute().data or [])}
-            lines = [f"📡 *Polar exercises* ({len(exercises)} returned):\n"]
-            for ex in exercises[:20]:
-                ex_id   = str(ex.get("id", "?"))
-                sport   = ex.get("sport", "?")
-                start   = (ex.get("start_time") or ex.get("date") or "?")[:10]
-                in_db   = "✅" if ex_id in db_ids else "❌ missing"
-                allowed = "✓" if sport in ALLOWED_SPORTS else "✗ skipped"
-                splits_n = ""
-            if ex_id in db_ids and sport in RUNNING_SPORTS:
-                sc = supabase.table("polar_km_splits").select("id", count="exact").eq("exercise_id", ex_id).execute()
-                splits_n = f" ({sc.count or 0}sp)"
-            lines.append(f"{sport_emoji(sport)} `{start}` {sport} — {in_db}{splits_n} {allowed}")
-            bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
-        except Exception as e:
-            bot.reply_to(message, f"Error: {e}")
-        return
-
-    if lower == "/fitdebug":
-        try:
-            runs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters").order("date", desc=True).limit(1).execute()
-            if not runs.data: bot.reply_to(message, "No exercises found."); return
-            ex     = runs.data[0]
-            ex_id  = ex["polar_exercise_id"]
-            r      = requests.get(f"{POLAR_BASE}/exercises/{ex_id}/fit", headers={"Authorization": f"Bearer {POLAR_ACCESS_TOKEN}", "Accept": "application/octet-stream"})
-            if not r.ok: bot.reply_to(message, f"FIT fetch failed: {r.status_code}"); return
-            fitfile = fitparse.FitFile(io.BytesIO(r.content))
-
-            # All FIT message types in this file
-            all_msg_types = set()
-            for msg in fitfile.messages:
-                all_msg_types.add(getattr(msg, 'name', None) or f"mesg_{getattr(msg, 'mesg_num', '?')}")
-
-            # Scan ALL records: altitude range + per-km boundary
-            rec_fields  = set()
-            km_first_alt: dict = {}
-            km_last_alt:  dict = {}
-            all_alts = []
-            for record in fitfile.get_messages("record"):
-                data = {d.name: d.value for d in record}
-                rec_fields.update(data.keys())
-                dist_m = sf(data.get("distance"))
-                raw_alt = data.get("enhanced_altitude") if data.get("enhanced_altitude") is not None else data.get("altitude")
-                alt = sf(raw_alt)
-                if dist_m is None or alt is None:
-                    continue
-                all_alts.append(alt)
-                km_idx = int(dist_m / 1000)
-                if km_idx not in km_first_alt:
-                    km_first_alt[km_idx] = alt
-                km_last_alt[km_idx] = alt
-
-            # Per-lap elevation from lap messages
-            lap_elev_rows = []
-            lap_fields_all = set()
-            for lap_n, record in enumerate(fitfile.get_messages("lap")):
-                data = {d.name: d.value for d in record}
-                lap_fields_all.update(data.keys())
-                asc = data.get("total_ascent")
-                des = data.get("total_descent")
-                dist = data.get("total_distance")
-                lap_elev_rows.append(f"  L{lap_n+1}: dist={dist}m  asc={asc}  des={des}")
-
-            # Per-km altitude boundary table
-            km_alt_rows = []
-            for km_idx in sorted(km_first_alt.keys()):
-                fa = km_first_alt[km_idx]
-                la = km_last_alt.get(km_idx, fa)
-                net = round(la - fa, 1)
-                sign = "+" if net > 0 else ""
-                km_alt_rows.append(f"  km{km_idx+1}: {fa:.1f}→{la:.1f}m  net={sign}{net}m")
-
-            alt_min = round(min(all_alts), 1) if all_alts else "n/a"
-            alt_max = round(max(all_alts), 1) if all_alts else "n/a"
-            alt_range = round(max(all_alts) - min(all_alts), 1) if all_alts else "n/a"
-
-            lines = [
-                f"📦 *FIT message types:* `{'`, `'.join(sorted(all_msg_types))}`\n",
-                f"📐 *Lap fields:* `{'`, `'.join(sorted(lap_fields_all))}`\n",
-                f"⛰ *Per-lap ascent/descent:*\n" + "\n".join(lap_elev_rows[:10]),
-                f"\n🏔 *Altitude range:* min={alt_min}m  max={alt_max}m  range={alt_range}m  ({len(all_alts)} pts)",
-                f"\n📊 *Per-km altitude boundary:*\n" + "\n".join(km_alt_rows),
-            ]
-            bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
-        except Exception as e: bot.reply_to(message, f"Error: {e}")
-        return
-
-    if lower == "/exdebug":
-        try:
-            runs = supabase.table("polar_exercises").select("polar_exercise_id,date").order("date", desc=True).limit(1).execute()
-            if not runs.data: bot.reply_to(message, "No exercises."); return
-            ex_id = runs.data[0]["polar_exercise_id"]
-            r = requests.get(f"{POLAR_BASE}/exercises/{ex_id}?zones=true", headers=polar_headers())
-            if not r.ok: bot.reply_to(message, f"API error: {r.status_code}"); return
-            data = r.json()
-            keys = sorted(data.keys())
-            asc_keys = {k: data[k] for k in keys if "asc" in k.lower() or "desc" in k.lower() or "elev" in k.lower() or "climb" in k.lower()}
-            bot.reply_to(message, f"📦 Exercise keys:\n`{'`, `'.join(keys)}`\n\n⛰ Elevation-related:\n`{asc_keys}`")
-        except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
     if lower == "/briefing":
@@ -2535,59 +1610,9 @@ def handle_message(message):
         try:
             ex = get_latest_run_with_splits()
             if not ex: bot.reply_to(message, "No runs with splits found."); return
-            splits  = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m,distance_m").eq("exercise_id", ex["polar_exercise_id"]).order("lap_number").execute()
+            splits  = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", ex["polar_exercise_id"]).order("lap_number").execute()
             header  = f"{fmt_date(ex['date'])} — {(ex.get('distance_meters') or 0)/1000:.1f}km {ex.get('sport','')}"
             bot.reply_to(message, format_splits_table(splits.data, header), parse_mode="Markdown")
-        except Exception as e: bot.reply_to(message, f"Error: {e}")
-        return
-
-    if lower.startswith("/resync") and lower != "/resyncall":
-        try:
-            parts = user_text.split()
-            ex    = None
-            if len(parts) > 1:
-                arg = parts[1]
-                # Accept date (2026-04-26) or exercise_id
-                if re.match(r"\d{4}-\d{2}-\d{2}", arg):
-                    ex_row = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,sport").gte("date", arg).lt("date", arg + "T23:59:59").order("date", desc=True).limit(1).execute()
-                else:
-                    ex_row = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,sport").eq("polar_exercise_id", arg).limit(1).execute()
-                ex = ex_row.data[0] if ex_row.data else None
-            else:
-                runs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,sport").order("date", desc=True).limit(1).execute()
-                ex = runs.data[0] if runs.data else None
-            if not ex:
-                bot.reply_to(message, "No exercise found to resync."); return
-            ex_id   = ex["polar_exercise_id"]
-            dist_m  = sf(ex.get("distance_meters"))
-            bot.reply_to(message, f"🔄 Resyncing splits for {fmt_date(ex['date'])} ({(dist_m or 0)/1000:.1f}km)...")
-            # Delete existing splits
-            supabase.table("polar_km_splits").delete().eq("exercise_id", ex_id).execute()
-            # Re-fetch FIT and parse
-            split_rows = fetch_fit_and_parse(ex_id, ex["date"][:10], dist_m)
-            split_rows, strava_id, strava_asc = enrich_splits_with_strava(split_rows, ex["date"][:10], dist_m)
-            if split_rows:
-                elev_src  = next((s.get("_elev_src") for s in split_rows if s.get("_elev_src")), "FIT")
-                session_asc = next((s["_session_asc"] for s in split_rows if s.get("_session_asc") is not None), None)
-                session_des = next((s["_session_des"] for s in split_rows if s.get("_session_des") is not None), None)
-                # Strip internal metadata keys before upserting
-                clean_rows = [{k: v for k, v in s.items() if not k.startswith("_")} for s in split_rows]
-                supabase.table("polar_km_splits").upsert(clean_rows, on_conflict="exercise_id,lap_number").execute()
-                total_asc = session_asc or round(sum(s["ascent_m"] for s in clean_rows if s.get("ascent_m")), 1) or strava_asc or None
-                total_des = session_des or round(sum(s["descent_m"] for s in clean_rows if s.get("descent_m")), 1) or None
-                update_payload = {"ascent": total_asc, "descent": total_des}
-                if strava_id: update_payload["strava_activity_id"] = strava_id
-                supabase.table("polar_exercises").update(update_payload).eq("polar_exercise_id", ex_id).execute()
-                splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg,ascent_m,descent_m,distance_m").eq("exercise_id", ex_id).order("lap_number").execute()
-                header  = f"{fmt_date(ex['date'])} — {(dist_m or 0)/1000:.1f}km {ex.get('sport','')}"
-                if strava_id:                src_str = " (Strava)"
-                elif elev_src == "GPS":      src_str = " (GPS+DEM)"
-                elif elev_src == "baro-scaled": src_str = " (baro→scaled)"
-                else:                        src_str = " (baro)"
-                asc_str = f"  ⛰{total_asc:.0f}m{src_str}" if total_asc else ""
-                bot.send_message(chat_id, f"✅ {len(split_rows)} splits saved{asc_str}\n\n" + format_splits_table(splits.data, header), parse_mode="Markdown")
-            else:
-                bot.send_message(chat_id, "⚠️ No splits found in FIT file — watch may not be set to auto-lap every km.")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
@@ -2595,49 +1620,16 @@ def handle_message(message):
         try:
             parts = user_text.split()
             limit = min(int(parts[1]) if len(parts) > 1 else 10, 100)
-            runs  = supabase.table("polar_exercises").select("date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load,ascent,source").order("date", desc=True).limit(limit).execute()
+            runs  = supabase.table("polar_exercises").select("date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load,source").order("date", desc=True).limit(limit).execute()
             bot.reply_to(message, format_run_list(runs.data), parse_mode="Markdown")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
-    if lower == "/resyncall":
-        def do_resync_all():
-            try:
-                runs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,sport").order("date", desc=True).limit(200).execute()
-                if not runs.data: bot.send_message(chat_id, "No exercises found."); return
-                bot.send_message(chat_id, f"🔄 Resyncing {len(runs.data)} runs — this may take a minute...")
-                ok = 0; fail = 0
-                for ex in runs.data:
-                    try:
-                        ex_id  = ex["polar_exercise_id"]
-                        dist_m = sf(ex.get("distance_meters"))
-                        split_rows = fetch_fit_and_parse(ex_id, ex["date"][:10], dist_m)
-                        if split_rows:
-                            supabase.table("polar_km_splits").delete().eq("exercise_id", ex_id).execute()
-                            supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
-                            total_asc = round(sum(s["ascent_m"] for s in split_rows if s.get("ascent_m")), 1) or None
-                            total_des = round(sum(s["descent_m"] for s in split_rows if s.get("descent_m")), 1) or None
-                            supabase.table("polar_exercises").update({"ascent": total_asc, "descent": total_des}).eq("polar_exercise_id", ex_id).execute()
-                            ok += 1
-                        else:
-                            fail += 1
-                    except Exception as e:
-                        log.error(f"resyncall {ex.get('polar_exercise_id')}: {e}")
-                        fail += 1
-                bot.send_message(chat_id, f"✅ Resync complete: {ok} updated, {fail} skipped")
-            except Exception as e:
-                bot.send_message(chat_id, f"⚠️ Resync error: {e}")
-        bot.reply_to(message, "🔄 Starting full resync in background...")
-        threading.Thread(target=do_resync_all, daemon=True).start()
-        return
-
     if lower == "/recovery":
         try:
-            sleep  = supabase.table("polar_sleep").select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds,avg_hrv").order("date", desc=True).limit(7).execute()
-            hrv    = supabase.table("polar_hrv").select("date,recharge_status,ans_charge,sleep_charge,hrv_avg,hrv_rmssd,breathing_rate").order("date", desc=True).limit(1).execute()
-            hr_raw = supabase.table("polar_continuous_hr").select("date,min_hr").order("date", desc=True).limit(7).execute()
-            hr_by_date = {r["date"]: r["min_hr"] for r in (hr_raw.data or [])}
-            bot.reply_to(message, format_recovery_dashboard(sleep.data, hrv.data, hr_by_date), parse_mode="Markdown")
+            sleep = supabase.table("polar_sleep").select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds,avg_hrv").order("date", desc=True).limit(7).execute()
+            hrv   = supabase.table("polar_hrv").select("date,recharge_status,ans_charge,sleep_charge,hrv_avg,hrv_rmssd").order("date", desc=True).limit(1).execute()
+            bot.reply_to(message, format_recovery_dashboard(sleep.data, hrv.data), parse_mode="Markdown")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
@@ -2752,7 +1744,6 @@ if __name__ == "__main__":
     log.info("🏃 Polar Super Coach Bot v8.2 starting...")
     log.info(f"Supabase: {SUPABASE_URL}")
     log.info(f"Polar User: {POLAR_USER_ID}")
-    _backfill_other_sports()
     threading.Thread(target=polar_sync_loop, daemon=True).start()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     bot.infinity_polling(interval=1, timeout=30)
