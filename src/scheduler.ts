@@ -142,14 +142,36 @@ export function initScheduler(sendFn: SendMessageFn): void {
     }
   }, { timezone: config.timezone });
 
-  // Pocket-money payout — every Friday at 4pm (payday)
+  // Pocket-money payout — every Friday at 4pm (payday). Telegram message + an
+  // Echo shout-out of what each kid earned.
   cron.schedule('0 16 * * 5', async () => {
     try {
-      const { payoutMessage } = await import('./pocketmoney');
+      const { payoutMessage, paydaySpeech } = await import('./pocketmoney');
       const msg = await payoutMessage();
       if (msg) await sendToGroup(msg);
+      await announceJobsVoice(await paydaySpeech());
     } catch (err) {
       console.error('Error sending pocket-money payout:', err);
+    }
+  }, { timezone: config.timezone });
+
+  // Morning "jobs of the day" on the Echos — 7:30am daily.
+  cron.schedule('30 7 * * *', async () => {
+    try {
+      const { morningJobsSpeech } = await import('./pocketmoney');
+      await announceJobsVoice(await morningJobsSpeech());
+    } catch (err) {
+      console.error('Error announcing morning jobs:', err);
+    }
+  }, { timezone: config.timezone });
+
+  // Teatime "what's left" nudge on the Echos — 4:30pm daily.
+  cron.schedule('30 16 * * *', async () => {
+    try {
+      const { teatimeNudgeSpeech } = await import('./pocketmoney');
+      await announceJobsVoice(await teatimeNudgeSpeech());
+    } catch (err) {
+      console.error('Error announcing teatime jobs nudge:', err);
     }
   }, { timezone: config.timezone });
 
@@ -193,6 +215,18 @@ export function initScheduler(sendFn: SendMessageFn): void {
   refreshLocalEventsTicker().catch((err) => console.error('Initial ticker refresh error:', err));
 
   console.log('Scheduler initialised ✓');
+}
+
+/** Speak a jobs announcement on all Echos, honouring quiet hours. No-ops when
+ *  there's nothing to say or voice isn't set up. */
+async function announceJobsVoice(text: string | null): Promise<void> {
+  if (!text) return;
+  const { isVoiceEnabled, speakOnAlexa } = await import('./voice');
+  if (!isVoiceEnabled()) return;
+  const r = await speakOnAlexa(text, { respectQuietHours: true });
+  if (!r.ok && r.reason && !/quiet hours/.test(r.reason)) {
+    console.error('Jobs announcement failed:', r.reason);
+  }
 }
 
 async function checkEventReminders(): Promise<void> {

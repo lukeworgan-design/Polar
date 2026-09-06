@@ -359,3 +359,72 @@ export async function payoutMessage(): Promise<string | null> {
   const total = rows.reduce((s, r) => s + r.pence, 0);
   return `💰 *Pocket money — this week*\n\n${lines.join('\n')}\n\nTotal to pay out: *${money(total)}*. Great work this week! 🌟`;
 }
+
+// ── Spoken announcements (for Alexa / Voice Monkey) ──────────────────────────
+// Plain spoken-word text: no emoji, no markdown, amounts read as words so the
+// Echo doesn't say "three eight p". Each returns null when there's nothing worth
+// saying (jobs not set up, or no jobs today).
+
+/** Amount as natural speech: 38 → "38 pence", 500 → "5 pounds", 214 → "2 pounds 14". */
+function spokenAmount(pence: number): string {
+  if (pence <= 0) return 'nothing yet';
+  const pounds = Math.floor(pence / 100);
+  const rem = pence % 100;
+  if (pounds === 0) return `${rem} pence`;
+  const p = `${pounds} pound${pounds === 1 ? '' : 's'}`;
+  return rem === 0 ? p : `${p} ${rem}`;
+}
+
+/** Join a list for speech: ["a","b","c"] → "a, b and c". */
+function speakList(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** Morning call-out of each child's jobs for today. */
+export async function morningJobsSpeech(): Promise<string | null> {
+  if (!(await isConfigured())) return null;
+  const parts: string[] = [];
+  for (const child of childNames()) {
+    const list = await todayChecklist(child);
+    if (list.length === 0) continue;
+    const todo = list.filter((j) => !j.done).map((j) => j.name.toLowerCase());
+    parts.push(todo.length === 0
+      ? `${child}, you're already all done, amazing!`
+      : `${child}, today you've got: ${speakList(todo)}.`);
+  }
+  if (parts.length === 0) return null;
+  const target = await getWeeklyTarget();
+  return `Good morning! Here are today's jobs. ${parts.join(' ')} Do them all to earn your ${spokenAmount(target)} this week. Have a great day!`;
+}
+
+/** Teatime nudge of what each child still has left today. */
+export async function teatimeNudgeSpeech(): Promise<string | null> {
+  if (!(await isConfigured())) return null;
+  const parts: string[] = [];
+  let anyOutstanding = false;
+  for (const child of childNames()) {
+    const list = await todayChecklist(child);
+    if (list.length === 0) continue;
+    const todo = list.filter((j) => !j.done).map((j) => j.name.toLowerCase());
+    if (todo.length === 0) {
+      parts.push(`${child}, you're all done for today, brilliant!`);
+    } else {
+      anyOutstanding = true;
+      parts.push(`${child}, you've still got: ${speakList(todo)}.`);
+    }
+  }
+  if (parts.length === 0) return null;
+  const tail = anyOutstanding
+    ? ' Get them ticked off before bed to earn your pocket money. Nice work so far!'
+    : ' Fantastic effort today!';
+  return `Jobs check! ${parts.join(' ')}${tail}`;
+}
+
+/** Payday shout-out of what each child earned this week. */
+export async function paydaySpeech(): Promise<string | null> {
+  const rows = await weeklyPayout();
+  if (!rows.some((r) => r.pence > 0)) return null;
+  const parts = rows.filter((r) => r.pence > 0).map((r) => `${r.child} earned ${spokenAmount(r.pence)}`);
+  return `It's payday! This week, ${speakList(parts)}. Great work this week, keep it up!`;
+}

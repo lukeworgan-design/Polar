@@ -586,6 +586,41 @@ bot.command('jobsdebug', async (ctx) => {
   }
 });
 
+// Handle /jobsannounce command — play a jobs announcement on the Echos now, to
+// test the wording/volume without waiting for the scheduled 7:30am / 4:30pm slots.
+// /jobsannounce          → morning "jobs of the day"
+// /jobsannounce left     → teatime "what's left" nudge (live progress)
+// /jobsannounce payday   → this week's payday shout-out
+bot.command('jobsannounce', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  const message = ctx.message as Message.TextMessage | undefined;
+  const which = (message?.text || '').replace(/^\/jobsannounce(@\S+)?\s*/i, '').trim().toLowerCase();
+  try {
+    const pm = await import('./pocketmoney');
+    const { speakOnAlexa, isVoiceEnabled } = await import('./voice');
+    if (!isVoiceEnabled()) {
+      await ctx.reply("Alexa speech isn't set up yet. Add the Voice Monkey skill, then set VOICE_MONKEY_TOKEN and VOICE_MONKEY_DEVICES.");
+      return;
+    }
+    const text = /^(left|teatime|nudge|remaining)/.test(which) ? await pm.teatimeNudgeSpeech()
+      : /^(pay|payday|money)/.test(which) ? await pm.paydaySpeech()
+      : await pm.morningJobsSpeech();
+    if (!text) {
+      await ctx.reply('Nothing to announce right now (no jobs set up, or nothing earned yet for payday).');
+      return;
+    }
+    const result = await speakOnAlexa(text); // manual test — ignore quiet hours
+    if (result.ok) {
+      await ctx.reply(`🔊 Announced in ${result.spokenOn.join(', ')}:\n\n_“${text}”_`, { parse_mode: 'Markdown' });
+    } else {
+      await ctx.reply(`Couldn't announce that — ${result.reason ?? 'the Echo didn\'t respond'}.`);
+    }
+  } catch (err) {
+    console.error('Error in /jobsannounce:', err);
+    await ctx.reply("Couldn't play that announcement just now.");
+  }
+});
+
 // Handle /help command
 bot.command('help', async (ctx) => {
   if (!isFromGroup(ctx)) return;
@@ -609,6 +644,7 @@ bot.command('help', async (ctx) => {
 🗑️ */bin* — Which bin goes out tomorrow
 🔊 */say [message]* — Say it out loud everywhere (or \`/say @lounge …\` for one room). Or just ask "Rose, announce … in the kitchen"
 🌟 */jobs* — Pocket-money jobs. Just tell me "Poppy made her bed" / "Billy did all his jobs" and I'll tick them off
+📣 */jobsannounce* — Play a jobs shout-out on the Echos now (\`left\` for what's still to do, \`payday\` for this week's earnings). Otherwise they run automatically at 7:30am, 4:30pm and Friday payday
 
 👶 *Baby tracking* — "Fed Evie 90ml", "dirty nappy", "she's asleep", "gave her vitamin D" — I'll log it. Ask "when did she last feed?" or "how's she done today?"
 ⚖️ *Weigh-ins & jabs* — "Evie was 4.2kg today" / "when are her jabs?"
