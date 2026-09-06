@@ -532,11 +532,29 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
     ? (() => {
         const pm = d.pocketMoney!;
         const payLine = pm.paydayDays === 0 ? '💰 Payday today!' : pm.paydayDays === 1 ? '💰 Payday tomorrow' : `💰 Payday Fri · ${pm.paydayDays}d`;
+        // A friendly emoji per job (kept to older ones the TV font can render).
+        // It doubles as the "to-do" bullet; a done job shows a green ✓ instead.
+        const jobEmoji = (name: string): string => {
+          const n = name.toLowerCase();
+          if (/school ?bag/.test(n)) return '🎒';
+          if (/tidy|room/.test(n)) return '✨';
+          if (/make bed/.test(n)) return '💤';
+          if (/dish|sink|wash ?up/.test(n)) return '🍴';
+          if (/bed/.test(n)) return '😴';
+          if (/homework|reading|read/.test(n)) return '📚';
+          if (/dress/.test(n)) return '👕';
+          if (/charlie|feed|dog|water/.test(n)) return '🐶';
+          if (/shoe/.test(n)) return '👟';
+          if (/teeth|brush/.test(n)) return '😁';
+          return '⭐';
+        };
+        const KID_COLOURS: Record<string, string> = { poppy: '#ff7eb6', billy: '#5aa9ff' };
+        const kidColour = (name: string) => KID_COLOURS[name.trim().toLowerCase()] ?? 'var(--accent)';
         const card = (k: typeof pm.kids[number]) => {
           const rows = k.jobs.length
-            ? k.jobs.map((j) => `<li class="${j.done ? 'done' : ''}"><span class="jc-tick">${j.done ? '✓' : '○'}</span><span class="jc-name">${esc(j.name)}</span></li>`).join('')
+            ? k.jobs.map((j) => `<li class="${j.done ? 'done' : ''}"><span class="jc-tick">${j.done ? '✓' : jobEmoji(j.name)}</span><span class="jc-name">${esc(j.name)}</span></li>`).join('')
             : '<li class="jc-empty">No jobs today 🎉</li>';
-          return `<div class="card kid-card">
+          return `<div class="card kid-card" style="--kid:${kidColour(k.name)}">
             <div class="kid-head"><span class="kid-name">🌟 ${esc(k.name)}</span><span class="kid-total">${gbp(k.weekPence)} <span class="jm-of">/ ${gbp(pm.target)}</span></span></div>
             <div class="kid-pay">${payLine}</div>
             <ul class="kid-jobs autoscroll">${rows}</ul>
@@ -727,9 +745,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .side .sub { font-size: 1.9vh; margin-top: .4vh; }
   .events { list-style: none; display: flex; flex-direction: column; gap: 1.3vh; overflow: hidden; }
   .events li { display: flex; align-items: baseline; gap: 1.2vw; }
-  .ev-when { flex: 0 0 auto; min-width: 13vw; color: var(--accent2); font-weight: 700; font-size: 2.7vh; font-variant-numeric: tabular-nums; }
-  .ev-name { font-size: 2.9vh; font-weight: 600; display: flex; flex-direction: column; }
-  .ev-loc { font-size: 2vh; color: var(--muted); font-weight: 400; }
+  .ev-when { flex: 0 0 auto; min-width: 11.5vw; color: var(--accent2); font-weight: 700; font-size: 2.3vh; font-variant-numeric: tabular-nums; }
+  .ev-name { font-size: 2.4vh; font-weight: 600; display: flex; flex-direction: column; }
+  .ev-loc { font-size: 1.7vh; color: var(--muted); font-weight: 400; }
   /* Clamp a long value to two lines so an edited rota can't blow up a half-width card. */
   .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .today-card { flex: 0 0 auto; }
@@ -740,11 +758,12 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   /* When Shopping is hidden, spread the right-hand cards evenly instead of
      letting one card balloon. */
   .col.side.spread { justify-content: space-between; }
-  .kid-pair > .kid-card { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .kid-pair > .kid-card { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+    border-top: .6vh solid var(--kid, var(--accent)); }
   .jm-of { color: var(--muted); font-weight: 500; font-size: .8em; }
   .kid-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1vw; }
-  .kid-name { font-family: inherit; font-size: 2.6vh; font-weight: 800; color: var(--accent); }
-  .kid-total { flex: 0 0 auto; font-size: 2.5vh; font-weight: 800; color: var(--accent2); font-variant-numeric: tabular-nums; }
+  .kid-name { font-family: inherit; font-size: 2.6vh; font-weight: 800; color: var(--kid, var(--accent)); }
+  .kid-total { flex: 0 0 auto; font-size: 2.5vh; font-weight: 800; color: var(--kid, var(--accent2)); font-variant-numeric: tabular-nums; }
   .kid-pay { font-size: 1.7vh; color: var(--muted); font-weight: 600; margin-top: .1vh; }
   .kid-jobs { list-style: none; display: flex; flex-direction: column; gap: .35vh; margin-top: .7vh; flex: 1 1 auto; min-height: 0; overflow: hidden; }
   .kid-jobs li { display: flex; align-items: baseline; gap: 1vw; font-size: 2.15vh; font-weight: 600; }
