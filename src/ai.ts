@@ -1563,7 +1563,7 @@ const WRITE_TOOLS = new Set<string>([
 
 // Phrases where Rose claims a change was completed. If she says one of these but
 // no write tool ran this turn, the confirmation is almost certainly false.
-const CLAIMED_WRITE_RE = /\b(added|created|booked|scheduled|rescheduled|moved|cancell?ed|deleted|removed|logged|put (it|that|them|you|him|her)\b|popped (it|that|you|him|her)\b|set (a|the|your) reminder|it'?s (now )?(in|on) (the|your) (calendar|diary|list)|in the diary|on the calendar|sorted (it|that))\b/i;
+const CLAIMED_WRITE_RE = /\b(added|created|booked|scheduled|rescheduled|moved|cancell?ed|deleted|removed|logged|ticked|checked off|marked\b[^.!?]*\bdone\b|put (it|that|them|you|him|her)\b|popped (it|that|you|him|her)\b|set (a|the|your) reminder|it'?s (now )?(in|on) (the|your) (calendar|diary|list)|in the diary|on the calendar|sorted (it|that))\b/i;
 
 /** Drop placeholder locations ("None", "N/A", "-") so they're never stored. */
 function sanitizeLocation(loc: string | undefined): string | undefined {
@@ -1799,7 +1799,7 @@ export async function generateResponse(
       messages.push({
         role: 'user',
         content:
-          'SYSTEM CHECK (not from the family): Your reply above told them you added, moved, cancelled, logged, or set something — but you did NOT call any tool this turn, so NOTHING was actually saved. If they asked you to add/move/cancel a calendar event, set a reminder, change a list, log the baby, or similar, call the correct tool NOW with the exact details, then confirm from the tool result. If no change was actually needed, reply normally and do not claim you saved anything.',
+          'SYSTEM CHECK (not from the family): Your reply above told them you added, moved, cancelled, logged, ticked off, or set something — but you did NOT call any tool this turn, so NOTHING was actually saved. Do NOT re-use the wording of an earlier reply from memory. If they asked you to add/move/cancel a calendar event, set a reminder, change a list, log the baby, or tick off a pocket-money job, call the correct tool NOW with the exact details (for a job: call get_jobs_status then mark_job_done for the right child), then confirm strictly from the fresh tool result — including the correct child and their real weekly total. If no change was actually needed, reply normally and do not claim you saved anything.',
       });
       response = await createMessage({
         model: config.anthropic.model,
