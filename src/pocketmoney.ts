@@ -223,26 +223,24 @@ export function jobsForChildOn(cfg: PMConfig, child: string, dateStr: string): J
 }
 
 export interface TodayProgress { done: number; total: number; pence: number; remaining: string[]; }
-export async function todayProgress(child: string): Promise<TodayProgress> {
+export async function todayProgress(child: string, dateStr = todayStr()): Promise<TodayProgress> {
   const cfg = await read();
-  const today = todayStr();
-  const jobs = jobsForChildOn(cfg, child, today);
-  const doneIds = new Set(cfg.completions[today]?.[child] ?? []);
+  const jobs = jobsForChildOn(cfg, child, dateStr);
+  const doneIds = new Set(cfg.completions[dateStr]?.[child] ?? []);
   const doneJobs = jobs.filter((j) => doneIds.has(j.id));
   return {
     done: doneJobs.length,
     total: jobs.length,
-    pence: earnedPence(cfg, child, doneJobs.length, today),
+    pence: earnedPence(cfg, child, doneJobs.length, dateStr),
     remaining: jobs.filter((j) => !doneIds.has(j.id)).map((j) => j.name),
   };
 }
 
-/** Today's jobs for a child, each with whether it's ticked off. */
-export async function todayChecklist(child: string): Promise<Array<{ name: string; done: boolean }>> {
+/** A day's jobs for a child (default today), each with whether it's ticked off. */
+export async function todayChecklist(child: string, dateStr = todayStr()): Promise<Array<{ name: string; done: boolean }>> {
   const cfg = await read();
-  const today = todayStr();
-  const doneIds = new Set(cfg.completions[today]?.[child] ?? []);
-  return jobsForChildOn(cfg, child, today).map((j) => ({ name: j.name, done: doneIds.has(j.id) }));
+  const doneIds = new Set(cfg.completions[dateStr]?.[child] ?? []);
+  return jobsForChildOn(cfg, child, dateStr).map((j) => ({ name: j.name, done: doneIds.has(j.id) }));
 }
 
 export interface WeekProgress { count: number; pence: number; }
@@ -335,18 +333,20 @@ export async function setWeeklyTarget(pence: number): Promise<void> {
 }
 
 /** Text summary of the current jobs + today's/week's progress, for prompts/ground truth. */
-export async function describeState(): Promise<string> {
+export async function describeState(dateStr = todayStr()): Promise<string> {
   const cfg = await read();
-  const today = todayStr();
+  const isToday = dateStr === todayStr();
+  const dayWord = isToday ? 'today' : `on ${dayLabel(dateStr)}`;
   const lines: string[] = [];
   const target = targetPence(cfg);
   for (const child of kids()) {
-    const t = await todayProgress(child);
-    const w = await weekProgress(child, today);
-    const jobs = jobsForChildOn(cfg, child, today);
-    const doneIds = new Set(cfg.completions[today]?.[child] ?? []);
+    const t = await todayProgress(child, dateStr);
+    const w = await weekProgress(child, dateStr);
+    const jobs = jobsForChildOn(cfg, child, dateStr);
+    const doneIds = new Set(cfg.completions[dateStr]?.[child] ?? []);
     const list = jobs.map((j) => `${doneIds.has(j.id) ? '✓' : '○'} ${j.name}`).join(', ');
-    lines.push(`${child}: today ${t.done}/${t.total} jobs done, earned ${money(w.pence)} of ${money(target)} this week. Jobs today — ${list || 'none'}`);
+    const remaining = t.remaining.length ? ` Still to do ${dayWord}: ${t.remaining.join(', ')}.` : ` All done ${dayWord}.`;
+    lines.push(`${child}: ${dayWord} ${t.done}/${t.total} jobs done, earned ${money(w.pence)} of ${money(target)} this week. Jobs ${dayWord} — ${list || 'none'}.${remaining}`);
   }
   return `Weekly pocket money: ${money(target)} each if all jobs are done.\n${lines.join('\n')}`;
 }
