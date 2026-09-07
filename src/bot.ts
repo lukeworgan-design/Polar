@@ -621,6 +621,36 @@ bot.command('jobsannounce', async (ctx) => {
   }
 });
 
+// Handle /starling command — read-only: list the Spaces the token can see.
+// Doubles as the setup test (does "Poppy" / the under-16s space show up?).
+bot.command('starling', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  try {
+    const { isStarlingEnabled, listSpaces, gbp } = await import('./starling');
+    if (!isStarlingEnabled()) {
+      await ctx.reply('Starling isn\'t set up yet — add a *read-only* personal access token as `STARLING_TOKEN` in Railway.', { parse_mode: 'Markdown' });
+      return;
+    }
+    const r = await listSpaces();
+    if (!r.ok) {
+      await ctx.reply(`Couldn't read Starling — ${r.reason}.`);
+      return;
+    }
+    if (r.spaces.length === 0) {
+      await ctx.reply(
+        `Connected to Starling ✓ but no Spaces came back.${r.raw ? `\n\nRaw response:\n\`\`\`\n${r.raw}\n\`\`\`` : ''}`,
+        { parse_mode: 'Markdown' },
+      );
+      return;
+    }
+    const lines = r.spaces.map((s) => `• *${s.name}* — ${gbp(s.balancePence)} _(${s.kind})_`);
+    await ctx.reply(`🏦 *Starling Spaces the token can see:*\n${lines.join('\n')}\n\n(If Poppy & Billy are both here, we're good to add them to the dashboard.)`, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('Error in /starling:', err);
+    await ctx.reply(`/starling failed: ${(err as Error).message}`);
+  }
+});
+
 // Handle /help command
 bot.command('help', async (ctx) => {
   if (!isFromGroup(ctx)) return;
