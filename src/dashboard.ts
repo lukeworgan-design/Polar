@@ -575,7 +575,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
           return `<div class="card kid-card" style="--kid:${kidColour(k.name)}">
             <div class="kid-head"><span class="kid-name">🌟 ${esc(k.name)}</span><span class="kid-total">${totalHtml}</span></div>
             <div class="kid-pay">${payHtml}</div>
-            <ul class="kid-jobs autoscroll">${rows}</ul>
+            <ul class="kid-jobs">${rows}</ul>
           </div>`;
         };
         return `<div class="side-pair kid-pair">${pm.kids.map(card).join('')}</div>`;
@@ -783,9 +783,14 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .kid-name { font-family: inherit; font-size: 2.6vh; font-weight: 800; color: var(--kid, var(--accent)); }
   .kid-total { flex: 0 0 auto; font-size: 2.5vh; font-weight: 800; color: var(--kid, var(--accent2)); font-variant-numeric: tabular-nums; }
   .kid-pay { font-size: 1.7vh; color: var(--muted); font-weight: 600; margin-top: .1vh; }
-  .kid-jobs { list-style: none; display: flex; flex-direction: column; gap: .35vh; margin-top: .7vh; flex: 1 1 auto; min-height: 0; overflow: hidden; }
-  .kid-jobs li { display: flex; align-items: baseline; gap: 1vw; font-size: 2.15vh; font-weight: 600; }
-  .kid-jobs .jc-tick { flex: 0 0 auto; width: 1.4em; text-align: center; color: var(--muted); font-weight: 800; }
+  /* Two columns so all of today's jobs are visible at once — no scrolling. */
+  .kid-jobs { list-style: none; display: grid; grid-template-columns: 1fr 1fr; grid-auto-flow: column;
+    grid-template-rows: repeat(4, auto); gap: .35vh .9vw; margin-top: .6vh; flex: 1 1 auto; min-height: 0;
+    align-content: start; overflow: hidden; }
+  .kid-jobs li { display: flex; align-items: baseline; gap: .4vw; font-size: 1.7vh; font-weight: 600; min-width: 0; }
+  .kid-jobs .jc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kid-jobs .jc-tick { flex: 0 0 auto; width: 1.25em; text-align: center; color: var(--muted); font-weight: 800; }
+  .jc-empty { grid-column: 1 / -1; }
   .kid-jobs li.done .jc-tick { color: var(--good, #3ec971); }
   .kid-jobs li.done .jc-name { color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1px; }
   .jc-empty { color: var(--muted); font-weight: 500; }
