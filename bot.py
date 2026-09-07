@@ -1,7 +1,6 @@
 """
-bot.py - Polar Running Coach Telegram Bot v8.2
-Athlete: Luke Worgan | Goal: London Marathon 27 Apr 2026 + Ultra marathons
-Watch: Polar Grit X2 | Deployed: Railway.app
+bot.py - Polar Running Coach Telegram Bot
+Athlete: Luke Worgan | Watch: Polar Grit X2 | Deployed: Railway.app
 """
 
 import os
@@ -40,13 +39,83 @@ bot      = telebot.TeleBot(TELEGRAM_TOKEN)
 claude   = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-ALLOWED_SPORTS      = {"RUNNING", "TRAIL_RUNNING", "TREADMILL_RUNNING"}
+# ── ATHLETE CONTEXT — edit this block, nothing else ──────────────────────────
+# All physiology, life constraints, kit, and goals live here.
+# Every function and prompt reads from this dict.
+ATHLETE = {
+    # Identity
+    "name":        "Luke",
+    "dob":         "1989-03-03",   # age computed at runtime
+    "height_cm":   167,
+    "weight_kg":   78,             # update via wellness check-in
+
+    # Physiology
+    "vo2max":         55,
+    "max_hr":        198,
+    "resting_hr":     47,          # baseline; live data overrides readiness score
+    "aerobic_thr":   149,
+    "anaerobic_thr": 178,
+    "ftp_w":         272,
+
+    # Kit
+    "watch":    "Polar Grit X2",
+    "kit":      "1×20kg kettlebell, mat, ice bath, GOWOD subscription",
+
+    # Recent form / identity
+    "background": (
+        "Experienced trail ultrarunner. Peer-level athlete — skip the basics. "
+        "Recent: Cotswold Way Ultra 100km (Jun 2026), Trailblazerz 100km. "
+        "Zone 2 base suits me. Fasted early-morning runs are normal."
+    ),
+
+    # Current phase
+    "phase": (
+        "Consistency, not fitness. NOT in a race block. "
+        "Keep the engine ticking through a demanding life phase."
+    ),
+
+    # Long-horizon goal (hold lightly — no build pressure now)
+    "horizon": "100-miler ~2027 (Centurion / Beacons Way candidates).",
+
+    # Life constraints — respect absolutely
+    "constraints": (
+        "Father of three, newborn a few weeks old. Broken sleep is the norm. "
+        "Training window: 5am Mon–Fri, ~1 hour. "
+        "Weekends: protected family time — NO sessions, no long runs, no assumptions. "
+        "Missed/shortened sessions are EXPECTED with a newborn — adapt without guilt."
+    ),
+
+    # Voice
+    "voice": (
+        "Experienced peer, not a beginner's coach. "
+        "Join the dots — always land: what the data says → why it matters → the call. "
+        "Never dump raw metrics. Non-preachy. Concise (arrives at 5am on a phone). "
+        "Value showing up over pace or load. A completed short session is a win."
+    ),
+
+    # Session menu (weekday 5am, ~1hr)
+    "session_menu": "Run (easy Z2 / tempo / intervals) | Kettlebell | GOWOD mobility | Ice bath recovery | Rest",
+}
+
+# Derived helpers — read from ATHLETE, never hardcode elsewhere
+def athlete_age() -> int:
+    dob = datetime.strptime(ATHLETE["dob"], "%Y-%m-%d").date()
+    today = datetime.now(timezone.utc).date()
+    return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+# ── MODULE CONSTANTS ──────────────────────────────────────────────────────────
+RUNNING_SPORTS = {"RUNNING", "TRAIL_RUNNING", "TREADMILL_RUNNING"}
+ALLOWED_SPORTS = RUNNING_SPORTS | {
+    "STRENGTH_TRAINING", "FUNCTIONAL_TRAINING", "FLEXIBILITY_TRAINING",
+    "YOGA", "STRETCHING", "CORE", "CROSS_TRAINING", "BOOTCAMP", "OTHER",
+}
 POLAR_BASE          = "https://www.polaraccesslink.com/v3"
-RESTING_HR_BASELINE = 47
-AEROBIC_THRESHOLD   = 149
-ANAEROBIC_THRESHOLD = 178
-MAX_HR              = 198
-MARATHON_DATE       = datetime(2026, 4, 27).date()
+RESTING_HR_BASELINE = ATHLETE["resting_hr"]
+AEROBIC_THRESHOLD   = ATHLETE["aerobic_thr"]
+ANAEROBIC_THRESHOLD = ATHLETE["anaerobic_thr"]
+MAX_HR              = ATHLETE["max_hr"]
+
+BRIEF_HOUR_UTC = int(os.environ.get("BRIEF_HOUR_UTC", "4"))  # 04:00 UTC = 05:00 BST
 
 debriefed_today:    set = set()
 alerts_fired_today: set = set()
@@ -97,8 +166,19 @@ def si(v):
     try: return int(float(v)) if v not in (None, "", "N/A") else None
     except: return None
 
-def days_to_marathon() -> int:
-    return (MARATHON_DATE - datetime.now().date()).days
+def days_to_next_race() -> str:
+    """Return a string like '42 days to Cheltenham Half' or 'No race scheduled'."""
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        goals = supabase.table("goals").select("race_name,race_date").eq("active", True).gte("race_date", today).order("race_date").limit(1).execute()
+        if goals.data:
+            g    = goals.data[0]
+            d    = datetime.strptime(g["race_date"], "%Y-%m-%d").date()
+            days = (d - datetime.now(timezone.utc).date()).days
+            return f"{days} days to {g['race_name']}"
+    except Exception:
+        pass
+    return "No race scheduled"
 
 def recharge_emoji(status: str) -> str:
     if not status: return "⚪"
@@ -284,22 +364,34 @@ def compute_readiness_score() -> dict:
 
 
 def recommend_session(readiness: dict) -> str:
+    """Readiness-led recommendation for a ~1hr weekday 5am slot."""
     score = readiness["score"]
-    dtm   = days_to_marathon()
     ratio = readiness["raw_data"].get("load_ratio", 1.0)
-    if 0 < dtm <= 14:
-        if score >= 7: return f"TAPER ({dtm}d to London): 6-8km easy @ 5:30-6:00/km, HR <{AEROBIC_THRESHOLD}bpm. Strides only."
-        else:          return f"TAPER ({dtm}d to London): 20-30min very easy jog @ 6:00+/km. Keep legs moving only."
-    if 15 <= dtm <= 56:
-        if score >= 8:   return f"PEAK ({dtm}d to London): 10km w/ 5km @ marathon pace (4:58/km), HR {AEROBIC_THRESHOLD}-{ANAEROBIC_THRESHOLD}bpm."
-        elif score >= 6: return f"PEAK ({dtm}d to London): Steady aerobic 12-16km @ 5:20-5:45/km, HR <{AEROBIC_THRESHOLD}bpm."
-        else:            return f"PEAK ({dtm}d to London): Recovery run 8km easy @ 6:00+/km, HR <140bpm."
-    if score >= 8:   return f"BUILD ({dtm}d to London): 6x1km @ 4:45/km w/ 90s rest, or 18-22km long run @ 5:20/km."
+
+    # Check days since last run to catch detraining
+    try:
+        last_run = supabase.table("polar_exercises").select("date").in_("sport", list(RUNNING_SPORTS)).order("date", desc=True).limit(1).execute()
+        if last_run.data:
+            last_run_days = (datetime.now(timezone.utc).date() - datetime.strptime(last_run.data[0]["date"][:10], "%Y-%m-%d").date()).days
+        else:
+            last_run_days = 99
+    except Exception:
+        last_run_days = 0
+
+    if score >= 7.5:
+        if last_run_days >= 5:
+            return "RUN — easy 40–50min Z2, HR <149bpm. Body's recovered; just move."
+        if ratio > 1.15:
+            return "KETTLEBELL — load already elevated. Swings / goblet squats / Turkish get-ups, 30–35min."
+        return "RUN — quality session: 35min easy then 10min at aerobic threshold (149–165bpm), or 4×5min efforts with 3min float."
     elif score >= 6:
-        if ratio > 1.1: return f"BUILD ({dtm}d to London): Load building — steady 14-16km @ 5:30/km. No intensity."
-        return f"BUILD ({dtm}d to London): 14km @ 5:20-5:40/km, HR <{AEROBIC_THRESHOLD}bpm."
-    elif score >= 4: return f"BUILD ({dtm}d to London): Easy 8-10km @ 6:00/km, HR <140bpm."
-    else:            return f"REST ({dtm}d to London): Readiness {score}/10 — walk, stretch, roll only."
+        return "RUN — easy 35–45min Z2, HR <149bpm. Conversational pace, no heroics."
+    elif score >= 4.5:
+        return "KETTLEBELL or GOWOD — readiness moderate. If moving, 30min kettlebell (swings, goblet squats, core). Otherwise GOWOD mobility."
+    elif score >= 3:
+        return "GOWOD or ICE BATH — body asking for recovery. Mobility session or cold exposure, not a run."
+    else:
+        return "REST — readiness low. Sleep in, eat well, move only if it feels good."
 
 
 def check_and_push_alerts():
@@ -317,7 +409,7 @@ def check_and_push_alerts():
                 recent = supabase.table("polar_exercises").select("date").gte("date", five_days_ago).limit(1).execute()
                 if not recent.data:
                     alerts_fired_today.add("detraining_alert")
-                    alerts.append(f"⬇️ *DETRAINING RISK*\nNo runs in 5+ days. Load ratio: {float(ratio):.2f}\n{days_to_marathon()} days to London — even 20 mins easy maintains fitness.")
+                    alerts.append(f"⬇️ *DETRAINING RISK*\nNo sessions in 5+ days. Load ratio: {float(ratio):.2f}\nEven 20–30min easy keeps the engine ticking.")
     except Exception as e:
         log.error(f"Alert check cardio load: {e}")
 
@@ -363,23 +455,6 @@ def check_and_push_alerts():
     except Exception as e:
         log.error(f"Alert check SleepWise: {e}")
 
-    dtm           = days_to_marathon()
-    milestones    = [50, 30, 21, 14, 7, 3, 1]
-    milestone_key = f"marathon_milestone_{dtm}"
-    if dtm in milestones and milestone_key not in alerts_fired_today:
-        alerts_fired_today.add(milestone_key)
-        if dtm == 1:
-            msg = "🎯 *TOMORROW IS RACE DAY*\nLondon Marathon is tomorrow. 10 min shakeout max.\nKit laid out. Nutrition ready. Sleep early. You've done the work."
-        elif dtm <= 7:
-            msg = f"🎯 *{dtm} DAYS TO LONDON*\nFinal taper week. Short and easy from here. Trust the fitness — it's banked."
-        elif dtm <= 14:
-            msg = f"🎯 *{dtm} DAYS TO LONDON*\nTaper in full effect. Resist adding miles — trust the plan."
-        elif dtm == 21:
-            msg = "🎯 *3 WEEKS TO LONDON*\nLast big effort window. One more quality long run if readiness allows, then taper. Target: 4:58/km."
-        else:
-            msg = f"🎯 *{dtm} DAYS TO LONDON*\nSub 3:30 target: 4:58/km. Keep building aerobic base. Threshold work is key."
-        alerts.append(msg)
-
     for alert in alerts:
         try:
             bot.send_message(YOUR_TELEGRAM_ID, alert, parse_mode="Markdown")
@@ -395,7 +470,7 @@ def format_status_dashboard() -> str:
     score      = readiness["score"]
     rd         = readiness["raw_data"]
     comp       = readiness["components"]
-    dtm        = days_to_marathon()
+    race_str   = days_to_next_race()
     sw_grade   = rd.get("sw_grade", "?")
     sw_emoji   = grade_emoji(sw_grade) if sw_grade != "?" else "⚪"
     sw_score   = round(comp.get("sleepwise", 0.6) * 10, 1)
@@ -416,7 +491,7 @@ def format_status_dashboard() -> str:
         f"{cl_emoji} 🔥 Load ratio {ratio} · {status_str} · {cl_score}/10 _(30%)_",
         f"{hr_emoji} ❤️ Resting HR {avg_rhr}bpm · {hr_score}/10 _(20%)_",
         f"{hrv_emoji} 📉 HRV {hrv_this} vs {hrv_last}wk · {hrv_score}/10 _(20%)_",
-        "", f"🎯 *London: {dtm}d away*",
+        "", f"🎯 *{race_str}*",
         f"💡 _{session}_",
     ]
     return "\n".join(lines)
@@ -558,7 +633,7 @@ def format_sleepwise_dashboard(sw_data: list) -> str:
     return "\n".join(lines)
 
 def format_goals(goals: list) -> str:
-    if not goals: return "No goals set. Add one with:\n`goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`"
+    if not goals: return "No goals set. Add one with:\n`goal: Cheltenham Half, 21 Sep 2026, 21.1km, sub 2:00`"
     lines = ["🎯 *Goals & Target Races*\n"]
     for g in goals:
         days_to = ""
@@ -606,7 +681,7 @@ def save_goal(text: str) -> str:
     try:
         text  = re.sub(r"^(goal|race|target)\s*[:：]\s*", "", text.strip(), flags=re.IGNORECASE)
         parts = [p.strip() for p in text.split(",")]
-        if len(parts) < 2: return "Format: `goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`"
+        if len(parts) < 2: return "Format: `goal: Cheltenham Half, 21 Sep 2026, 21.1km, sub 2:00`"
         race_name = parts[0]; race_date = None; distance_km = None; target_time = None; notes = None
         for p in parts[1:]:
             date_match = re.search(r"(\d{1,2}\s+\w+\s+\d{4}|\d{4}-\d{2}-\d{2})", p)
@@ -1071,46 +1146,65 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
         return "Training data temporarily unavailable."
 
 
-BASE_SYSTEM = """You are an elite running coach and sports scientist for Luke Worgan.
+def _base_system() -> str:
+    """Build BASE_SYSTEM string from ATHLETE dict — called at runtime so age is current."""
+    age = athlete_age()
+    return f"""You are {ATHLETE['name']}'s running coach. Treat him as a peer — experienced trail ultrarunner, not a beginner.
 
-DATA INTEGRITY RULE — this overrides everything else:
-- NEVER say "this morning", "today", "yesterday" for a session unless the training context explicitly labels it TODAY or YESTERDAY.
-- NEVER invent specific details not in the data (wake times, exact routes, how a run felt) — if it's not in the numbers, say you don't have it.
-- The training context labels every session with its exact recency ("TODAY", "YESTERDAY", "3 days ago"). Use those labels exactly.
+DATA INTEGRITY — non-negotiable:
+- NEVER say "this morning / today / yesterday" for a session unless the training context labels it TODAY or YESTERDAY.
+- NEVER invent details not in the data (wake times, routes, feelings). If it's not in the numbers, say so.
+- Every session in context is labelled with exact recency. Use those labels.
 
-ATHLETE PROFILE:
-- DOB: 1989-03-03 (age 37) | Height: 167cm | Weight: 78kg
-- VO2max: 55 | Max HR: 198bpm | Resting HR: 47bpm
-- Aerobic threshold: 149bpm | Anaerobic threshold: 178bpm | FTP: 272W
-- Watch: Polar Grit X2
+ATHLETE:
+- {ATHLETE['name']}, {age}yo | {ATHLETE['height_cm']}cm | ~{ATHLETE['weight_kg']}kg
+- VO2max {ATHLETE['vo2max']} | Max HR {ATHLETE['max_hr']}bpm | Resting HR {ATHLETE['resting_hr']}bpm
+- Aerobic threshold {ATHLETE['aerobic_thr']}bpm | Anaerobic threshold {ATHLETE['anaerobic_thr']}bpm | FTP {ATHLETE['ftp_w']}W
+- Watch: {ATHLETE['watch']} | Kit: {ATHLETE['kit']}
+- Background: {ATHLETE['background']}
 
-PHASE: Base building / general fitness — check GOALS & TARGET RACES in context for any active upcoming races.
+CURRENT PHASE: {ATHLETE['phase']}
+HORIZON: {ATHLETE['horizon']}
 
-DATA ACCESS — 8 live streams: polar_exercises, polar_sleep, polar_hrv, polar_continuous_hr, polar_cardio_load, polar_sleepwise, polar_daily_activity, wellness_checkins
+LIFE CONSTRAINTS (respect absolutely):
+{ATHLETE['constraints']}
 
-CARDIO LOAD: ratio 0.8-1.1 = MAINTAINING | 1.1-1.3 = PRODUCTIVE | >1.3 = OVERREACHING | <0.8 = DETRAINING
-SLEEPWISE: grade 8+ = strong | 5-8 = moderate | <5 = weak — easy day only
-RESTING HR: elevation >5bpm for 3 days = systemic fatigue signal
-CADENCE TARGET: 170-180spm for marathon efficiency
+SESSION MENU (weekday 5am, ~1hr): {ATHLETE['session_menu']}
 
-COACHING RULES:
-- Always reference Luke's actual numbers, never generic advice
-- Flag overreaching immediately and specifically
-- Connect every recommendation to London Marathon timeline ({days_to_marathon} days away)
-- Be direct — Luke wants honesty, not encouragement
-- Use min/km for pace, bpm for HR, watts for power
+KETTLEBELL SESSIONS (1×20kg only — reference these when KB is the call):
+- A: Power base — 5×10 swings, 5×5 goblet squat, 3×3 Turkish get-up, 2×10 dead bug
+- B: Strength circuit — 4×8 single-leg deadlift, 4×6 clean+press, 3×12 renegade row, 3×15 hollow hold
+- C: Conditioning — 20min AMRAP: 15 swings / 10 goblet squats / 5 halos / 10 step-ups
+
+GOWOD: Use as run prep or as a standalone recovery session when load is high or body needs it.
+ICE BATH: Use post hard-session for acute recovery, or as a standalone when fatigue is high.
+
+HOW TO COACH:
+{ATHLETE['voice']}
+Always land the chain: what the data says → why it matters for Luke today → the call.
+Concise — this arrives on a phone at 5am. No bullet walls. Short paragraphs.
+
+SIGNALS:
+- Cardio load ratio: 0.8–1.1 = MAINTAINING | 1.1–1.3 = PRODUCTIVE | >1.3 = OVERREACHING | <0.8 = DETRAINING
+- SleepWise grade: 8+ strong | 5–8 moderate | <5 weak — downgrade or skip
+- Resting HR elevated >5bpm for 3 days = accumulated fatigue signal
+- HRV declining week-on-week = recovery debt building
+
+DATA: 7 live streams — polar_exercises, polar_sleep, polar_hrv, polar_continuous_hr, polar_cardio_load, polar_sleepwise, polar_daily_activity
 
 WRITE TRIGGERS:
 - "save run: ..." → saves to database
 - "goal: ..." → saves race goal
-- "checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10" → logs wellness
+- "checkin: weight Xkg, fatigue Y/10, sleep Z/10, mood N/10" → logs wellness
 
-After every substantive response end with:
+End every substantive response with:
 NOTE: <topic> | <one sentence summary>"""
 
 def build_system_prompt(run_limit: int = 10, sleep_days: int = 7) -> str:
-    system = BASE_SYSTEM.replace("{days_to_marathon}", str(days_to_marathon()))
-    return f"{system}\n\n{build_training_context(run_limit, sleep_days)}"
+    today_date = datetime.now(timezone.utc)
+    datestr    = today_date.strftime("%A %-d %B %Y")
+    race_info  = days_to_next_race()
+    return f"TODAY: {datestr} | RACE HORIZON: {race_info}\n\n{_base_system()}\n\n{build_training_context(run_limit, sleep_days)}"
 
 conversation_history = {}
 
@@ -1133,7 +1227,7 @@ def extract_and_save_note(reply: str, user_text: str):
 
 def format_full_summary() -> str:
     lines = [f"📊 *Full Summary — {datetime.now(timezone.utc).strftime('%-d %b %Y')}*",
-             f"🎯 *London: {days_to_marathon()}d away* — sub 3:30 @ 4:58/km\n"]
+             f"🎯 {days_to_next_race()}\n"]
 
     # ── Training ──
     try:
@@ -1317,19 +1411,21 @@ def send_morning_briefing():
 ⚑ FLAG — one watch point from recent data."""
 
         response = claude.messages.create(
-            model="claude-sonnet-4-6", max_tokens=600,
+            model="claude-sonnet-4-6", max_tokens=500,
             system=build_system_prompt(),
-            messages=[{"role": "user", "content": f"""{briefing_type}. London Marathon is {days_to_marathon()} days away.{run_context}{sw_context}{load_context} Algorithmic readiness: {readiness['score']}/10 ({readiness['label']}). Recommended session: {session}.
+            messages=[{"role": "user", "content": f"""{briefing_type}.{run_context}{sw_context}{load_context}
+Readiness score: {readiness['score']}/10 ({readiness['label']}). Suggested session: {session}.
 
-Structure your reply with clear emoji-led sections so it's easy to scan on mobile:
+Join the dots — interpret the signals, don't list them. Land one clear call for the ~1hr window.
+Emoji-led sections, scannable on a phone at 5am. 3 sections max:
 
 {sections}
 
-Keep each section tight. Max 4 short sections total."""}]
+Remember: newborn at home, broken sleep is normal, missed sessions aren't failures."""}]
         )
         reply = extract_and_save_note(response.content[0].text, "morning briefing")
-        title = "🌅 *Post-Run AM Briefing" if ran_today else "🌅 *AM Briefing"
-        bot.send_message(YOUR_TELEGRAM_ID, f"{title} — {datetime.now().strftime('%-d %b')}*\n\n{readiness_emoji(readiness['score'])} *Readiness: {readiness['score']}/10* — _{readiness['label']}_\n\n{reply}", parse_mode="Markdown")
+        title = "🌅 *Post-Run AM Brief" if ran_today else "🌅 *AM Brief"
+        bot.send_message(YOUR_TELEGRAM_ID, f"{title} — {datetime.now(timezone.utc).strftime('%-d %b')}*\n\n{readiness_emoji(readiness['score'])} *Readiness: {readiness['score']}/10* — _{readiness['label']}_\n\n{reply}", parse_mode="Markdown")
         check_and_push_alerts()
     except Exception as e:
         log.error(f"Briefing error: {e}")
@@ -1366,28 +1462,26 @@ def send_post_run_debrief(exercise_id: str):
         sleep_text  = "\n".join([f"  - {s['date']}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h, score {s.get('sleep_score','?')}, deep {(s.get('deep_sleep_seconds') or 0)//60}min" for s in sleep_rows]) or "No recent sleep data."
         hrv_text    = f"Recharge: {hrv.get('recharge_status','?')}, ANS {hrv.get('ans_charge','?')}, HRV {hrv.get('hrv_avg','?')}" if hrv else "No HRV data."
         cl_text     = f"Cardio load: {cl.get('cardio_load_status','?')} | Strain {cl.get('strain','?')} / Tolerance {cl.get('tolerance','?')} | Ratio {cl.get('cardio_load_ratio','?')}" if cl else "No cardio load data."
-        prompt = f"""Elite running coach. Luke just finished a run. 3 short paragraphs (max 280 tokens).
+        prompt = f"""Luke just finished a run. Give him the debrief.
 
-ATHLETE: Luke Worgan, 37yo, 167cm, 78kg, VO2max 55, max HR 198, aerobic threshold 149bpm, anaerobic threshold 178bpm
-LONDON MARATHON: {days_to_marathon()} days away — target sub 3:30 (4:58/km)
-GOALS:\n{goals_text}
-
-TODAY'S RUN:
-- Distance: {dist_km}km | Duration: {dur_str} | Avg pace: {seconds_to_pace(pace_s)}
-- Avg HR: {run.get('avg_heart_rate','?')}bpm | Max HR: {run.get('max_heart_rate','?')}bpm
-- Avg power: {run.get('avg_power','?')}W | Cadence: {run.get('avg_cadence','?')}spm
-- Training load: {run.get('training_load','?')} | Ascent: {run.get('ascent','?')}m
+RUN: {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)} avg | HR {run.get('avg_heart_rate','?')}/{run.get('max_heart_rate','?')}bpm | Power {run.get('avg_power','?')}W | Cadence {run.get('avg_cadence','?')}spm | Load {run.get('training_load','?')} | Ascent {run.get('ascent','?')}m
 {splits_text}
 
-RECOVERY: {sleep_text}\n{hrv_text}\n{cl_text}
-WEEK SO FAR: {round(weekly_km,1)}km | load {round(weekly_load,0)} across {len(week_runs)} sessions
+RECOVERY: {sleep_text} | {hrv_text} | {cl_text}
+WEEK SO FAR: {round(weekly_km,1)}km | load {round(weekly_load,0)} | {len(week_runs)} sessions
+GOALS: {goals_text}
 
-Para 1: Quality of run — effort, HR vs zones, pacing from splits.
-Para 2: One strength, one thing to work on.
-Para 3: Rest of today — nutrition, recovery, movement given cardio load.
+3 short paragraphs — join the dots, don't dump numbers:
+1. What the run actually was (effort quality, HR vs zones, split story)
+2. What it means in context of the week and recovery
+3. One specific call for the rest of the day
 
 End with: NOTE: post-run debrief | <10-word summary>"""
-        response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
+        response = claude.messages.create(
+            model="claude-sonnet-4-6", max_tokens=450,
+            system=build_system_prompt(),
+            messages=[{"role": "user", "content": prompt}]
+        )
         reply    = extract_and_save_note(response.content[0].text, "post-run debrief")
         msg      = f"🏃 *Post-run debrief* — {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)}\n\n{reply}"
         bot.send_message(YOUR_TELEGRAM_ID, msg[:4000], parse_mode="Markdown")
@@ -1434,32 +1528,30 @@ def send_evening_debrief():
                 run_summary = "Runs today:\n" + "\n".join(run_lines)
             checkin_nudge   = "" if checkin_today else "\nNudge Luke to log a wellness check-in: fatigue, sleep quality, mood out of 10."
             checkin_context = f"\nLast check-in ({last_checkin['date']}): fatigue {last_checkin.get('fatigue_score','?')}/10, mood {last_checkin.get('mood_score','?')}/10" if last_checkin else ""
-            prompt = f"""Elite running coach. Evening data summary — short and scannable. Use emojis to lead each section so it's easy to read on mobile.
-
-ATHLETE: Luke Worgan | LONDON MARATHON: {days_to_marathon()} days away — target sub 3:30
-GOALS:\n{goals_text}
+            prompt = f"""Evening check-in. Short and scannable.
 
 TODAY: Steps {steps} | Active {active_min}min
 {run_summary}
 {cl_text}
 {sw_text}
 WEEK: {round(weekly_km,1)}km | load {round(weekly_load,0)} | {len(week_runs)} sessions
+GOALS: {goals_text}
 {checkin_context}
 
-Structure with these emoji-led sections, 1-3 sentences each:
-📊 TODAY'S NUMBERS — one-line snapshot of all key data points (steps, run if any, load ratio, HRV/recharge)
-⚖️ BALANCE CHECK — training stress vs recovery today, one green flag, one watch point
-🌙 TONIGHT — specific sleep timing from SleepWise window, wind-down tip
+3 emoji-led sections, 1–3 sentences each — interpret, don't list:
+📊 TODAY — one-line read of how the day landed (load, recovery signals)
+⚖️ BALANCE — one thing looking good, one thing to watch
+🌙 TONIGHT — bedtime window from SleepWise, one specific wind-down call
 {checkin_nudge}
 End with: NOTE: evening debrief | <10-word summary>"""
         else:
-            prompt = f"""Elite running coach. Evening — data still syncing. Keep it short and emoji-led.
+            prompt = f"""Evening — data still syncing.
 
-WEEK: {round(weekly_km,1)}km | {len(week_runs)} runs | LONDON: {days_to_marathon()} days
+WEEK: {round(weekly_km,1)}km | {len(week_runs)} sessions
 {cl_text}\n{sw_text}
 
-📊 DATA STATUS — note data is still syncing, share what's available
-🌙 TONIGHT — one specific sleep/recovery tip for marathon prep
+📊 DATA — note syncing, share what's available
+🌙 TONIGHT — one sleep/recovery call
 {f"Nudge Luke to log check-in: fatigue, sleep, mood out of 10." if not checkin_today else ""}
 End with: NOTE: evening debrief | data pending"""
         response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
@@ -1470,6 +1562,72 @@ End with: NOTE: evening debrief | data pending"""
     except Exception as e:
         log.error(f"Evening debrief error: {e}")
         bot.send_message(YOUR_TELEGRAM_ID, f"⚠️ Evening debrief error: {e}")
+
+def send_weekly_review():
+    """Sunday evening: synthesise the week — sleep trend, HRV direction, load, adherence."""
+    try:
+        now         = datetime.now(timezone.utc)
+        week_start  = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+        prev_start  = (now - timedelta(days=now.weekday() + 7)).strftime("%Y-%m-%d")
+
+        sessions    = supabase.table("polar_exercises").select("date,sport,distance_meters,training_load,duration_seconds,avg_heart_rate").gte("date", week_start).order("date").execute().data or []
+        prev_sess   = supabase.table("polar_exercises").select("date,sport,distance_meters,training_load").gte("date", prev_start).lt("date", week_start).execute().data or []
+
+        sleep_rows  = supabase.table("polar_sleep").select("date,total_sleep_seconds,sleep_score").gte("date", week_start).order("date").execute().data or []
+        hrv_this    = supabase.table("polar_hrv").select("date,hrv_avg,recharge_status").gte("date", week_start).order("date").execute().data or []
+        hrv_prev    = supabase.table("polar_hrv").select("date,hrv_avg").gte("date", prev_start).lt("date", week_start).execute().data or []
+
+        goals_resp  = supabase.table("goals").select("race_name,race_date,distance_km,target_time").eq("active", True).execute()
+        goals_text  = "\n".join([f"- {g['race_name']} {g['race_date']}: {g['distance_km']}km target {g['target_time']}" for g in (goals_resp.data or [])]) or "No active goals."
+
+        wk_km       = sum((r.get("distance_meters") or 0) for r in sessions) / 1000
+        wk_load     = sum((r.get("training_load") or 0) for r in sessions)
+        pw_km       = sum((r.get("distance_meters") or 0) for r in prev_sess) / 1000
+        pw_load     = sum((r.get("training_load") or 0) for r in prev_sess)
+
+        sleep_summary = " | ".join([f"{s['date'][5:]}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h score {s.get('sleep_score','?')}" for s in sleep_rows]) or "No sleep data."
+
+        hrv_this_avg = (sum(r["hrv_avg"] for r in hrv_this if r.get("hrv_avg")) / max(len([r for r in hrv_this if r.get("hrv_avg")]), 1)) if hrv_this else None
+        hrv_prev_avg = (sum(r["hrv_avg"] for r in hrv_prev if r.get("hrv_avg")) / max(len([r for r in hrv_prev if r.get("hrv_avg")]), 1)) if hrv_prev else None
+
+        session_lines = "\n".join([
+            f"  {r['date'][5:]}: {sport_emoji(r.get('sport',''))} {r.get('sport','?')} | {round((r.get('distance_meters') or 0)/1000,1)}km | HR {r.get('avg_heart_rate','?')} | Load {r.get('training_load','?')}"
+            for r in sessions
+        ]) or "  No sessions this week."
+
+        prompt = f"""Weekly review for Luke. Synthesise the week — don't list data, read it.
+
+THIS WEEK: {round(wk_km,1)}km | load {round(wk_load,0)} | {len(sessions)} sessions
+LAST WEEK: {round(pw_km,1)}km | load {round(pw_load,0)} | {len(prev_sess)} sessions
+
+SESSIONS:
+{session_lines}
+
+SLEEP (Mon–Sun): {sleep_summary}
+HRV: this week avg {round(hrv_this_avg,1) if hrv_this_avg else '?'} vs last week {round(hrv_prev_avg,1) if hrv_prev_avg else '?'}
+
+GOALS: {goals_text}
+
+4 short sections:
+📅 WEEK IN ONE LINE — what kind of week was this (load, consistency, quality)?
+🔬 BODY READ — what are sleep trend + HRV direction + load ratio actually saying together?
+🏆 WIN — one specific thing worth reinforcing (adherence, a session, a metric moving right)
+📍 NEXT WEEK — one concrete adjustment or focus based on this week's picture
+
+Non-preachy. Newborn context = missed sessions are fine. Value showing up.
+End with: NOTE: weekly review | <10-word summary>"""
+
+        response = claude.messages.create(
+            model="claude-sonnet-4-6", max_tokens=500,
+            system=build_system_prompt(),
+            messages=[{"role": "user", "content": prompt}]
+        )
+        reply = extract_and_save_note(response.content[0].text, "weekly review")
+        bot.send_message(YOUR_TELEGRAM_ID, f"📆 *Weekly Review — w/e {now.strftime('%-d %b')}*\n\n{reply}", parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Weekly review error: {e}")
+        bot.send_message(YOUR_TELEGRAM_ID, f"⚠️ Weekly review error: {e}")
+
 
 # ── BACKGROUND LOOPS ───────────────────────────────────────────────────────
 
@@ -1495,17 +1653,30 @@ def polar_sync_loop():
 
 def scheduler_loop():
     while True:
-        now     = datetime.now(timezone.utc)
-        targets = [now.replace(hour=6, minute=15, second=0, microsecond=0), now.replace(hour=20, minute=30, second=0, microsecond=0), now.replace(hour=0, minute=5, second=0, microsecond=0)]
-        targets = [t + timedelta(days=1) if now >= t else t for t in targets]
+        now        = datetime.now(timezone.utc)
+        brief_hour = BRIEF_HOUR_UTC      # 04:00 UTC = 05:00 BST (set via env var)
+        # Weekday brief at brief_hour:00, evening debrief at 20:30, midnight reset, Sunday weekly review at 19:00
+        targets = [
+            now.replace(hour=brief_hour, minute=0,  second=0, microsecond=0),
+            now.replace(hour=20,         minute=30, second=0, microsecond=0),
+            now.replace(hour=19,         minute=0,  second=0, microsecond=0),  # weekly review (Sun)
+            now.replace(hour=0,          minute=5,  second=0, microsecond=0),
+        ]
+        targets    = [t + timedelta(days=1) if now >= t else t for t in targets]
         sleep_secs = (min(targets) - now).total_seconds()
         log.info(f"Scheduler: next in {sleep_secs/60:.1f}min")
         time.sleep(sleep_secs)
         fire_time = datetime.now(timezone.utc)
-        if fire_time.hour == 6 and fire_time.minute >= 15 and fire_time.minute < 20:
-            send_morning_briefing()
+        if fire_time.hour == brief_hour and fire_time.minute < 5:
+            if fire_time.weekday() < 5:   # Mon–Fri only
+                send_morning_briefing()
+            else:
+                log.info("Scheduler: skipping AM brief — weekend")
         elif fire_time.hour == 20 and fire_time.minute >= 30 and fire_time.minute < 35:
-            send_evening_debrief()
+            if fire_time.weekday() < 5:
+                send_evening_debrief()
+        elif fire_time.hour == 19 and fire_time.minute < 5 and fire_time.weekday() == 6:  # Sunday
+            send_weekly_review()
         elif fire_time.hour == 0 and fire_time.minute < 10:
             debriefed_today.clear()
             alerts_fired_today.clear()
@@ -1540,10 +1711,11 @@ def handle_message(message):
             "❤️ /hr — continuous HR\n"
             "🎯 /goals — target races\n"
             "🔔 /push — check alerts\n"
+            "📆 /weekly — weekly review\n"
             "🗑 /clear — clear conversation\n\n"
             "✏️ *Log data*\n"
             "`save run: <Polar stats>`\n"
-            "`goal: London Marathon, 27 Apr 2026, 42.2km, sub 3:30`\n"
+            "`goal: Cheltenham Half, 21 Sep 2026, 21.1km, sub 2:00`\n"
             "`checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10`\n\n"
             "💬 _Or just ask me anything_"
         ), parse_mode="Markdown")
@@ -1604,6 +1776,11 @@ def handle_message(message):
     if lower == "/evening":
         bot.reply_to(message, "⏳ Generating evening debrief...")
         threading.Thread(target=send_evening_debrief, daemon=True).start()
+
+    if lower == "/weekly":
+        bot.reply_to(message, "⏳ Generating weekly review...")
+        threading.Thread(target=send_weekly_review, daemon=True).start()
+        return
         return
 
     if lower == "/splits":
