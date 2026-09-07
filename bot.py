@@ -77,6 +77,12 @@ ATHLETE = {
     # Long-horizon goal (hold lightly — no build pressure now)
     "horizon": "100-miler ~2027 (Centurion / Beacons Way candidates).",
 
+    # Known patterns — don't misread these
+    "known_patterns": (
+        "Sunday 2km = junior parkrun with son Billy (6yo). Family outing, not a training run. "
+        "Never debrief it as a session. Never suggest it as evidence of fitness or load."
+    ),
+
     # Life constraints — respect absolutely
     "constraints": (
         "Father of three, newborn a few weeks old. Broken sleep is the norm. "
@@ -1055,37 +1061,78 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
             for n in notes.data:
                 parts.append(f"  {n['date']} | {n.get('topic','?')} | {n.get('summary','')}")
 
-        runs = supabase.table("polar_exercises").select("polar_exercise_id,date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load,ascent,descent,source").order("date", desc=True).limit(run_limit).execute()
-        if runs.data:
-            today_date = datetime.now(timezone.utc).date()
-            def recency_label(date_str: str) -> str:
-                try:
-                    d    = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
-                    delta = (today_date - d).days
-                    day  = d.strftime("%A")
-                    if delta == 0: return f"TODAY ({day} {date_str[:10]})"
-                    if delta == 1: return f"YESTERDAY ({day} {date_str[:10]})"
-                    return f"{delta} days ago ({day} {date_str[:10]})"
-                except Exception:
-                    return date_str[:10]
-            parts.append(f"\n=== RECENT SESSIONS (last {len(runs.data)}, most-recent first) ===")
-            for r in runs.data:
+        # ── Two-layer session history ──────────────────────────────────────────
+        # Layer 1: last 21 days in full detail (exact recency labels)
+        # Layer 2: weekly summaries for the prior 12 weeks (longitudinal pattern)
+        now_dt     = datetime.now(timezone.utc)
+        today_date = now_dt.date()
+        detail_cutoff  = (now_dt - timedelta(days=21)).strftime("%Y-%m-%d")
+        summary_cutoff = (now_dt - timedelta(days=21 + 84)).strftime("%Y-%m-%d")  # 12 weeks back
+
+        def recency_label(date_str: str) -> str:
+            try:
+                d     = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+                delta = (today_date - d).days
+                day   = d.strftime("%A")
+                if delta == 0: return f"TODAY ({day} {date_str[:10]})"
+                if delta == 1: return f"YESTERDAY ({day} {date_str[:10]})"
+                return f"{delta} days ago ({day} {date_str[:10]})"
+            except Exception:
+                return date_str[:10]
+
+        recent_runs = supabase.table("polar_exercises").select(
+            "polar_exercise_id,date,sport,distance_meters,duration_seconds,avg_heart_rate,max_heart_rate,avg_power,avg_cadence,training_load,ascent,descent,source"
+        ).gte("date", detail_cutoff).order("date", desc=True).execute()
+
+        if recent_runs.data:
+            parts.append(f"\n=== SESSIONS — LAST 21 DAYS (most-recent first) ===")
+            for r in recent_runs.data:
                 dist_km = (r.get("distance_meters") or 0) / 1000
                 dur_s   = r.get("duration_seconds") or 0
                 pace_s  = dur_s / dist_km if dist_km else 0
                 src     = " [manual]" if r.get("source") == "manual" else ""
-                parts.append(f"  {recency_label(r['date'])} | {r.get('sport','?')}{src} | {dist_km:.1f}km | {int(dur_s//60)}min | Pace: {seconds_to_pace(pace_s)} | HR: {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')} | Power: {r.get('avg_power','?')}W | Cadence: {r.get('avg_cadence','?')}spm | Load: {r.get('training_load','?')} | Ascent: {r.get('ascent','?')}m")
-            latest = get_latest_run_with_splits()
-            if latest:
-                splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", latest["polar_exercise_id"]).order("lap_number").execute()
-                if splits.data:
-                    parts.append(f"\n=== KM SPLITS: {recency_label(latest['date'])} ({(latest.get('distance_meters') or 0)/1000:.1f}km) ===")
-                    for s in splits.data:
-                        parts.append(f"  KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cadence {s.get('cadence_avg','?')}spm")
+                parts.append(f"  {recency_label(r['date'])} | {r.get('sport','?')}{src} | {dist_km:.1f}km | {int(dur_s//60)}min | Pace: {seconds_to_pace(pace_s)} | HR: {r.get('avg_heart_rate','?')}/{r.get('max_heart_rate','?')} | Load: {r.get('training_load','?')} | Ascent: {r.get('ascent','?')}m")
+        else:
+            parts.append("\n=== SESSIONS — LAST 21 DAYS === No sessions.")
 
-        now             = datetime.now(timezone.utc)
-        week_start      = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
-        last_week_start = (now - timedelta(days=now.weekday()+7)).strftime("%Y-%m-%d")
+        # KM splits for most recent run
+        latest = get_latest_run_with_splits()
+        if latest:
+            splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", latest["polar_exercise_id"]).order("lap_number").execute()
+            if splits.data:
+                parts.append(f"\n=== KM SPLITS: {recency_label(latest['date'])} ({(latest.get('distance_meters') or 0)/1000:.1f}km) ===")
+                for s in splits.data:
+                    parts.append(f"  KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cadence {s.get('cadence_avg','?')}spm")
+
+        # Layer 2: weekly summaries, 12 weeks prior to the detail window
+        hist_runs = supabase.table("polar_exercises").select(
+            "date,sport,distance_meters,training_load"
+        ).gte("date", summary_cutoff).lt("date", detail_cutoff).order("date").execute()
+
+        if hist_runs.data:
+            # Group by ISO week
+            from collections import defaultdict
+            week_buckets: dict = defaultdict(lambda: {"km": 0.0, "load": 0.0, "sessions": 0})
+            for r in hist_runs.data:
+                try:
+                    d   = datetime.strptime(r["date"][:10], "%Y-%m-%d")
+                    wk  = d.strftime("%Y-W%V")  # ISO week key
+                    wb  = week_buckets[wk]
+                    wb["km"]       += (r.get("distance_meters") or 0) / 1000
+                    wb["load"]     += r.get("training_load") or 0
+                    wb["sessions"] += 1
+                except Exception:
+                    pass
+            if week_buckets:
+                parts.append("\n=== TRAINING HISTORY — WEEKLY SUMMARY (oldest→newest) ===")
+                for wk in sorted(week_buckets):
+                    wb = week_buckets[wk]
+                    gap = " ⚠️ LOW" if wb["sessions"] <= 1 else ""
+                    parts.append(f"  {wk}: {round(wb['km'],1)}km | load {round(wb['load'],0):.0f} | {wb['sessions']} sessions{gap}")
+
+        # This week vs last week totals
+        week_start      = (now_dt - timedelta(days=now_dt.weekday())).strftime("%Y-%m-%d")
+        last_week_start = (now_dt - timedelta(days=now_dt.weekday()+7)).strftime("%Y-%m-%d")
         this_week = supabase.table("polar_exercises").select("training_load,distance_meters").gte("date", week_start).execute()
         last_week = supabase.table("polar_exercises").select("training_load,distance_meters").gte("date", last_week_start).lt("date", week_start).execute()
         def sum_load(rows): return sum(r.get("training_load") or 0 for r in rows)
@@ -1168,6 +1215,9 @@ HORIZON: {ATHLETE['horizon']}
 
 LIFE CONSTRAINTS (respect absolutely):
 {ATHLETE['constraints']}
+
+KNOWN PATTERNS (never misread these):
+{ATHLETE['known_patterns']}
 
 SESSION MENU (weekday 5am, ~1hr): {ATHLETE['session_menu']}
 
