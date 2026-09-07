@@ -79,8 +79,9 @@ ATHLETE = {
 
     # Known patterns — don't misread these
     "known_patterns": (
-        "Sunday 2km = junior parkrun with son Billy (6yo). Family outing, not a training run. "
-        "Never debrief it as a session. Never suggest it as evidence of fitness or load."
+        "Sunday 2km = junior parkrun with son Billy (6yo). Family outing — debrief it warmly "
+        "as a dad-and-kid run, celebrate it, but NEVER question the pace or treat it as "
+        "training data. The slow pace is Billy's pace. That's the whole point."
     ),
 
     # Life constraints — respect absolutely
@@ -1055,7 +1056,7 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
             for w in wellness.data:
                 parts.append(f"  {w['date']} | Weight: {w.get('weight_kg','?')}kg | Fatigue: {w.get('fatigue_score','?')}/10 | Sleep: {w.get('sleep_score','?')}/10 | Mood: {w.get('mood_score','?')}/10")
 
-        notes = supabase.table("coaching_notes").select("date,topic,summary").order("date", desc=True).limit(5).execute()
+        notes = supabase.table("coaching_notes").select("date,topic,summary").order("date", desc=True).limit(15).execute()
         if notes.data:
             parts.append("\n=== RECENT COACHING NOTES ===")
             for n in notes.data:
