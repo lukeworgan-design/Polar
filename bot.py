@@ -44,27 +44,30 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Every function and prompt reads from this dict.
 ATHLETE = {
     # Identity
-    "name":        "Luke",
-    "dob":         "1989-03-03",   # age computed at runtime
-    "height_cm":   167,
-    "weight_kg":   78,             # update via wellness check-in
+    "name":       "Luke",
+    "dob":        "1989-03-03",    # age computed at runtime
+    "height_cm":  167,
+    # weight pulled live from wellness_checkins; this is a fallback only
+    "weight_kg_fallback": 78,
 
-    # Physiology
-    "vo2max":         55,
+    # Physiology — HR thresholds drive all training zone logic
+    "vo2max":        55,
     "max_hr":        198,
-    "resting_hr":     47,          # baseline; live data overrides readiness score
+    # resting_hr_baseline: 28-day rolling average computed at runtime;
+    # this fallback is only used if no continuous HR data exists
+    "resting_hr_fallback": 47,
     "aerobic_thr":   149,
     "anaerobic_thr": 178,
-    "ftp_w":         272,
+    # FTP removed — power zones not actively used in coaching
 
     # Kit
-    "watch":    "Polar Grit X2",
-    "kit":      "1×20kg kettlebell, mat, ice bath, GOWOD subscription",
+    "watch": "Polar Grit X2",
+    "kit":   "1×20kg kettlebell, mat, ice bath, GOWOD subscription",
 
     # Recent form / identity
     "background": (
         "Experienced trail ultrarunner. Peer-level athlete — skip the basics. "
-        "Recent: Cotswold Way Ultra 100km (Jun 2026), Trailblazerz 100km. "
+        "Cotswold Way Ultra 100km (13 Jun 2026, completed). Trailblazerz 100km (completed). "
         "Zone 2 base suits me. Fasted early-morning runs are normal."
     ),
 
@@ -77,7 +80,7 @@ ATHLETE = {
     # Long-horizon goal (hold lightly — no build pressure now)
     "horizon": "100-miler ~2027 (Centurion / Beacons Way candidates).",
 
-    # Known patterns — don't misread these
+    # Known patterns — never misread these
     "known_patterns": (
         "Sunday 2km = junior parkrun with son Billy (6yo). Family outing — debrief it warmly "
         "as a dad-and-kid run, celebrate it, but NEVER question the pace or treat it as "
@@ -85,11 +88,12 @@ ATHLETE = {
     ),
 
     # Life constraints — respect absolutely
-    "constraints": (
-        "Father of three, newborn a few weeks old. Broken sleep is the norm. "
+    "newborn_dob": "2026-08-10",   # youngest child's birthdate; age computed at runtime
+    "constraints_static": (
+        "Father of three. "
         "Training window: 5am Mon–Fri, ~1 hour. "
         "Weekends: protected family time — NO sessions, no long runs, no assumptions. "
-        "Missed/shortened sessions are EXPECTED with a newborn — adapt without guilt."
+        "Missed/shortened sessions are EXPECTED — adapt without guilt."
     ),
 
     # Voice
@@ -104,6 +108,32 @@ ATHLETE = {
     "session_menu": "Run (easy Z2 / tempo / intervals) | Kettlebell | GOWOD mobility | Ice bath recovery | Rest",
 }
 
+def _live_resting_hr() -> int:
+    """28-day rolling average of min_hr from continuous HR data, or fallback."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=28)).strftime("%Y-%m-%d")
+        rows   = supabase.table("polar_continuous_hr").select("min_hr").gte("date", cutoff).execute()
+        vals   = [r["min_hr"] for r in (rows.data or []) if r.get("min_hr")]
+        if vals:
+            return round(sum(vals) / len(vals))
+    except Exception:
+        pass
+    return ATHLETE["resting_hr_fallback"]
+
+def _live_weight_kg() -> float:
+    """Latest weight from wellness_checkins, or fallback."""
+    try:
+        row = supabase.table("wellness_checkins").select("weight_kg").order("date", desc=True).limit(1).execute()
+        if row.data and row.data[0].get("weight_kg"):
+            return float(row.data[0]["weight_kg"])
+    except Exception:
+        pass
+    return ATHLETE["weight_kg_fallback"]
+
+def _baby_age_weeks() -> int:
+    dob = datetime.strptime(ATHLETE["newborn_dob"], "%Y-%m-%d").date()
+    return (datetime.now(timezone.utc).date() - dob).days // 7
+
 # Derived helpers — read from ATHLETE, never hardcode elsewhere
 def athlete_age() -> int:
     dob = datetime.strptime(ATHLETE["dob"], "%Y-%m-%d").date()
@@ -117,7 +147,7 @@ ALLOWED_SPORTS = RUNNING_SPORTS | {
     "YOGA", "STRETCHING", "CORE", "CROSS_TRAINING", "BOOTCAMP", "OTHER",
 }
 POLAR_BASE          = "https://www.polaraccesslink.com/v3"
-RESTING_HR_BASELINE = ATHLETE["resting_hr"]
+RESTING_HR_BASELINE = ATHLETE["resting_hr_fallback"]
 AEROBIC_THRESHOLD   = ATHLETE["aerobic_thr"]
 ANAEROBIC_THRESHOLD = ATHLETE["anaerobic_thr"]
 MAX_HR              = ATHLETE["max_hr"]
@@ -1195,8 +1225,15 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
 
 
 def _base_system() -> str:
-    """Build BASE_SYSTEM string from ATHLETE dict — called at runtime so age is current."""
-    age = athlete_age()
+    """Build system prompt string from ATHLETE dict — called at runtime so all values are current."""
+    age         = athlete_age()
+    rhr         = _live_resting_hr()
+    weight      = _live_weight_kg()
+    baby_weeks  = _baby_age_weeks()
+    constraints = (
+        f"Father of three, youngest {baby_weeks} weeks old. Broken sleep is the norm right now. "
+        + ATHLETE["constraints_static"]
+    )
     return f"""You are {ATHLETE['name']}'s running coach. Treat him as a peer — experienced trail ultrarunner, not a beginner.
 
 DATA INTEGRITY — non-negotiable:
@@ -1205,9 +1242,9 @@ DATA INTEGRITY — non-negotiable:
 - Every session in context is labelled with exact recency. Use those labels.
 
 ATHLETE:
-- {ATHLETE['name']}, {age}yo | {ATHLETE['height_cm']}cm | ~{ATHLETE['weight_kg']}kg
-- VO2max {ATHLETE['vo2max']} | Max HR {ATHLETE['max_hr']}bpm | Resting HR {ATHLETE['resting_hr']}bpm
-- Aerobic threshold {ATHLETE['aerobic_thr']}bpm | Anaerobic threshold {ATHLETE['anaerobic_thr']}bpm | FTP {ATHLETE['ftp_w']}W
+- {ATHLETE['name']}, {age}yo | {ATHLETE['height_cm']}cm | ~{weight}kg (latest logged)
+- VO2max {ATHLETE['vo2max']} | Max HR {ATHLETE['max_hr']}bpm | Resting HR {rhr}bpm (28-day avg)
+- Aerobic threshold {ATHLETE['aerobic_thr']}bpm | Anaerobic threshold {ATHLETE['anaerobic_thr']}bpm
 - Watch: {ATHLETE['watch']} | Kit: {ATHLETE['kit']}
 - Background: {ATHLETE['background']}
 
@@ -1215,7 +1252,7 @@ CURRENT PHASE: {ATHLETE['phase']}
 HORIZON: {ATHLETE['horizon']}
 
 LIFE CONSTRAINTS (respect absolutely):
-{ATHLETE['constraints']}
+{constraints}
 
 KNOWN PATTERNS (never misread these):
 {ATHLETE['known_patterns']}
