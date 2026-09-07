@@ -90,7 +90,7 @@ interface DashboardData {
   shopping: string[];
   reminders: string[];
   pocketMoney: {
-    kids: Array<{ name: string; weekPence: number; jobs: Array<{ name: string; done: boolean }> }>;
+    kids: Array<{ name: string; weekPence: number; jobs: Array<{ name: string; done: boolean }>; spacePence: number | null }>;
     paydayDays: number;
     target: number;
   } | null;
@@ -464,11 +464,20 @@ export async function getDashboardData(): Promise<DashboardData> {
   try {
     const pm = await import('./pocketmoney');
     if (await pm.isConfigured()) {
+      // Live Starling Space balances (their actual money), matched by name.
+      let balances: Record<string, number> = {};
+      try {
+        const { isStarlingEnabled, spaceBalances } = await import('./starling');
+        if (isStarlingEnabled()) balances = await spaceBalances();
+      } catch (e) {
+        console.error('Dashboard: Starling balance fetch failed:', e);
+      }
       const kidsData = [];
       for (const name of pm.childNames()) {
         const w = await pm.weekProgress(name);
         const jobs = await pm.todayChecklist(name);
-        kidsData.push({ name, weekPence: w.pence, jobs });
+        const spacePence = balances[name.trim().toLowerCase()] ?? null;
+        kidsData.push({ name, weekPence: w.pence, jobs, spacePence });
       }
       const dow = new Date(`${todayStr}T12:00:00Z`).getUTCDay(); // 0 = Sun … 5 = Fri
       const paydayDays = (5 - dow + 7) % 7; // days to next Friday
@@ -531,7 +540,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   const jobsCards = d.pocketMoney && d.pocketMoney.kids.length
     ? (() => {
         const pm = d.pocketMoney!;
-        const payLine = pm.paydayDays === 0 ? '💰 Payday today!' : pm.paydayDays === 1 ? '💰 Payday tomorrow' : `💰 Payday Fri · ${pm.paydayDays}d`;
+        const paydayText = pm.paydayDays === 0 ? 'payday today!' : pm.paydayDays === 1 ? 'payday tomorrow' : `payday Fri · ${pm.paydayDays}d`;
         // A friendly emoji per job (kept to older ones the TV font can render).
         // It doubles as the "to-do" bullet; a done job shows a green ✓ instead.
         const jobEmoji = (name: string): string => {
@@ -554,9 +563,18 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
           const rows = k.jobs.length
             ? k.jobs.map((j) => `<li class="${j.done ? 'done' : ''}"><span class="jc-tick">${j.done ? '✓' : jobEmoji(j.name)}</span><span class="jc-name">${esc(j.name)}</span></li>`).join('')
             : '<li class="jc-empty">No jobs today 🎉</li>';
+          // With a Starling balance: headline = their actual pot; sub-line = what
+          // they've earned this week + payday. Without: fall back to earned/target.
+          const hasSpace = k.spacePence != null;
+          const totalHtml = hasSpace
+            ? `${gbp(k.spacePence!)}`
+            : `${gbp(k.weekPence)} <span class="jm-of">/ ${gbp(pm.target)}</span>`;
+          const payHtml = hasSpace
+            ? `💰 ${gbp(k.weekPence)} earned · ${paydayText}`
+            : `💰 ${paydayText}`;
           return `<div class="card kid-card" style="--kid:${kidColour(k.name)}">
-            <div class="kid-head"><span class="kid-name">🌟 ${esc(k.name)}</span><span class="kid-total">${gbp(k.weekPence)} <span class="jm-of">/ ${gbp(pm.target)}</span></span></div>
-            <div class="kid-pay">${payLine}</div>
+            <div class="kid-head"><span class="kid-name">🌟 ${esc(k.name)}</span><span class="kid-total">${totalHtml}</span></div>
+            <div class="kid-pay">${payHtml}</div>
             <ul class="kid-jobs autoscroll">${rows}</ul>
           </div>`;
         };

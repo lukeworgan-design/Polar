@@ -91,3 +91,19 @@ export async function spaceBalanceByName(name: string): Promise<number | null> {
   const hit = r.spaces.find((s) => s.name.trim().toLowerCase() === want);
   return hit ? hit.balancePence : null;
 }
+
+// Cached name→pence map so the 90s dashboard refresh doesn't hammer the API.
+let cache: { at: number; map: Record<string, number> } | null = null;
+const TTL_MS = 5 * 60 * 1000;
+
+/** lowercased space name → balance (pence), cached ~5 min. On a failed read,
+ *  returns the last good map if we have one, else an empty map — never throws. */
+export async function spaceBalances(): Promise<Record<string, number>> {
+  if (cache && Date.now() - cache.at < TTL_MS) return cache.map;
+  const r = await listSpaces();
+  if (!r.ok) return cache?.map ?? {};
+  const map: Record<string, number> = {};
+  for (const s of r.spaces) map[s.name.trim().toLowerCase()] = s.balancePence;
+  cache = { at: Date.now(), map };
+  return map;
+}
