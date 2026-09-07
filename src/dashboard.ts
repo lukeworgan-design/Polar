@@ -567,7 +567,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
           // they've earned this week + payday. Without: fall back to earned/target.
           const hasSpace = k.spacePence != null;
           const totalHtml = hasSpace
-            ? `${gbp(k.spacePence!)}`
+            ? `${gbp(k.spacePence!)} <span class="jm-of">in pot</span>`
             : `${gbp(k.weekPence)} <span class="jm-of">/ ${gbp(pm.target)}</span>`;
           const payHtml = hasSpace
             ? `💰 ${gbp(k.weekPence)} earned · ${paydayText}`
