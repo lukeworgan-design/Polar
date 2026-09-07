@@ -655,24 +655,26 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: 'mark_job_done',
-    description: "Tick off pocket-money job(s) for a child today, e.g. 'Poppy made her bed'. Pass the EXACT job name(s) from get_jobs_status (comma-separated for several), or 'all' for everything today. Always check get_jobs_status first so the names match.",
+    description: "Tick off pocket-money job(s) for a child, e.g. 'Poppy made her bed'. Pass the EXACT job name(s) from get_jobs_status (comma-separated for several), or 'all' for everything that day. Always check get_jobs_status first so the names match. Defaults to today; pass 'date' to backfill a day that was missed (e.g. 'yesterday', 'Saturday').",
     input_schema: {
       type: 'object' as const,
       properties: {
         child: { type: 'string', description: 'Which child (e.g. Poppy or Billy)' },
         jobs: { type: 'string', description: "Exact job name(s) from the list, comma-separated, or 'all'" },
+        date: { type: 'string', description: "Optional day the job was done, as YYYY-MM-DD. Omit for today. For 'yesterday' / a weekday name, work out the actual date first (use check_date). Must not be in the future." },
       },
       required: ['child', 'jobs'],
     },
   },
   {
     name: 'undo_job',
-    description: "Un-tick pocket-money job(s) for a child today (a mistake or mis-tap). Pass the exact job name(s) or 'all'.",
+    description: "Un-tick pocket-money job(s) for a child (a mistake or mis-tap). Pass the exact job name(s) or 'all'. Defaults to today; pass 'date' (YYYY-MM-DD) to correct an earlier day.",
     input_schema: {
       type: 'object' as const,
       properties: {
         child: { type: 'string', description: 'Which child' },
         jobs: { type: 'string', description: "Exact job name(s), comma-separated, or 'all'" },
+        date: { type: 'string', description: "Optional day to correct, as YYYY-MM-DD. Omit for today." },
       },
       required: ['child', 'jobs'],
     },
@@ -1269,27 +1271,46 @@ async function executeTool(
         if (!child) return `Which child? I track jobs for ${pm.childNames().join(' and ')}.`;
         const jobs = (toolInput['jobs'] as string || '').trim();
         if (!jobs) return 'Which job(s)?';
-        const r = await pm.markDone(child, jobs);
-        if (!r.ok) return `I couldn't find a job matching "${jobs}" for ${child} today. Call get_jobs_status to see the exact names, then try again.`;
+        // Optional backfill date. Default today; validate anything else.
+        const dateInput = (toolInput['date'] as string || '').trim();
+        const date = dateInput || pm.todayStr();
+        const isToday = date === pm.todayStr();
+        if (!isToday) {
+          const chk = pm.checkJobDate(date);
+          if (!chk.ok) return `Can't tick that off — ${chk.reason}. Tell the family, and note you only track today onwards (up to about two weeks back for a missed day).`;
+        }
+        const when = isToday ? 'today' : `on ${pm.dayLabel(date)}`;
+        const r = await pm.markDone(child, jobs, date);
+        if (!r.ok) return `I couldn't find a job matching "${jobs}" for ${child} ${when}. Call get_jobs_status to see the exact names, then try again.`;
         const week = await pm.weekProgress(child);
-        const total = `${child}'s week so far: ${pm.money(week.pence)}.`;
+        const paid = isToday || pm.isInCurrentPayWeek(date)
+          ? `${child}'s week so far: ${pm.money(week.pence)}.`
+          : `Note: ${pm.dayLabel(date)} is in a week that's already been paid out, so this won't change what was handed over then.`;
         // Nothing new ticked — it was all already done. Just warmly confirm; never
         // ask whether to tick it "again" (a parent saying "they did X" is always a
         // confirmation to record, not a question).
         if (!r.matched.length && r.alreadyDone.length) {
-          return `${r.alreadyDone.join(', ')} was already ticked off for ${child} today — nothing to change. ${total} Give a quick, warm acknowledgement (e.g. "already got that one ✓"); do NOT ask whether to tick it off again.`;
+          return `${r.alreadyDone.join(', ')} was already ticked off for ${child} ${when} — nothing to change. ${paid} Give a quick, warm acknowledgement (e.g. "already got that one ✓"); do NOT ask whether to tick it off again.`;
         }
-        let msg = `Ticked off ${r.matched.join(', ')} for ${child}.`;
+        let msg = `Ticked off ${r.matched.join(', ')} for ${child} ${when}.`;
         if (r.alreadyDone.length) msg += ` (${r.alreadyDone.join(', ')} was already done.)`;
-        return `${msg} ${total} Confirm warmly and briefly — no questions.`;
+        return `${msg} ${paid} Confirm warmly and briefly${isToday ? '' : ' (mention it was for that earlier day)'} — no questions.`;
       }
 
       case 'undo_job': {
         const pm = await import('./pocketmoney');
         const child = pm.resolveChild(toolInput['child'] as string || '');
         if (!child) return 'Which child?';
-        const r = await pm.undoDone(child, (toolInput['jobs'] as string || '').trim());
-        return r.ok ? `Un-ticked ${r.undone.join(', ')} for ${child}. Confirm briefly.` : `Nothing to undo there for ${child} today.`;
+        const dateInput = (toolInput['date'] as string || '').trim();
+        const date = dateInput || pm.todayStr();
+        const isToday = date === pm.todayStr();
+        if (!isToday) {
+          const chk = pm.checkJobDate(date);
+          if (!chk.ok) return `Can't change that — ${chk.reason}.`;
+        }
+        const when = isToday ? 'today' : `on ${pm.dayLabel(date)}`;
+        const r = await pm.undoDone(child, (toolInput['jobs'] as string || '').trim(), date);
+        return r.ok ? `Un-ticked ${r.undone.join(', ')} for ${child} ${when}. Confirm briefly.` : `Nothing to undo there for ${child} ${when}.`;
       }
 
       case 'add_pocket_money_job': {
@@ -1558,6 +1579,7 @@ POCKET MONEY & JOBS (Poppy and Billy):
 - A statement like "Both kids made beds today" or "Billy did his homework" is a CONFIRMATION that it happened — always just tick it off (or acknowledge it's already ticked). It is NEVER a question. Do not ask "are you asking me to tick it off again, or just confirming?" — that's confusing; act on it and give a short, warm reply.
 - If get_jobs_status shows a job is already ticked for today, don't treat that as a problem or ask what to do — a simple "already got that one ✓" is perfect. Ticking the same job twice never double-pays; each job counts once.
 - To correct a mistake, use undo_job. To change the job list or values, use add_pocket_money_job / remove_pocket_money_job / set_job_value.
+- BACKFILLING A MISSED DAY: if they say a job was done on an earlier day ("Poppy made her bed yesterday", "they did all their jobs on Saturday"), just tick it off for that day — work out the actual date (yesterday relative to the current date above, or the named weekday) and pass it as mark_job_done's 'date'. Don't refuse. You can backfill today back to about two weeks ago; only the future is off-limits. If the day falls in a week that's already been paid out, still record it but gently note it won't change what was already handed over.
 - For "what has Poppy earned?" / "what jobs are left?" asked in chat, call get_jobs_status and answer from it in text. But if they ask you to SAY or ANNOUNCE the jobs out loud ("announce what's left", "read out the jobs on Alexa", "tell the kids what they've still got", "do the payday shout-out"), call announce_jobs instead (which='left' for what's still to do, 'morning' for the full list, 'payday' for earnings) — don't hand-write the words for announce_on_alexa.
 - WRITING — CRITICAL (same rule as the calendar): to tick a job off you MUST call mark_job_done in this reply. Saying "done, ticked off" as text without the tool saves NOTHING. Confirm warmly and briefly only AFTER the tool succeeds, and mention the running weekly total when natural. Keep it encouraging — this is for the kids.
 

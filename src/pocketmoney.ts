@@ -141,6 +141,29 @@ function fullWeekDates(dateStr: string): string[] {
   }
   return out;
 }
+/** Friendly label for a date, e.g. "Saturday, 6 September". */
+export function dayLabel(dateStr: string): string {
+  return new Date(`${dateStr}T12:00:00`).toLocaleDateString('en-GB', {
+    weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone,
+  });
+}
+/** Whether a date is in the same Sat–Fri pay-week as today (i.e. not yet paid). */
+export function isInCurrentPayWeek(dateStr: string): boolean {
+  return fullWeekDates(todayStr())[0] === fullWeekDates(dateStr)[0];
+}
+/**
+ * Validate a date for ticking/backfilling jobs. Rejects the future (you can't
+ * earn a job you haven't done) and dates more than ~2 weeks back (older
+ * completions get pruned anyway).
+ */
+export function checkJobDate(dateStr: string): { ok: boolean; reason?: string } {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return { ok: false, reason: 'not a valid date' };
+  const today = todayStr();
+  if (dateStr > today) return { ok: false, reason: 'that day is in the future — jobs can only be ticked off once they have actually been done' };
+  const daysBack = Math.round((Date.parse(`${today}T12:00:00Z`) - Date.parse(`${dateStr}T12:00:00Z`)) / 86400000);
+  if (daysBack > 13) return { ok: false, reason: 'that is more than two weeks ago — too far back to change now' };
+  return { ok: true };
+}
 function prune(cfg: PMConfig): void {
   // Keep ~3 weeks of completions so the blob can't grow forever.
   const cutoff = new Date();
@@ -235,38 +258,37 @@ export async function weekProgress(child: string, dateStr = todayStr()): Promise
   return { count, pence: earnedPence(cfg, child, count, dateStr) };
 }
 
-/** Mark job(s) done today for a child. `phrase` = 'all' or a loose job description. */
-export async function markDone(child: string, phrase: string): Promise<{ ok: boolean; matched: string[]; alreadyDone: string[] }> {
+/** Mark job(s) done for a child on `dateStr` (default today). `phrase` = 'all' or
+ *  a loose job description. Pass an earlier date to backfill a forgotten day. */
+export async function markDone(child: string, phrase: string, dateStr = todayStr()): Promise<{ ok: boolean; matched: string[]; alreadyDone: string[] }> {
   return mutate((cfg) => {
-    const today = todayStr();
-    const active = jobsForChildOn(cfg, child, today);
+    const active = jobsForChildOn(cfg, child, dateStr);
     const target = /\ball\b|everything|the lot/i.test(phrase) ? active : matchList(active, phrase);
     if (target.length === 0) return { ok: false, matched: [], alreadyDone: [] };
 
-    cfg.completions[today] ??= {};
-    cfg.completions[today][child] ??= [];
-    const set = new Set(cfg.completions[today][child]);
+    cfg.completions[dateStr] ??= {};
+    cfg.completions[dateStr][child] ??= [];
+    const set = new Set(cfg.completions[dateStr][child]);
     const matched: string[] = [], alreadyDone: string[] = [];
     for (const j of target) {
       if (set.has(j.id)) alreadyDone.push(j.name);
       else { set.add(j.id); matched.push(j.name); }
     }
-    cfg.completions[today][child] = [...set];
+    cfg.completions[dateStr][child] = [...set];
     return { ok: true, matched, alreadyDone };
   });
 }
 
-/** Un-tick job(s) done today (a mis-tap). */
-export async function undoDone(child: string, phrase: string): Promise<{ ok: boolean; undone: string[] }> {
+/** Un-tick job(s) done on `dateStr` (default today) — a mis-tap or a correction. */
+export async function undoDone(child: string, phrase: string, dateStr = todayStr()): Promise<{ ok: boolean; undone: string[] }> {
   return mutate((cfg) => {
-    const today = todayStr();
-    const done = cfg.completions[today]?.[child];
+    const done = cfg.completions[dateStr]?.[child];
     if (!done || done.length === 0) return { ok: false, undone: [] };
-    const active = jobsForChildOn(cfg, child, today);
+    const active = jobsForChildOn(cfg, child, dateStr);
     const target = /\ball\b|everything/i.test(phrase) ? active : matchList(active, phrase);
     const removeIds = new Set(target.map((j) => j.id));
     const undone = cfg.jobs.filter((j) => done.includes(j.id) && removeIds.has(j.id)).map((j) => j.name);
-    cfg.completions[today][child] = done.filter((id) => !removeIds.has(id));
+    cfg.completions[dateStr][child] = done.filter((id) => !removeIds.has(id));
     return { ok: undone.length > 0, undone };
   });
 }
