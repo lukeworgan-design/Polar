@@ -1590,7 +1590,8 @@ POCKET MONEY & JOBS (Poppy and Billy):
 - If get_jobs_status shows a job is already ticked for today, don't treat that as a problem or ask what to do — a simple "already got that one ✓" is perfect. Ticking the same job twice never double-pays; each job counts once.
 - To correct a mistake, use undo_job. To change the job list or values, use add_pocket_money_job / remove_pocket_money_job / set_job_value.
 - BACKFILLING A MISSED DAY: if they say a job was done on an earlier day ("Poppy made her bed yesterday", "they did all their jobs on Saturday"), just tick it off for that day — work out the actual date (yesterday relative to the current date above, or the named weekday) and pass it as mark_job_done's 'date'. Don't refuse. You can backfill today back to about two weeks ago; only the future is off-limits. If the day falls in a week that's already been paid out, still record it but gently note it won't change what was already handed over.
-- KEEP THE DAYS SEPARATE: yesterday's jobs and today's are different lists (the same daily jobs recur each day), so don't muddle them. Before backfilling a past day — especially for "their remaining jobs" or "the rest" — call get_jobs_status WITH that day's date to see what was actually left THAT day, tick those off for that date, then, if you also mention today, pull today's list separately. When you reply, clearly label which day is which (e.g. "Sunday's all done now; for today (Monday) they've still got…").
+- KEEP THE DAYS SEPARATE — HARD RULE: NEVER state which jobs are done or still remaining for ANY day unless you have called get_jobs_status for THAT EXACT date in this same reply. Never infer a day's remaining jobs, and never carry them over from another day or from earlier in the chat. Yesterday and today are separate lists (the same daily jobs recur every day), so backfilling yesterday tells you NOTHING about today's progress.
+- So when someone backfills a past day: fetch that day (get_jobs_status with its date), tick the jobs off for that date, and confirm ONLY that day. Do NOT tack on a "for today they've still got…" line — unless they explicitly ask about today, in which case call get_jobs_status for today FIRST and report strictly what it returns. Right after a backfill, today's jobs are almost always still all outstanding (nothing done yet), so a "today they've only got X left" line is a red flag you've muddled the days. Always label which day each figure belongs to.
 - For "what has Poppy earned?" / "what jobs are left?" asked in chat, call get_jobs_status and answer from it in text. But if they ask you to SAY or ANNOUNCE the jobs out loud ("announce what's left", "read out the jobs on Alexa", "tell the kids what they've still got", "do the payday shout-out"), call announce_jobs instead (which='left' for what's still to do, 'morning' for the full list, 'payday' for earnings) — don't hand-write the words for announce_on_alexa.
 - WRITING — CRITICAL (same rule as the calendar): to tick a job off you MUST call mark_job_done in this reply. Saying "done, ticked off" as text without the tool saves NOTHING. Confirm warmly and briefly only AFTER the tool succeeds, and mention the running weekly total when natural. Keep it encouraging — this is for the kids.
 
@@ -1966,6 +1967,28 @@ export async function generateDailySummary(): Promise<string> {
     }
   }
 
+  // Yesterday's jobs recap — a gentle nudge to backfill any that were done but
+  // not ticked before they scroll off. Counts computed here so the AI can't drift.
+  let jobsCheckin = '';
+  try {
+    const pm = await import('./pocketmoney');
+    if (await pm.isConfigured()) {
+      const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+      const yStr = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, '0')}-${String(y.getDate()).padStart(2, '0')}`;
+      const parts: string[] = [];
+      let anyMissed = false;
+      for (const name of pm.childNames()) {
+        const p = await pm.todayProgress(name, yStr);
+        if (p.total === 0) continue;
+        if (p.remaining.length) { anyMissed = true; parts.push(`${name} ${p.done}/${p.total} (not ticked: ${p.remaining.join(', ')})`); }
+        else parts.push(`${name} ${p.done}/${p.total} (all ticked)`);
+      }
+      if (parts.length) jobsCheckin = `YESTERDAY'S JOBS (${pm.dayLabel(yStr)}): ${parts.join('; ')}.${anyMissed ? '' : ' Everything was ticked.'}`;
+    }
+  } catch (err) {
+    console.error('Jobs check-in fetch failed:', err);
+  }
+
   const prompt = `Generate a punchy good morning message for Luke and Toni. Use short bulleted lines with emojis. Group items under bold topic headers where relevant (e.g. **🎒 Kids**, **📅 Today**, **👀 Coming up**, **🌤 Weather**, **🍽 Food**). Keep the tone warm with light wit — like a witty friend who also happens to be extremely organised.
 
 Family: ${familyDescription()}.
@@ -1985,6 +2008,8 @@ ${mealSection ? `MEALS: ${mealSection}\nInclude a **🍽 Food** section with tod
 ${peSection ? `KIT ALERT: ${peSection}\nInclude this under the **🎒 Kids** section. Use exactly the day names given (today/tomorrow) — do not guess or invent.` : ''}
 
 ${babyRecap ? `BABY OVERNIGHT: ${babyRecap}\nInclude a short **👶 ${babyDisplayName()}** line with this overnight recap. Keep it warm and brief.` : ''}
+
+${jobsCheckin ? `${jobsCheckin}\nInclude ONE short **🌟 Jobs** line as a gentle check-in about YESTERDAY only: if any jobs are listed as "not ticked", nudge them to tell you if the kids actually did those (they can still be added, e.g. "if Poppy tidied her room yesterday, just say and I'll pop it on"). If everything was ticked, a quick well-done is enough. Use ONLY the counts/names given here, and do NOT mention today's jobs at all.` : ''}
 
 ${todayIsHoliday ? `IMPORTANT: Today is during the school holidays. Do NOT mention PE kit, the school run, school uniform, breakfast club, or after-school clubs — there is no school. If anything, a cheerful "no school run to worry about today" is welcome, but keep it light.` : ''}
 
