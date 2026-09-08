@@ -121,7 +121,13 @@ def _live_resting_hr() -> int:
     return ATHLETE["resting_hr_fallback"]
 
 def _live_weight_kg() -> float:
-    """Latest weight from wellness_checkins, or fallback."""
+    """Latest weight: Polar Balance (physical_info) → manual check-in → fallback."""
+    try:
+        row = supabase.table("polar_physical_info").select("weight_kg").order("date", desc=True).limit(1).execute()
+        if row.data and row.data[0].get("weight_kg"):
+            return float(row.data[0]["weight_kg"])
+    except Exception:
+        pass
     try:
         row = supabase.table("wellness_checkins").select("weight_kg").order("date", desc=True).limit(1).execute()
         if row.data and row.data[0].get("weight_kg"):
@@ -1028,6 +1034,30 @@ def sync_cardio_load() -> int:
         log.error(f"Cardio load sync error: {e}")
         return 0
 
+def sync_physical_info() -> bool:
+    """Pull latest physical information from Polar (includes Polar Balance weight)."""
+    try:
+        r = requests.get(f"{POLAR_BASE}/users/{POLAR_USER_ID}/physical-information", headers=polar_headers())
+        if not r.ok:
+            return False
+        d = r.json()
+        weight = sf(d.get("weight"))
+        if not weight:
+            return False
+        supabase.table("polar_physical_info").upsert({
+            "date":       datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "weight_kg":  weight,
+            "height_cm":  sf(d.get("height")),
+            "resting_hr": si(d.get("resting-heart-rate") or d.get("resting_heart_rate")),
+            "vo2max":     sf(d.get("maximum-oxygen-uptake") or d.get("vo2max")),
+            "raw_json":   json.dumps(d),
+        }, on_conflict="date").execute()
+        return True
+    except Exception as e:
+        log.error(f"Physical info sync error: {e}")
+        return False
+
+
 def sync_sleepwise() -> int:
     try:
         r = requests.get(f"{POLAR_BASE}/users/sleepwise/alertness", headers=polar_headers())
@@ -1795,8 +1825,9 @@ def polar_sync_loop():
             hr_n        = sync_continuous_hr()
             load_n      = sync_cardio_load()
             sleepwise_n = sync_sleepwise()
-            if any([sleep_n, recharge_n, activity_n, hr_n, load_n, sleepwise_n]):
-                log.info(f"Sync: sleep={sleep_n} recharge={recharge_n} activity={activity_n} hr={hr_n} load={load_n} sw={sleepwise_n}")
+            phys_n      = sync_physical_info()
+            if any([sleep_n, recharge_n, activity_n, hr_n, load_n, sleepwise_n, phys_n]):
+                log.info(f"Sync: sleep={sleep_n} recharge={recharge_n} activity={activity_n} hr={hr_n} load={load_n} sw={sleepwise_n} phys={phys_n}")
         except Exception as e:
             log.error(f"Sync loop error: {e}")
         time.sleep(300)
