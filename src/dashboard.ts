@@ -709,7 +709,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --bg: #0b1020; --panel: rgba(14,20,40,.82); --panel2: rgba(9,14,30,.78);
+    --bg: #0b1020; --panel: rgba(16,24,46,.26); --panel2: rgba(11,17,34,.18);
     --text: #eef2ff; --muted: #c8d1e8; --accent: #8fceff; --accent2: #ffd479;
     --stroke: rgba(255,255,255,.16); --dim: 1;
   }
@@ -723,7 +723,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   }
   /* Night dimming after 8pm */
   body[data-night="1"] {
-    --bg: #05070f; --panel: rgba(10,14,28,.88); --panel2: rgba(7,11,22,.84);
+    --bg: #05070f; --panel: rgba(12,17,32,.5); --panel2: rgba(9,13,26,.44);
     --text: #cdd6f0; --muted: #9aa5c6; --accent: #5b9fd6; --accent2: #d8b26a; --dim: .72;
   }
   .bg { position: fixed; inset: 0; z-index: -3; opacity: 0; transition: opacity 1.6s ease-in-out; }
@@ -819,10 +819,11 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .side-pair > .card { flex: 1 1 0; min-width: 0; }
   /* Countdowns/mini lists sit in half-width paired cards — smaller so labels fit. */
   .side .mini li { font-size: 2.05vh; gap: .8vw; }
-  /* Baby fact sits in a half-width paired card — keep it compact and capped at
-     two lines so a long fact can't push the joke card off the bottom. */
+  /* Baby fact sits in a half-width paired card. Cap the lines so a very long
+     fact can't push the joke card off the bottom, but allow enough for the full
+     sentence (the longest facts run to ~3 lines here). */
   .baby-fact { font-size: 1.6vh; color: var(--muted); margin-top: .4vh; line-height: 1.25;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
   /* Daily fun card — fills leftover space, but its text is top-aligned so the
      header and joke always render from the top (never centred out of view). */
   .fun-card { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: flex-start; }
