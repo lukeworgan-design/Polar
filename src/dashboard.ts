@@ -709,7 +709,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --bg: #0b1020; --panel: rgba(16,24,46,.26); --panel2: rgba(11,17,34,.18);
+    --bg: #0b1020; --panel: rgba(14,20,40,.82); --panel2: rgba(9,14,30,.78);
     --text: #eef2ff; --muted: #c8d1e8; --accent: #8fceff; --accent2: #ffd479;
     --stroke: rgba(255,255,255,.16); --dim: 1;
   }
@@ -723,7 +723,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   }
   /* Night dimming after 8pm */
   body[data-night="1"] {
-    --bg: #05070f; --panel: rgba(12,17,32,.5); --panel2: rgba(9,13,26,.44);
+    --bg: #05070f; --panel: rgba(10,14,28,.88); --panel2: rgba(7,11,22,.84);
     --text: #cdd6f0; --muted: #9aa5c6; --accent: #5b9fd6; --accent2: #d8b26a; --dim: .72;
   }
   .bg { position: fixed; inset: 0; z-index: -3; opacity: 0; transition: opacity 1.6s ease-in-out; }

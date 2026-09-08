@@ -20,13 +20,24 @@ export function isStarlingEnabled(): boolean {
 async function api(path: string): Promise<{ ok: boolean; status: number; json?: any; text: string }> {
   const t = token();
   if (!t) return { ok: false, status: 0, text: 'no token' };
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${t}`, Accept: 'application/json' },
-  });
-  const text = (await res.text().catch(() => '')).trim();
-  let json: unknown;
-  try { json = JSON.parse(text); } catch { /* leave undefined; caller can show text */ }
-  return { ok: res.ok, status: res.status, json, text };
+  // Hard timeout so a slow/hanging bank API can never stall the dashboard render.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: { Authorization: `Bearer ${t}`, Accept: 'application/json' },
+      signal: ctrl.signal,
+    });
+    const text = (await res.text().catch(() => '')).trim();
+    let json: unknown;
+    try { json = JSON.parse(text); } catch { /* leave undefined; caller can show text */ }
+    return { ok: res.ok, status: res.status, json, text };
+  } catch (err) {
+    const aborted = (err as Error).name === 'AbortError';
+    return { ok: false, status: 0, text: aborted ? 'timed out after 4s' : (err as Error).message };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function describeErr(r: { status: number; text: string }): string {
