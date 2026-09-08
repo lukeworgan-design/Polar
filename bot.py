@@ -1453,67 +1453,95 @@ def format_full_summary() -> str:
 
 def send_morning_briefing():
     try:
-        sleep = supabase.table("polar_sleep").select("date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds,avg_hrv").order("date", desc=True).limit(7).execute()
-        hrv   = supabase.table("polar_hrv").select("date,recharge_status,ans_charge,sleep_charge,hrv_avg,hrv_rmssd").order("date", desc=True).limit(1).execute()
-        bot.send_message(YOUR_TELEGRAM_ID, format_recovery_dashboard(sleep.data, hrv.data), parse_mode="Markdown")
+        now_dt      = datetime.now(timezone.utc)
+        today_str   = now_dt.strftime("%Y-%m-%d")
+        is_monday   = now_dt.weekday() == 0
 
-        readiness = compute_readiness_score()
-        session   = recommend_session(readiness)
+        readiness   = compute_readiness_score()
+        session     = recommend_session(readiness)
 
-        # Check for a run this morning (any exercise logged today)
-        today_str   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        runs_today  = supabase.table("polar_exercises").select("polar_exercise_id,distance_meters,duration_seconds,avg_heart_rate,training_load,sport").gte("date", today_str).execute().data or []
-        ran_today   = bool(runs_today)
-        run_context = ""
-        if ran_today:
-            r = runs_today[0]
-            dist_km  = (r.get("distance_meters") or 0) / 1000
-            dur_min  = (r.get("duration_seconds") or 0) // 60
-            run_context = f" Today's run: {dist_km:.1f}km in {dur_min}min, avg HR {r.get('avg_heart_rate','?')}bpm, load {r.get('training_load','?')}."
-        else:
-            run_context = " No run detected this morning — rest or cross-training day."
+        # Sleep — note data currency so Luke knows if last night hasn't synced yet
+        sleep_rows  = supabase.table("polar_sleep").select(
+            "date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds"
+        ).order("date", desc=True).limit(3).execute().data or []
+        latest_sleep_date = sleep_rows[0]["date"][:10] if sleep_rows else "?"
+        sleep_age   = (now_dt.date() - datetime.strptime(latest_sleep_date, "%Y-%m-%d").date()).days if latest_sleep_date != "?" else 99
+        sleep_note  = (
+            f"Last night's sleep ({latest_sleep_date})"  if sleep_age == 0 else
+            f"Sleep data from {sleep_age} day(s) ago ({latest_sleep_date}) — watch may not have synced yet"
+        )
+        sleep_lines = []
+        for s in sleep_rows:
+            h, m = divmod((s.get("total_sleep_seconds") or 0) // 60, 60)
+            sleep_lines.append(f"  {s['date'][:10]}: {h}h{m:02d}m score {s.get('sleep_score','?')} | REM {(s.get('rem_seconds') or 0)//60}m · Deep {(s.get('deep_sleep_seconds') or 0)//60}m")
+        sleep_context = f"{sleep_note}\n" + "\n".join(sleep_lines)
 
-        sw = supabase.table("polar_sleepwise").select("date,grade,grade_classification,sleep_inertia").order("date", desc=True).limit(1).execute()
-        sw_context = ""
-        if sw.data:
-            s  = sw.data[0]
-            gc = (s.get("grade_classification") or "").replace("GRADE_CLASSIFICATION_", "").replace("_", " ").title()
-            sw_context = f" SleepWise grade: {s.get('grade','?')} ({gc}), inertia: {s.get('sleep_inertia','?')}."
+        hrv_resp    = supabase.table("polar_hrv").select("date,recharge_status,hrv_avg,ans_charge").order("date", desc=True).limit(1).execute()
+        hrv         = hrv_resp.data[0] if hrv_resp.data else {}
+        hrv_context = (f"Recharge: {hrv.get('recharge_status','?')} | HRV {hrv.get('hrv_avg','?')} | ANS {hrv.get('ans_charge','?')}"
+                       if hrv else "No HRV data.")
 
-        cl = supabase.table("polar_cardio_load").select("date,cardio_load_status,cardio_load_ratio,strain,tolerance").order("date", desc=True).limit(1).execute()
-        load_context = ""
-        if cl.data:
-            c = cl.data[0]
-            load_context = f" Cardio load: {c.get('cardio_load_status','?')} | Strain {c.get('strain','?')} / Tolerance {c.get('tolerance','?')} | Ratio {c.get('cardio_load_ratio','?')}."
+        sw_resp     = supabase.table("polar_sleepwise").select("date,grade,grade_classification,sleep_inertia").order("date", desc=True).limit(1).execute()
+        sw          = sw_resp.data[0] if sw_resp.data else {}
+        sw_context  = ""
+        if sw:
+            gc         = (sw.get("grade_classification") or "").replace("GRADE_CLASSIFICATION_","").replace("_"," ").title()
+            sw_context = f"SleepWise {sw.get('grade','?')}/10 ({gc}), inertia {sw.get('sleep_inertia','?')}."
 
-        if ran_today:
-            briefing_type = "Post-run AM briefing"
-            sections = """🏃 RUN SNAPSHOT — briefly validate or challenge the readiness score based on today's run data (2-3 sentences)
-🧘 RECOVERY TODAY — specific recovery actions: stretches, foam rolling, nutrition. Be concrete.
-📅 WEEK AHEAD — day-by-day plan for remaining sessions this week. One line per day.
-⚑ FLAG — one watch point from recent data."""
-        else:
-            briefing_type = "Morning briefing (rest day)"
-            sections = """🧘 TODAY'S FOCUS — what to do on a rest day given current load and readiness (recovery, mobility, cross-training). Be specific.
-📅 WEEK AHEAD — day-by-day plan for remaining sessions this week. One line per day.
-⚑ FLAG — one watch point from recent data."""
+        cl_resp     = supabase.table("polar_cardio_load").select("date,cardio_load_status,cardio_load_ratio,strain,tolerance").order("date", desc=True).limit(1).execute()
+        cl          = cl_resp.data[0] if cl_resp.data else {}
+        cl_context  = (f"Load ratio {cl.get('cardio_load_ratio','?')} ({cl.get('cardio_load_status','?').replace('_',' ').title() if cl.get('cardio_load_status') else '?'}) | Strain {cl.get('strain','?')} / Tolerance {cl.get('tolerance','?')}"
+                       if cl else "No cardio load data.")
+
+        # Monday: pull last week's summary for the recap section
+        monday_recap = ""
+        if is_monday:
+            prev_start  = (now_dt - timedelta(days=7)).strftime("%Y-%m-%d")
+            prev_end    = today_str
+            prev_runs   = supabase.table("polar_exercises").select("date,sport,distance_meters,training_load,duration_seconds,avg_heart_rate").gte("date", prev_start).lt("date", prev_end).order("date").execute().data or []
+            if prev_runs:
+                pw_km   = sum((r.get("distance_meters") or 0) for r in prev_runs) / 1000
+                pw_load = sum((r.get("training_load") or 0) for r in prev_runs)
+                lines   = [f"  {r['date'][5:]}: {sport_emoji(r.get('sport',''))} {r.get('sport','?')} {round((r.get('distance_meters') or 0)/1000,1)}km HR {r.get('avg_heart_rate','?')}" for r in prev_runs]
+                monday_recap = f"\nLAST WEEK: {round(pw_km,1)}km | load {round(pw_load,0):.0f} | {len(prev_runs)} sessions\n" + "\n".join(lines)
+
+        sections = (
+            """📅 LAST WEEK — one-line verdict on the week just gone (load, adherence, body signal)
+💡 TODAY'S CALL — one clear recommendation for the 5am slot with specific rationale
+📍 THIS WEEK — Mon–Fri skeleton plan, one line per day (Sat/Sun = family time, never suggest)
+⚑ WATCH — one data point worth tracking this week"""
+            if is_monday else
+            """💡 TODAY'S CALL — one clear recommendation for the ~1hr slot with specific rationale from the signals
+📍 REST OF WEEK — remaining weekdays only, one line per day
+⚑ WATCH — one signal worth keeping an eye on"""
+        )
+
+        prompt = f"""Morning brief for Luke's 5am slot.
+
+SLEEP: {sleep_context}
+HRV / RECHARGE: {hrv_context}
+{sw_context}
+LOAD: {cl_context}
+READINESS: {readiness['score']}/10 ({readiness['label']})
+SUGGESTED SESSION: {session}
+{monday_recap}
+
+Join the dots — interpret signals, don't list them. Land ONE clear call for the slot.
+Emoji-led sections only (no markdown headers like ##). Scannable on a phone at 5am.
+{sections}
+
+Brief was already correct not to expect a run — it fires BEFORE the session, never after.
+Newborn context: broken sleep is normal, missed sessions are fine."""
 
         response = claude.messages.create(
             model="claude-sonnet-4-6", max_tokens=500,
             system=build_system_prompt(),
-            messages=[{"role": "user", "content": f"""{briefing_type}.{run_context}{sw_context}{load_context}
-Readiness score: {readiness['score']}/10 ({readiness['label']}). Suggested session: {session}.
-
-Join the dots — interpret the signals, don't list them. Land one clear call for the ~1hr window.
-Emoji-led sections, scannable on a phone at 5am. 3 sections max:
-
-{sections}
-
-Remember: newborn at home, broken sleep is normal, missed sessions aren't failures."""}]
+            messages=[{"role": "user", "content": prompt}]
         )
-        reply = extract_and_save_note(response.content[0].text, "morning briefing")
-        title = "🌅 *Post-Run AM Brief" if ran_today else "🌅 *AM Brief"
-        bot.send_message(YOUR_TELEGRAM_ID, f"{title} — {datetime.now(timezone.utc).strftime('%-d %b')}*\n\n{readiness_emoji(readiness['score'])} *Readiness: {readiness['score']}/10* — _{readiness['label']}_\n\n{reply}", parse_mode="Markdown")
+        reply     = extract_and_save_note(response.content[0].text, "morning briefing")
+        day_label = now_dt.strftime("%A %-d %b")
+        header    = f"🌅 *{day_label}*\n\n{readiness_emoji(readiness['score'])} *Readiness {readiness['score']}/10* — _{readiness['label']}_\n\n"
+        bot.send_message(YOUR_TELEGRAM_ID, (header + reply)[:4000], parse_mode="Markdown")
         check_and_push_alerts()
     except Exception as e:
         log.error(f"Briefing error: {e}")
@@ -1578,74 +1606,109 @@ End with: NOTE: post-run debrief | <10-word summary>"""
 
 
 def send_evening_debrief():
+    """Evening set-up: short today read + clear call on tomorrow's 5am slot."""
     try:
-        today_str     = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         now           = datetime.now(timezone.utc)
+        today_str     = now.strftime("%Y-%m-%d")
+        tomorrow_str  = (now + timedelta(days=1)).strftime("%Y-%m-%d")
         week_start    = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
-        activity_resp = supabase.table("polar_daily_activity").select("date,steps,active_calories,active_time_seconds").eq("date", today_str).execute()
+
+        activity_resp = supabase.table("polar_daily_activity").select("steps,active_calories,active_time_seconds").eq("date", today_str).execute()
         activity      = activity_resp.data[0] if activity_resp.data else None
-        runs_today    = supabase.table("polar_exercises").select("polar_exercise_id,distance_meters,duration_seconds,avg_heart_rate,training_load,sport").gte("date", today_str).lt("date", (now + timedelta(days=1)).strftime("%Y-%m-%d")).execute().data or []
-        week_runs     = supabase.table("polar_exercises").select("date,distance_meters,training_load,duration_seconds").gte("date", week_start).execute().data or []
+
+        runs_today    = supabase.table("polar_exercises").select("distance_meters,duration_seconds,avg_heart_rate,training_load,sport").gte("date", today_str).lt("date", tomorrow_str).execute().data or []
+
+        week_runs     = supabase.table("polar_exercises").select("date,distance_meters,training_load").gte("date", week_start).execute().data or []
         weekly_km     = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
         weekly_load   = sum((r.get("training_load") or 0) for r in week_runs)
-        cl_resp       = supabase.table("polar_cardio_load").select("date,cardio_load_status,cardio_load_ratio,strain,tolerance").order("date", desc=True).limit(1).execute()
-        cl            = cl_resp.data[0] if cl_resp.data else {}
-        sw_resp       = supabase.table("polar_sleepwise").select("date,grade,grade_classification,circadian_bedtime_start,circadian_bedtime_end").order("date", desc=True).limit(1).execute()
-        sw            = sw_resp.data[0] if sw_resp.data else {}
-        goals_resp    = supabase.table("goals").select("race_name,race_date,distance_km,target_time").eq("active", True).execute()
-        goals_text    = "\n".join([f"- {g['race_name']} on {g['race_date']}: target {g['target_time']}" for g in (goals_resp.data or [])]) or "No active goals."
-        checkin_resp  = supabase.table("wellness_checkins").select("date,fatigue_score,sleep_score,mood_score,notes").order("date", desc=True).limit(1).execute()
+
+        cl_resp = supabase.table("polar_cardio_load").select("cardio_load_status,cardio_load_ratio,strain,tolerance").order("date", desc=True).limit(1).execute()
+        cl      = cl_resp.data[0] if cl_resp.data else {}
+
+        sw_resp = supabase.table("polar_sleepwise").select("grade,grade_classification,circadian_bedtime_start,circadian_bedtime_end").order("date", desc=True).limit(1).execute()
+        sw      = sw_resp.data[0] if sw_resp.data else {}
+
+        checkin_resp  = supabase.table("wellness_checkins").select("date,fatigue_score,mood_score").order("date", desc=True).limit(1).execute()
         last_checkin  = checkin_resp.data[0] if checkin_resp.data else None
         checkin_today = last_checkin and last_checkin.get("date") == today_str
-        cl_text = f"Cardio load: {cl.get('cardio_load_status','?')} | Strain {cl.get('strain','?')} / Tolerance {cl.get('tolerance','?')} | Ratio {cl.get('cardio_load_ratio','?')}" if cl else ""
-        sw_text = ""
-        if sw:
-            gc      = (sw.get("grade_classification") or "").replace("GRADE_CLASSIFICATION_", "").replace("_", " ").title()
-            bed_str = f"Optimal bedtime: {sw.get('circadian_bedtime_start','?')}–{sw.get('circadian_bedtime_end','?')}" if sw.get("circadian_bedtime_start") else ""
-            sw_text = f"SleepWise grade: {sw.get('grade','?')} ({gc}) | {bed_str}"
+
+        # Compute tomorrow's readiness to drive the session call
+        readiness    = compute_readiness_score()
+        session_call = recommend_session(readiness)
+
+        # ── Format data blocks ──
+        today_block = ""
         if activity:
             steps      = activity.get("steps", "?")
             active_min = round((activity.get("active_time_seconds") or 0) / 60)
-            run_summary = "No runs today."
-            if runs_today:
-                run_lines = []
-                for r in runs_today:
-                    d   = round((r.get("distance_meters") or 0) / 1000, 2)
-                    dur = r.get("duration_seconds") or 0
-                    run_lines.append(f"  - {sport_emoji(r.get('sport',''))} {d}km in {dur//60}m | avg HR {r.get('avg_heart_rate','?')} | load {r.get('training_load','?')}")
-                run_summary = "Runs today:\n" + "\n".join(run_lines)
-            checkin_nudge   = "" if checkin_today else "\nNudge Luke to log a wellness check-in: fatigue, sleep quality, mood out of 10."
-            checkin_context = f"\nLast check-in ({last_checkin['date']}): fatigue {last_checkin.get('fatigue_score','?')}/10, mood {last_checkin.get('mood_score','?')}/10" if last_checkin else ""
-            prompt = f"""Evening check-in. Short and scannable.
+            today_block = f"Steps {steps} | Active {active_min}min"
+        if runs_today:
+            run_lines = []
+            for r in runs_today:
+                d   = round((r.get("distance_meters") or 0) / 1000, 2)
+                dur = r.get("duration_seconds") or 0
+                run_lines.append(f"{sport_emoji(r.get('sport',''))} {d}km in {dur//60}min | HR {r.get('avg_heart_rate','?')} | load {r.get('training_load','?')}")
+            today_block += ("\n" if today_block else "") + "Sessions: " + " / ".join(run_lines)
 
-TODAY: Steps {steps} | Active {active_min}min
-{run_summary}
-{cl_text}
-{sw_text}
-WEEK: {round(weekly_km,1)}km | load {round(weekly_load,0)} | {len(week_runs)} sessions
-GOALS: {goals_text}
+        load_block = ""
+        if cl:
+            load_block = (
+                f"Load status: {cl.get('cardio_load_status','?')} | ratio {cl.get('cardio_load_ratio','?')} "
+                f"| strain {cl.get('strain','?')} / tolerance {cl.get('tolerance','?')}"
+            )
+
+        bedtime_block = ""
+        if sw:
+            gc = (sw.get("grade_classification") or "").replace("GRADE_CLASSIFICATION_", "").replace("_", " ").title()
+            bed_start = sw.get("circadian_bedtime_start", "")
+            bed_end   = sw.get("circadian_bedtime_end", "")
+            bedtime_block = f"SleepWise: grade {sw.get('grade','?')} ({gc})"
+            if bed_start:
+                bedtime_block += f" | optimal bedtime {bed_start}–{bed_end}"
+
+        checkin_context = ""
+        if last_checkin and not checkin_today:
+            checkin_context = f"Last check-in ({last_checkin['date']}): fatigue {last_checkin.get('fatigue_score','?')}/10, mood {last_checkin.get('mood_score','?')}/10"
+        checkin_nudge = "" if checkin_today else "\nIf there's an opening, nudge Luke to log a quick check-in (fatigue / sleep / mood out of 10)."
+
+        tomorrow_dow = (now + timedelta(days=1)).strftime("%A")
+
+        prompt = f"""Evening set-up message for Luke. Fires at 20:00 BST. Short — this is a phone read.
+Purpose: quick read of today, then commit to tomorrow's plan so the 5am decision is already made.
+
+TODAY ({now.strftime('%A')}):
+{today_block or "No activity data yet — may not have synced."}
+
+LOAD:
+{load_block or "No cardio load data."}
+
+WEEK SO FAR: {round(weekly_km,1)}km | load {round(weekly_load,0)} | {len(week_runs)} sessions
+
+READINESS: {readiness['score']}/10 — {readiness['label']}
+
+TOMORROW'S SESSION CALL: {session_call}
+
+SLEEP TONIGHT:
+{bedtime_block or "No SleepWise data."}
+
 {checkin_context}
 
-3 emoji-led sections, 1–3 sentences each — interpret, don't list:
-📊 TODAY — one-line read of how the day landed (load, recovery signals)
-⚖️ BALANCE — one thing looking good, one thing to watch
-🌙 TONIGHT — bedtime window from SleepWise, one specific wind-down call
+Write 3 emoji-led sections, 1–3 sentences each. Interpret, never list raw numbers.
+Peer voice — concise, direct, no fluff.
+
+📊 TODAY — one-sentence read of today's load and recovery picture
+🗓️ TOMORROW ({tomorrow_dow}) — commit to the session call above; tell Luke exactly what tomorrow's 5am slot is and why. No hedging.
+🌙 TONIGHT — one concrete sleep call (bedtime target if available, otherwise a recovery action)
 {checkin_nudge}
-End with: NOTE: evening debrief | <10-word summary>"""
-        else:
-            prompt = f"""Evening — data still syncing.
+End with: NOTE: evening set-up | <10-word summary>"""
 
-WEEK: {round(weekly_km,1)}km | {len(week_runs)} sessions
-{cl_text}\n{sw_text}
-
-📊 DATA — note syncing, share what's available
-🌙 TONIGHT — one sleep/recovery call
-{f"Nudge Luke to log check-in: fatigue, sleep, mood out of 10." if not checkin_today else ""}
-End with: NOTE: evening debrief | data pending"""
-        response = claude.messages.create(model="claude-sonnet-4-6", max_tokens=400, messages=[{"role": "user", "content": prompt}])
-        reply    = extract_and_save_note(response.content[0].text, "evening debrief")
-        icon     = "📊" if activity else "⏳"
-        msg      = f"{icon} *Evening Debrief — {datetime.now(timezone.utc).strftime('%-d %b')}*\n\n{reply}"
+        response = claude.messages.create(
+            model="claude-sonnet-4-6", max_tokens=400,
+            system=build_system_prompt(),
+            messages=[{"role": "user", "content": prompt}]
+        )
+        reply = extract_and_save_note(response.content[0].text, "evening set-up")
+        msg   = f"🌙 *Evening Set-Up — {now.strftime('%-d %b')}*\n\n{reply}"
         bot.send_message(YOUR_TELEGRAM_ID, msg[:4000], parse_mode="Markdown")
     except Exception as e:
         log.error(f"Evening debrief error: {e}")
@@ -1743,12 +1806,11 @@ def scheduler_loop():
     while True:
         now        = datetime.now(timezone.utc)
         brief_hour = BRIEF_HOUR_UTC      # 04:00 UTC = 05:00 BST (set via env var)
-        # Weekday brief at brief_hour:00, evening debrief at 20:30, midnight reset, Sunday weekly review at 19:00
+        # AM brief (weekdays), 19:00 UTC = evening set-up (Mon–Sat) / weekly review (Sun), midnight reset
         targets = [
-            now.replace(hour=brief_hour, minute=0,  second=0, microsecond=0),
-            now.replace(hour=20,         minute=30, second=0, microsecond=0),
-            now.replace(hour=19,         minute=0,  second=0, microsecond=0),  # weekly review (Sun)
-            now.replace(hour=0,          minute=5,  second=0, microsecond=0),
+            now.replace(hour=brief_hour, minute=0, second=0, microsecond=0),
+            now.replace(hour=19,         minute=0, second=0, microsecond=0),  # evening (20:00 BST)
+            now.replace(hour=0,          minute=5, second=0, microsecond=0),
         ]
         targets    = [t + timedelta(days=1) if now >= t else t for t in targets]
         sleep_secs = (min(targets) - now).total_seconds()
@@ -1760,11 +1822,11 @@ def scheduler_loop():
                 send_morning_briefing()
             else:
                 log.info("Scheduler: skipping AM brief — weekend")
-        elif fire_time.hour == 20 and fire_time.minute >= 30 and fire_time.minute < 35:
-            if fire_time.weekday() < 5:
+        elif fire_time.hour == 19 and fire_time.minute < 5:
+            if fire_time.weekday() == 6:  # Sunday → weekly review
+                send_weekly_review()
+            elif fire_time.weekday() < 6:  # Mon–Sat → evening set-up
                 send_evening_debrief()
-        elif fire_time.hour == 19 and fire_time.minute < 5 and fire_time.weekday() == 6:  # Sunday
-            send_weekly_review()
         elif fire_time.hour == 0 and fire_time.minute < 10:
             debriefed_today.clear()
             alerts_fired_today.clear()
