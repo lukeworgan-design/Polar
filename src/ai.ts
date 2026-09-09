@@ -1797,11 +1797,23 @@ export async function generateResponse(
   // Build the system prompt once — it's identical across every loop iteration.
   const systemPrompt = await buildSystemPrompt();
 
+  // Prompt caching: the system prompt and tool definitions are large and near
+  // identical on every call, so mark them cacheable. Repeat calls within the
+  // cache window (notably the multiple calls this one agentic loop makes) then
+  // pay ~10% for that prefix instead of full price. cache_control on the last
+  // tool covers the whole tool list; on the system block covers the prompt.
+  const systemParam: Anthropic.TextBlockParam[] = [
+    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+  ];
+  const cachedTools: Anthropic.Tool[] = tools.map((t, i) =>
+    i === tools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t,
+  );
+
   let response = await createMessage({
     model: config.anthropic.model,
     max_tokens: 4096,
-    system: systemPrompt,
-    tools,
+    system: systemParam,
+    tools: cachedTools,
     messages,
   });
 
@@ -1849,8 +1861,8 @@ export async function generateResponse(
       response = await createMessage({
         model: config.anthropic.model,
         max_tokens: 4096,
-        system: systemPrompt,
-        tools,
+        system: systemParam,
+        tools: cachedTools,
         messages,
       });
     }
@@ -1873,8 +1885,8 @@ export async function generateResponse(
       response = await createMessage({
         model: config.anthropic.model,
         max_tokens: 4096,
-        system: systemPrompt,
-        tools,
+        system: systemParam,
+        tools: cachedTools,
         messages,
       });
       continue; // re-run the tool loop on the corrected response
