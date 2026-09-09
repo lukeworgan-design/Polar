@@ -128,7 +128,13 @@ function cleanLocation(loc: string | null | undefined): string | null {
   const trimmed = loc.trim();
   if (!trimmed) return null;
   if (/^(none|n\/?a|tbd|tba|null|undefined|-+)$/i.test(trimmed)) return null;
-  return trimmed;
+  // Google returns full postal addresses ("Venue Street, Area, Town, POSTCODE,
+  // England"). On the wall we only need the venue/first line — keep the first
+  // comma segment and drop the town/postcode/country tail so it fits one line.
+  const first = (trimmed.split(',')[0] ?? trimmed).trim()
+    .replace(/\s+(england|united kingdom|uk|scotland|wales)$/i, '')
+    .trim();
+  return first || trimmed;
 }
 
 function toDashEvent(e: CalendarEvent, withDay: boolean): DashEvent {
@@ -512,7 +518,7 @@ const REFRESH_SECONDS = 90;
 
 export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): string {
   const todayList = d.today.length
-    ? `<ul class="events">${d.today.map(eventRow).join('')}</ul>`
+    ? `<ul class="events autoscroll">${d.today.map(eventRow).join('')}</ul>`
     : `<p class="empty">Nothing in the diary today 🎉</p>`;
 
   // Coming Up and Shopping are hidden entirely when empty (no point showing a
@@ -764,11 +770,17 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .events { list-style: none; display: flex; flex-direction: column; gap: 1.3vh; overflow: hidden; }
   .events li { display: flex; align-items: baseline; gap: 1.2vw; }
   .ev-when { flex: 0 0 auto; min-width: 11.5vw; color: var(--accent2); font-weight: 700; font-size: 2.3vh; font-variant-numeric: tabular-nums; }
-  .ev-name { font-size: 2.4vh; font-weight: 600; display: flex; flex-direction: column; }
-  .ev-loc { font-size: 1.7vh; color: var(--muted); font-weight: 400; }
+  .ev-name { font-size: 2.4vh; font-weight: 600; display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+  /* Keep each event's location to one line so a full postal address can't
+     balloon the Today card and shove the kids' cards off the bottom. */
+  .ev-loc { font-size: 1.7vh; color: var(--muted); font-weight: 400;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   /* Clamp a long value to two lines so an edited rota can't blow up a half-width card. */
   .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .today-card { flex: 0 0 auto; }
+  /* Today shares the left column's flexible space and scrolls internally on a
+     busy day, so it can never push the kids' pocket-money cards off-screen. */
+  .today-card { flex: 2 1 0; min-height: 16vh; display: flex; flex-direction: column; overflow: hidden; }
+  .today-card .events { flex: 1; min-height: 0; }
   .reminders-card { flex: 0 0 auto; }
   /* Per-kid pocket-money checklist cards (bottom-left, side by side). They share
      the left column's flexible space with Coming Up (each scrolls internally). */
@@ -797,7 +809,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .reminders { list-style: none; display: flex; flex-direction: column; gap: .8vh; margin-top: .6vh; }
   .reminders li { font-size: 2.5vh; font-weight: 600; display: flex; gap: 1.2vw; align-items: baseline; }
   .reminders .rm-tag { flex: 0 0 auto; min-width: 11vw; color: var(--accent2); font-weight: 700; }
-  .events-card { flex: 1.3 1 0; min-height: 14vh; display: flex; flex-direction: column; overflow: hidden; }
+  .events-card { flex: 1 1 0; min-height: 10vh; display: flex; flex-direction: column; overflow: hidden; }
   .events-card .events { flex: 1; min-height: 0; overflow: hidden; }
   .shop-card { flex: 1 1 0; min-height: 6vh; display: flex; flex-direction: column; overflow: hidden; }
   .shop-list { list-style: none; flex: 1; min-height: 0; overflow: hidden;
