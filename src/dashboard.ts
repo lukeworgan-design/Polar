@@ -783,8 +783,11 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   /* Today shares the left column's flexible space and scrolls internally on a
      busy day, so it can never push the kids' pocket-money cards off-screen. */
-  .today-card { flex: 2 1 0; min-height: 16vh; display: flex; flex-direction: column; overflow: hidden; }
-  .today-card .events { flex: 1; min-height: 0; }
+  /* Today takes only the height its events need (so no dead gap under them),
+     capped so a very busy day scrolls internally instead of hogging the column.
+     Coming Up then grows into the freed space. */
+  .today-card { flex: 0 1 auto; min-height: 12vh; max-height: 38vh; display: flex; flex-direction: column; overflow: hidden; }
+  .today-card .events { flex: 0 1 auto; min-height: 0; }
   .reminders-card { flex: 0 0 auto; }
   /* Per-kid pocket-money checklist cards (bottom-left, side by side). They share
      the left column's flexible space with Coming Up (each scrolls internally). */
