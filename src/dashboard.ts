@@ -674,10 +674,14 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   // up the right column. `weatherCard` is still built above; re-add it here to
   // bring it back.
   void weatherCard;
+  // "Don't forget" (PE kit / forest school) lives in the right column, grouped
+  // with the school run — it's the day's kit logistics — so it doesn't crowd the
+  // left column's Today / Coming Up / kids cards on a busy day.
   const sideCards = [
     shoppingCard,
     mealsCard,
     pair(schoolRunCard, binCard),
+    remindersCard,
     pair(countdownCard, babyCard),
     funCard,
   ].filter(Boolean).join('\n');
@@ -809,6 +813,10 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .reminders { list-style: none; display: flex; flex-direction: column; gap: .8vh; margin-top: .6vh; }
   .reminders li { font-size: 2.5vh; font-weight: 600; display: flex; gap: 1.2vw; align-items: baseline; }
   .reminders .rm-tag { flex: 0 0 auto; min-width: 11vw; color: var(--accent2); font-weight: 700; }
+  /* Don't-forget card lives in the narrower right column — tighten it up. */
+  .side .reminders { gap: .5vh; }
+  .side .reminders li { font-size: 2vh; gap: .8vw; }
+  .side .reminders .rm-tag { min-width: 6vw; }
   .events-card { flex: 1 1 0; min-height: 10vh; display: flex; flex-direction: column; overflow: hidden; }
   .events-card .events { flex: 1; min-height: 0; overflow: hidden; }
   .shop-card { flex: 1 1 0; min-height: 6vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -897,7 +905,6 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
         <h2>Today</h2>
         ${todayList}
       </div>
-      ${remindersCard}
       ${comingUpCard}
       ${jobsCards}
     </div>
