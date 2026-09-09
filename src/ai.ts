@@ -1380,6 +1380,17 @@ function getLocalNow(timezone: string): Date {
 }
 
 /**
+ * The current wall-clock time as one short line. Kept OUT of the cached system
+ * prompt (it changes every minute, which would defeat prompt caching) and
+ * appended per-request as a small uncached block instead.
+ */
+function currentTimeLine(): string {
+  const now = getLocalNow(config.timezone);
+  const t = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `⏰ The exact current local time right now is ${t} (${config.timezone}).`;
+}
+
+/**
  * Parse a naive ISO datetime string (e.g. "2026-04-05T09:00:00" with no offset)
  * as local time in the given IANA timezone, returning a proper UTC Date.
  *
@@ -1438,7 +1449,9 @@ async function buildSystemPrompt(): Promise<string> {
     month: 'long',
     year: 'numeric',
   });
-  const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+  // NB: the minute-precise time is deliberately NOT included in this prompt —
+  // it changes every request and would break prompt caching. It's appended
+  // separately per-request (see currentTimeLine) after the cached block.
 
   const children = config.family.children;
   const arrival = getBabyArrival();
@@ -1476,7 +1489,7 @@ NEWBORN CARE & VIRTUAL NANNY (${babyName} is a newborn):
 
   return `You are Rose, a family personal assistant living inside a Telegram group chat shared by Luke and Toni. You're like a brilliant friend who happens to be incredibly organised — warm, casual, occasionally witty, always helpful.
 
-⏰ RIGHT NOW IT IS: ${dateStr} at ${timeStr} (${config.timezone}).
+⏰ TODAY IS: ${dateStr} (${config.timezone}). (The exact current time is given at the very end of this prompt.)
 This is the authoritative current date — trust it over anything in the earlier chat. This is a long-running group chat, so the day may well have rolled over since the last messages; NEVER infer today's date from older messages. When someone says "today" they mean ${dateStr}. Anything ticked or logged applies to ${dateStr} unless they name another day.
 
 FAMILY:
@@ -1552,7 +1565,7 @@ ASDA SHOPPING:
 - After presenting the Asda list, ask if they want to clear it once they're done shopping.
 
 TIME HANDLING:
-- The current time is ${timeStr} and today is ${dateStr}
+- Today is ${dateStr} (the exact current time is at the very end of this prompt)
 - When users say things like "tomorrow", "next week", "Saturday", interpret relative to today
 - For events without a specified duration, default to 1 hour
 - For all-day events (birthdays, holidays), use all_day: true
@@ -1797,13 +1810,18 @@ export async function generateResponse(
   // Build the system prompt once — it's identical across every loop iteration.
   const systemPrompt = await buildSystemPrompt();
 
-  // Prompt caching: the system prompt and tool definitions are large and near
-  // identical on every call, so mark them cacheable. Repeat calls within the
-  // cache window (notably the multiple calls this one agentic loop makes) then
-  // pay ~10% for that prefix instead of full price. cache_control on the last
-  // tool covers the whole tool list; on the system block covers the prompt.
+  // Prompt caching: the tool definitions and the (now day-stable) system prompt
+  // are large and near-identical on every call, so cache them. The system prompt
+  // no longer embeds the per-minute time, so it stays byte-identical all day —
+  // meaning repeat calls within the cache window (the whole agentic loop, plus
+  // any messages close together) read that prefix at ~10% instead of full price.
+  // The tiny, ever-changing current-time line goes in a SECOND block AFTER the
+  // cache breakpoint, so it never invalidates the cached prefix.
+  // (Default 5-min TTL — the installed SDK 0.39 doesn't type the 1h option; an
+  // SDK bump would let us widen this to catch messages up to an hour apart.)
   const systemParam: Anthropic.TextBlockParam[] = [
     { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: currentTimeLine() },
   ];
   const cachedTools: Anthropic.Tool[] = tools.map((t, i) =>
     i === tools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t,
