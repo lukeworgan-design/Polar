@@ -155,6 +155,18 @@ export function initScheduler(sendFn: SendMessageFn): void {
     }
   }, { timezone: config.timezone });
 
+  // Weekly "jobs missed this week" review — Friday 8am, before the 4pm payout,
+  // so there's time to backfill anything the kids actually did.
+  cron.schedule('0 8 * * 5', async () => {
+    try {
+      const { weekMissedMessage } = await import('./pocketmoney');
+      const msg = await weekMissedMessage();
+      if (msg) await sendToGroup(msg);
+    } catch (err) {
+      console.error('Error sending weekly jobs-missed review:', err);
+    }
+  }, { timezone: config.timezone });
+
   // Morning "jobs of the day" on the Echos — 7:30am daily.
   cron.schedule('30 7 * * *', async () => {
     try {

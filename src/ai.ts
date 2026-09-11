@@ -660,6 +660,11 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'get_week_missed',
+    description: "Get an accurate, day-by-day summary of which pocket-money jobs each child MISSED on each completed day so far this pay-week (with the running weekly totals). Use this whenever asked 'what's been missed this week', 'how did they do this week', a weekly jobs review, or a Friday catch-up. NEVER work the days out yourself — you mislabel them; this tool computes them correctly.",
+    input_schema: { type: 'object' as const, properties: {}, required: [] },
+  },
+  {
     name: 'mark_job_done',
     description: "Tick off pocket-money job(s) for a child, e.g. 'Poppy made her bed'. Pass the EXACT job name(s) from get_jobs_status (comma-separated for several), or 'all' for everything that day. Always check get_jobs_status first so the names match. Defaults to today; pass 'date' to backfill a day that was missed (e.g. 'yesterday', 'Saturday').",
     input_schema: {
@@ -1275,6 +1280,13 @@ async function executeTool(
         return `Pocket-money jobs for ${header}:\n${await pm.describeState(date)}`;
       }
 
+      case 'get_week_missed': {
+        const pm = await import('./pocketmoney');
+        const msg = await pm.weekMissedMessage();
+        if (!msg) return 'No completed days yet this week (or jobs are not set up), so there is nothing missed to report. Tell the family gently.';
+        return `Here is the accurate week-so-far missed-jobs review (present it warmly, you can lightly reword but keep every day and job exactly as given):\n\n${msg}`;
+      }
+
       case 'mark_job_done': {
         const pm = await import('./pocketmoney');
         const child = pm.resolveChild(toolInput['child'] as string || '');
@@ -1605,6 +1617,7 @@ POCKET MONEY & JOBS (Poppy and Billy):
 - BACKFILLING A MISSED DAY: if they say a job was done on an earlier day ("Poppy made her bed yesterday", "they did all their jobs on Saturday"), just tick it off for that day — work out the actual date (yesterday relative to the current date above, or the named weekday) and pass it as mark_job_done's 'date'. Don't refuse. You can backfill today back to about two weeks ago; only the future is off-limits. If the day falls in a week that's already been paid out, still record it but gently note it won't change what was already handed over.
 - KEEP THE DAYS SEPARATE — HARD RULE: NEVER state which jobs are done or still remaining for ANY day unless you have called get_jobs_status for THAT EXACT date in this same reply. Never infer a day's remaining jobs, and never carry them over from another day or from earlier in the chat. Yesterday and today are separate lists (the same daily jobs recur every day), so backfilling yesterday tells you NOTHING about today's progress.
 - So when someone backfills a past day: fetch that day (get_jobs_status with its date), tick the jobs off for that date, and confirm ONLY that day. Do NOT tack on a "for today they've still got…" line — unless they explicitly ask about today, in which case call get_jobs_status for today FIRST and report strictly what it returns. Right after a backfill, today's jobs are almost always still all outstanding (nothing done yet), so a "today they've only got X left" line is a red flag you've muddled the days. Always label which day each figure belongs to.
+- WEEKLY REVIEW: for "what's been missed this week", "how did they do this week", a weekly jobs summary, or a Friday catch-up, call get_week_missed and present what it returns. NEVER reckon the days out yourself (you mislabel weekdays and miscount) — the tool computes each day correctly.
 - For "what has Poppy earned?" / "what jobs are left?" asked in chat, call get_jobs_status and answer from it in text. But if they ask you to SAY or ANNOUNCE the jobs out loud ("announce what's left", "read out the jobs on Alexa", "tell the kids what they've still got", "do the payday shout-out"), call announce_jobs instead (which='left' for what's still to do, 'morning' for the full list, 'payday' for earnings) — don't hand-write the words for announce_on_alexa.
 - WRITING — CRITICAL (same rule as the calendar): to tick a job off you MUST call mark_job_done in this reply. Saying "done, ticked off" as text without the tool saves NOTHING. Confirm warmly and briefly only AFTER the tool succeeds, and mention the running weekly total when natural. Keep it encouraging — this is for the kids.
 

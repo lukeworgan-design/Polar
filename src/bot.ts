@@ -559,6 +559,19 @@ bot.command('jobs', async (ctx) => {
   }
 });
 
+// Handle /jobsweek command — the deterministic "what got missed this week" review
+bot.command('jobsweek', async (ctx) => {
+  if (!isFromGroup(ctx)) return;
+  try {
+    const { weekMissedMessage } = await import('./pocketmoney');
+    const msg = await weekMissedMessage();
+    await ctx.reply(msg ?? 'No completed days yet this week (or no jobs set up) — nothing to review.', { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('Error in /jobsweek:', err);
+    await ctx.reply("Couldn't pull up this week's review just now.");
+  }
+});
+
 // Handle /jobsdebug command — dump the raw pocket-money record for diagnosis
 bot.command('jobsdebug', async (ctx) => {
   if (!isFromGroup(ctx)) return;

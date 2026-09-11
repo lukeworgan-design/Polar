@@ -450,3 +450,45 @@ export async function paydaySpeech(): Promise<string | null> {
   const parts = rows.filter((r) => r.pence > 0).map((r) => `${r.child} earned ${spokenAmount(r.pence)}`);
   return `It's payday! This week, ${speakList(parts)}. Great work this week, keep it up!`;
 }
+
+/** Short day label, e.g. "Fri 11 Sep". */
+function shortDay(dateStr: string): string {
+  return new Date(`${dateStr}T12:00:00`).toLocaleDateString('en-GB', {
+    weekday: 'short', day: 'numeric', month: 'short', timeZone: config.timezone,
+  });
+}
+
+/**
+ * Deterministic review of what each child missed on each COMPLETED day of the
+ * current pay-week (week start up to, but not including, today). Computed here —
+ * never leave the day-by-day reckoning to the model, which mislabels the days.
+ * Returns a Telegram-ready message, or null if jobs aren't set up / no days yet.
+ */
+export async function weekMissedMessage(dateStr = todayStr()): Promise<string | null> {
+  if (!(await isConfigured())) return null;
+  const past = fullWeekDates(dateStr).filter((d) => d < dateStr); // Sat..yesterday
+  if (past.length === 0) return null;
+
+  const kids = childNames();
+  const lines: string[] = [];
+  for (const d of past) {
+    const perKid: string[] = [];
+    let anyJobs = false;
+    for (const child of kids) {
+      const p = await todayProgress(child, d);
+      if (p.total === 0) continue; // e.g. weekend, weekday-only jobs
+      anyJobs = true;
+      if (p.remaining.length) perKid.push(`   • ${child}: ${p.remaining.join(', ')}`);
+    }
+    if (!anyJobs) continue;
+    lines.push(perKid.length ? `*${shortDay(d)}* — missed:\n${perKid.join('\n')}` : `*${shortDay(d)}* — all done ✅`);
+  }
+  if (lines.length === 0) return null;
+
+  const target = await getWeeklyTarget();
+  const totals = await Promise.all(
+    kids.map(async (c) => `${c} *${money((await weekProgress(c, dateStr)).pence)}*`),
+  );
+  const range = past.length === 1 ? shortDay(past[0]!) : `${shortDay(past[0]!)} – ${shortDay(past[past.length - 1]!)}`;
+  return `🗓️ *This week's jobs — what got missed* (${range})\n\n${lines.join('\n')}\n\n💰 So far: ${totals.join(', ')} (of ${money(target)} each). If they actually did any of the above, just tell me and I'll add it before payday 🌟`;
+}
