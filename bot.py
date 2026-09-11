@@ -1701,7 +1701,23 @@ def send_evening_debrief():
             checkin_context = f"Last check-in ({last_checkin['date']}): fatigue {last_checkin.get('fatigue_score','?')}/10, mood {last_checkin.get('mood_score','?')}/10"
         checkin_nudge = "" if checkin_today else "\nIf there's an opening, nudge Luke to log a quick check-in (fatigue / sleep / mood out of 10)."
 
-        tomorrow_dow = (now + timedelta(days=1)).strftime("%A")
+        tomorrow      = now + timedelta(days=1)
+        tomorrow_dow  = tomorrow.strftime("%A")
+        tomorrow_wday = tomorrow.weekday()  # 0=Mon … 6=Sun
+        is_weekend_tomorrow = tomorrow_wday >= 5  # Saturday or Sunday
+
+        if is_weekend_tomorrow:
+            tomorrow_section = (
+                f"🗓️ TOMORROW ({tomorrow_dow}) — weekend, no 5am slot. "
+                "Acknowledge this briefly and pivot: protected family time. "
+                "Maybe one line on what a good weekend looks like from a recovery angle "
+                "(get outside, keep active naturally, don't force anything)."
+            )
+        else:
+            tomorrow_section = (
+                f"🗓️ TOMORROW ({tomorrow_dow}) — commit to the session call above; "
+                "tell Luke exactly what tomorrow's 5am slot is and why. No hedging."
+            )
 
         prompt = f"""Evening set-up message for Luke. Fires at 20:00 BST. Short — this is a phone read.
 Purpose: quick read of today, then commit to tomorrow's plan so the 5am decision is already made.
@@ -1716,7 +1732,7 @@ WEEK SO FAR: {round(weekly_km,1)}km | load {round(weekly_load,0)} | {len(week_ru
 
 READINESS: {readiness['score']}/10 — {readiness['label']}
 
-TOMORROW'S SESSION CALL: {session_call}
+{"TOMORROW'S SESSION CALL: " + session_call if not is_weekend_tomorrow else "TOMORROW: weekend — no 5am session. Family time."}
 
 SLEEP TONIGHT:
 {bedtime_block or "No SleepWise data."}
@@ -1727,7 +1743,7 @@ Write 3 emoji-led sections, 1–3 sentences each. Interpret, never list raw numb
 Peer voice — concise, direct, no fluff.
 
 📊 TODAY — one-sentence read of today's load and recovery picture
-🗓️ TOMORROW ({tomorrow_dow}) — commit to the session call above; tell Luke exactly what tomorrow's 5am slot is and why. No hedging.
+{tomorrow_section}
 🌙 TONIGHT — one concrete sleep call (bedtime target if available, otherwise a recovery action)
 {checkin_nudge}
 End with: NOTE: evening set-up | <10-word summary>"""
