@@ -459,19 +459,21 @@ function shortDay(dateStr: string): string {
 }
 
 /**
- * Deterministic review of what each child missed on each COMPLETED day of the
- * current pay-week (week start up to, but not including, today). Computed here —
- * never leave the day-by-day reckoning to the model, which mislabels the days.
- * Returns a Telegram-ready message, or null if jobs aren't set up / no days yet.
+ * Deterministic review of the current pay-week so far: for each day from the
+ * week start up to AND INCLUDING today, what each child missed (or, for today,
+ * what's still to do). Computed here — never leave the day-by-day reckoning to
+ * the model, which mislabels the days. Returns a Telegram-ready message, or null
+ * if jobs aren't set up / no days yet.
  */
 export async function weekMissedMessage(dateStr = todayStr()): Promise<string | null> {
   if (!(await isConfigured())) return null;
-  const past = fullWeekDates(dateStr).filter((d) => d < dateStr); // Sat..yesterday
-  if (past.length === 0) return null;
+  const days = fullWeekDates(dateStr).filter((d) => d <= dateStr); // Sat..today
+  if (days.length === 0) return null;
 
   const kids = childNames();
   const lines: string[] = [];
-  for (const d of past) {
+  for (const d of days) {
+    const isToday = d === dateStr;
     const perKid: string[] = [];
     let anyJobs = false;
     for (const child of kids) {
@@ -481,7 +483,12 @@ export async function weekMissedMessage(dateStr = todayStr()): Promise<string | 
       if (p.remaining.length) perKid.push(`   • ${child}: ${p.remaining.join(', ')}`);
     }
     if (!anyJobs) continue;
-    lines.push(perKid.length ? `*${shortDay(d)}* — missed:\n${perKid.join('\n')}` : `*${shortDay(d)}* — all done ✅`);
+    const label = `${shortDay(d)}${isToday ? ' (today)' : ''}`;
+    if (perKid.length) {
+      lines.push(`*${label}* — ${isToday ? 'still to do' : 'missed'}:\n${perKid.join('\n')}`);
+    } else {
+      lines.push(`*${label}* — all done ✅`);
+    }
   }
   if (lines.length === 0) return null;
 
@@ -489,6 +496,6 @@ export async function weekMissedMessage(dateStr = todayStr()): Promise<string | 
   const totals = await Promise.all(
     kids.map(async (c) => `${c} *${money((await weekProgress(c, dateStr)).pence)}*`),
   );
-  const range = past.length === 1 ? shortDay(past[0]!) : `${shortDay(past[0]!)} – ${shortDay(past[past.length - 1]!)}`;
-  return `🗓️ *This week's jobs — what got missed* (${range})\n\n${lines.join('\n')}\n\n💰 So far: ${totals.join(', ')} (of ${money(target)} each). If they actually did any of the above, just tell me and I'll add it before payday 🌟`;
+  const range = days.length === 1 ? shortDay(days[0]!) : `${shortDay(days[0]!)} – ${shortDay(days[days.length - 1]!)}`;
+  return `🗓️ *This week's jobs so far* (${range})\n\n${lines.join('\n')}\n\n💰 So far: ${totals.join(', ')} (of ${money(target)} each). If they actually did any of these, just tell me and I'll add it before payday 🌟`;
 }
