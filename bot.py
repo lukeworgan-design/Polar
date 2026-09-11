@@ -1956,13 +1956,37 @@ def handle_message(message):
         else:
             bot.send_message(chat_id, "No new exercises found.")
         parts = []
+        phys_n      = sync_physical_info()
         if sleep_n:     parts.append(f"😴 {sleep_n} sleep nights")
         if recharge_n:  parts.append(f"⚡ {recharge_n} recharge nights")
         if activity_n:  parts.append(f"👟 {activity_n} activity days")
         if hr_n:        parts.append(f"❤️ {hr_n} HR days")
         if load_n:      parts.append(f"🔥 {load_n} load days")
         if sleepwise_n: parts.append(f"🧠 {sleepwise_n} SleepWise days")
+        if phys_n:      parts.append(f"⚖️ weight synced")
         if parts: bot.send_message(chat_id, "✅ Synced: " + "  •  ".join(parts))
+        return
+
+    if lower == "/syncweight":
+        try:
+            bot.send_chat_action(chat_id, "typing")
+            # Hit the endpoint and dump the raw response so we can see what Polar returns
+            r = requests.get(f"{POLAR_BASE}/users/{POLAR_USER_ID}/physical-information", headers=polar_headers())
+            lines = [f"Status: {r.status_code}"]
+            if r.ok:
+                d = r.json()
+                lines.append(f"Fields: {list(d.keys())}")
+                lines.append(f"Raw: {json.dumps(d, indent=2)[:800]}")
+                w = sf(d.get("weight"))
+                lines.append(f"\nParsed weight: {w} kg" if w else "\n⚠️ No 'weight' field found in response")
+            else:
+                lines.append(f"Body: {r.text[:400]}")
+            # Also check what's stored in the table
+            row = supabase.table("polar_physical_info").select("date,weight_kg").order("date", desc=True).limit(3).execute()
+            lines.append(f"\nDB (polar_physical_info): {row.data or 'empty'}")
+            bot.reply_to(message, "```\n" + "\n".join(lines) + "\n```", parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
         return
 
     if lower == "/briefing":
