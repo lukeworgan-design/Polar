@@ -121,13 +121,8 @@ def _live_resting_hr() -> int:
     return ATHLETE["resting_hr_fallback"]
 
 def _live_weight_kg() -> float:
-    """Latest weight: Polar Balance (physical_info) → manual check-in → fallback."""
-    try:
-        row = supabase.table("polar_physical_info").select("weight_kg").order("date", desc=True).limit(1).execute()
-        if row.data and row.data[0].get("weight_kg"):
-            return float(row.data[0]["weight_kg"])
-    except Exception:
-        pass
+    """Latest weight from manual check-in, or fallback.
+    Note: Polar Balance weight is not exposed by Polar AccessLink v3."""
     try:
         row = supabase.table("wellness_checkins").select("weight_kg").order("date", desc=True).limit(1).execute()
         if row.data and row.data[0].get("weight_kg"):
@@ -1034,34 +1029,6 @@ def sync_cardio_load() -> int:
         log.error(f"Cardio load sync error: {e}")
         return 0
 
-def sync_physical_info() -> bool:
-    """Pull latest physical information from Polar (includes Polar Balance weight)."""
-    try:
-        # Try the no-user-ID path first (matches pattern of all other working endpoints)
-        r = requests.get(f"{POLAR_BASE}/users/physical-information", headers=polar_headers())
-        if not r.ok:
-            # Fallback: try with explicit user ID
-            r = requests.get(f"{POLAR_BASE}/users/{POLAR_USER_ID}/physical-information", headers=polar_headers())
-        if not r.ok:
-            log.warning(f"Physical info: {r.status_code}")
-            return False
-        d = r.json()
-        weight = sf(d.get("weight"))
-        if not weight:
-            log.warning(f"Physical info: no weight field. Keys: {list(d.keys())}")
-            return False
-        supabase.table("polar_physical_info").upsert({
-            "date":       datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            "weight_kg":  weight,
-            "height_cm":  sf(d.get("height")),
-            "resting_hr": si(d.get("resting-heart-rate") or d.get("resting_heart_rate")),
-            "vo2max":     sf(d.get("maximum-oxygen-uptake") or d.get("vo2max")),
-            "raw_json":   json.dumps(d),
-        }, on_conflict="date").execute()
-        return True
-    except Exception as e:
-        log.error(f"Physical info sync error: {e}")
-        return False
 
 
 def sync_sleepwise() -> int:
@@ -1847,9 +1814,8 @@ def polar_sync_loop():
             hr_n        = sync_continuous_hr()
             load_n      = sync_cardio_load()
             sleepwise_n = sync_sleepwise()
-            phys_n      = sync_physical_info()
-            if any([sleep_n, recharge_n, activity_n, hr_n, load_n, sleepwise_n, phys_n]):
-                log.info(f"Sync: sleep={sleep_n} recharge={recharge_n} activity={activity_n} hr={hr_n} load={load_n} sw={sleepwise_n} phys={phys_n}")
+            if any([sleep_n, recharge_n, activity_n, hr_n, load_n, sleepwise_n]):
+                log.info(f"Sync: sleep={sleep_n} recharge={recharge_n} activity={activity_n} hr={hr_n} load={load_n} sw={sleepwise_n}")
         except Exception as e:
             log.error(f"Sync loop error: {e}")
         time.sleep(300)
@@ -1962,42 +1928,13 @@ def handle_message(message):
         else:
             bot.send_message(chat_id, "No new exercises found.")
         parts = []
-        phys_n      = sync_physical_info()
         if sleep_n:     parts.append(f"😴 {sleep_n} sleep nights")
         if recharge_n:  parts.append(f"⚡ {recharge_n} recharge nights")
         if activity_n:  parts.append(f"👟 {activity_n} activity days")
         if hr_n:        parts.append(f"❤️ {hr_n} HR days")
         if load_n:      parts.append(f"🔥 {load_n} load days")
         if sleepwise_n: parts.append(f"🧠 {sleepwise_n} SleepWise days")
-        if phys_n:      parts.append(f"⚖️ weight synced")
         if parts: bot.send_message(chat_id, "✅ Synced: " + "  •  ".join(parts))
-        return
-
-    if lower == "/syncweight":
-        try:
-            bot.send_chat_action(chat_id, "typing")
-            lines = []
-            # Try both endpoint patterns
-            for label, url in [
-                ("no-ID", f"{POLAR_BASE}/users/physical-information"),
-                ("with-ID", f"{POLAR_BASE}/users/{POLAR_USER_ID}/physical-information"),
-            ]:
-                r = requests.get(url, headers=polar_headers())
-                lines.append(f"[{label}] {r.status_code} — {url.split('polaraccesslink.com')[1]}")
-                if r.ok:
-                    d = r.json()
-                    lines.append(f"  Fields: {list(d.keys())}")
-                    lines.append(f"  Raw: {json.dumps(d)[:500]}")
-                    w = sf(d.get("weight"))
-                    lines.append(f"  weight → {w} kg" if w else "  ⚠️ no 'weight' key")
-                else:
-                    lines.append(f"  {r.text[:200]}")
-            # What's stored
-            row = supabase.table("polar_physical_info").select("date,weight_kg").order("date", desc=True).limit(3).execute()
-            lines.append(f"\nDB: {row.data or 'empty'}")
-            bot.reply_to(message, "```\n" + "\n".join(lines) + "\n```", parse_mode="Markdown")
-        except Exception as e:
-            bot.reply_to(message, f"Error: {e}")
         return
 
     if lower == "/briefing":
