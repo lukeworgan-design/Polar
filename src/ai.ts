@@ -2293,7 +2293,17 @@ RULES FOR THIS MESSAGE:
 }
 
 export async function generateBirthdayReminder(name: string, relation: string | null, daysUntil: number): Promise<string> {
-  const prompt = `Generate a friendly reminder for Luke and Toni that ${name}${relation ? ` (${relation})` : ''}'s birthday is in ${daysUntil} days. Keep it warm and natural, maybe suggest thinking about a gift or plans if it's coming up soon.`;
+  // Work out the exact date here so the model never has to reason about it (that
+  // was leaking "let me check when the birthday is…" into the actual message).
+  const now = getLocalNow(config.timezone);
+  const bDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntil);
+  const dateStr = bDate.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: config.timezone });
+  const whenPhrase = daysUntil === 0 ? `today (${dateStr})` : daysUntil === 1 ? `tomorrow (${dateStr})` : `in ${daysUntil} days (${dateStr})`;
+  const who = `${name}${relation ? ` (${relation})` : ''}`;
+
+  const prompt = `Write a short, warm birthday reminder to post straight into the family's Telegram group. ${who}'s birthday is ${whenPhrase}.
+
+Output ONLY the message itself — one or two friendly sentences, an emoji or two is fine. If it's coming up soon you may gently nudge them to sort a card or gift. Do NOT think out loud, do NOT explain what you're doing or say you need to check anything, and do NOT end by offering to add things to a list or calendar. Just the message.`;
 
   const response = await createMessage({
     model: config.anthropic.model,
@@ -2303,7 +2313,7 @@ export async function generateBirthdayReminder(name: string, relation: string | 
   });
 
   const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
-  return textBlock?.text || `Just a heads up — it's ${name}'s birthday in ${daysUntil} days! 🎂`;
+  return textBlock?.text?.trim() || `🎂 Just a heads up — it's ${name}'s birthday ${whenPhrase}!`;
 }
 
 // ── Local events & holiday activities ────────────────────────────────────────
