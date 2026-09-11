@@ -1037,12 +1037,18 @@ def sync_cardio_load() -> int:
 def sync_physical_info() -> bool:
     """Pull latest physical information from Polar (includes Polar Balance weight)."""
     try:
-        r = requests.get(f"{POLAR_BASE}/users/{POLAR_USER_ID}/physical-information", headers=polar_headers())
+        # Try the no-user-ID path first (matches pattern of all other working endpoints)
+        r = requests.get(f"{POLAR_BASE}/users/physical-information", headers=polar_headers())
         if not r.ok:
+            # Fallback: try with explicit user ID
+            r = requests.get(f"{POLAR_BASE}/users/{POLAR_USER_ID}/physical-information", headers=polar_headers())
+        if not r.ok:
+            log.warning(f"Physical info: {r.status_code}")
             return False
         d = r.json()
         weight = sf(d.get("weight"))
         if not weight:
+            log.warning(f"Physical info: no weight field. Keys: {list(d.keys())}")
             return False
         supabase.table("polar_physical_info").upsert({
             "date":       datetime.now(timezone.utc).strftime("%Y-%m-%d"),
@@ -1970,20 +1976,25 @@ def handle_message(message):
     if lower == "/syncweight":
         try:
             bot.send_chat_action(chat_id, "typing")
-            # Hit the endpoint and dump the raw response so we can see what Polar returns
-            r = requests.get(f"{POLAR_BASE}/users/{POLAR_USER_ID}/physical-information", headers=polar_headers())
-            lines = [f"Status: {r.status_code}"]
-            if r.ok:
-                d = r.json()
-                lines.append(f"Fields: {list(d.keys())}")
-                lines.append(f"Raw: {json.dumps(d, indent=2)[:800]}")
-                w = sf(d.get("weight"))
-                lines.append(f"\nParsed weight: {w} kg" if w else "\n⚠️ No 'weight' field found in response")
-            else:
-                lines.append(f"Body: {r.text[:400]}")
-            # Also check what's stored in the table
+            lines = []
+            # Try both endpoint patterns
+            for label, url in [
+                ("no-ID", f"{POLAR_BASE}/users/physical-information"),
+                ("with-ID", f"{POLAR_BASE}/users/{POLAR_USER_ID}/physical-information"),
+            ]:
+                r = requests.get(url, headers=polar_headers())
+                lines.append(f"[{label}] {r.status_code} — {url.split('polaraccesslink.com')[1]}")
+                if r.ok:
+                    d = r.json()
+                    lines.append(f"  Fields: {list(d.keys())}")
+                    lines.append(f"  Raw: {json.dumps(d)[:500]}")
+                    w = sf(d.get("weight"))
+                    lines.append(f"  weight → {w} kg" if w else "  ⚠️ no 'weight' key")
+                else:
+                    lines.append(f"  {r.text[:200]}")
+            # What's stored
             row = supabase.table("polar_physical_info").select("date,weight_kg").order("date", desc=True).limit(3).execute()
-            lines.append(f"\nDB (polar_physical_info): {row.data or 'empty'}")
+            lines.append(f"\nDB: {row.data or 'empty'}")
             bot.reply_to(message, "```\n" + "\n".join(lines) + "\n```", parse_mode="Markdown")
         except Exception as e:
             bot.reply_to(message, f"Error: {e}")
