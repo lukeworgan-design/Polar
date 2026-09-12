@@ -550,7 +550,7 @@ bot.command('jobs', async (ctx) => {
       const t = await pm.todayProgress(name);
       const w = await pm.weekProgress(name);
       const left = t.remaining.length ? `left: ${t.remaining.join(', ')}` : 'all done! 🎉';
-      lines.push(`*${name}* — ${t.done}/${t.total} today (${pm.money(t.pence)}), ${pm.money(w.pence)} this week\n_${left}_`);
+      lines.push(`*${name}* — ${t.done}/${t.total} today\n${pm.money(w.pence)} this week (${pm.money(w.jobsPence)} jobs + ${pm.money(w.behaviourPence)} behaviour)\n_${left}_`);
     }
     await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
   } catch (err) {

@@ -90,9 +90,9 @@ interface DashboardData {
   shopping: string[];
   reminders: string[];
   pocketMoney: {
-    kids: Array<{ name: string; weekPence: number; jobs: Array<{ name: string; done: boolean }>; spacePence: number | null }>;
+    kids: Array<{ name: string; weekPence: number; jobsPence: number; behaviourPence: number; jobs: Array<{ name: string; done: boolean }>; spacePence: number | null }>;
     paydayDays: number;
-    target: number;
+    target: number; // full weekly max (jobs + behaviour)
   } | null;
   ticker: string[];
   night: boolean;
@@ -483,11 +483,11 @@ export async function getDashboardData(): Promise<DashboardData> {
         const w = await pm.weekProgress(name);
         const jobs = await pm.todayChecklist(name);
         const spacePence = balances[name.trim().toLowerCase()] ?? null;
-        kidsData.push({ name, weekPence: w.pence, jobs, spacePence });
+        kidsData.push({ name, weekPence: w.pence, jobsPence: w.jobsPence, behaviourPence: w.behaviourPence, jobs, spacePence });
       }
       const dow = new Date(`${todayStr}T12:00:00Z`).getUTCDay(); // 0 = Sun … 5 = Fri
       const paydayDays = (5 - dow + 7) % 7; // days to next Friday
-      pocketMoney = { kids: kidsData, paydayDays, target: await pm.getWeeklyTarget() };
+      pocketMoney = { kids: kidsData, paydayDays, target: await pm.getFullWeekly() };
     }
   } catch (err) {
     console.error('Dashboard: pocket money fetch failed:', err);
@@ -575,9 +575,9 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
           const totalHtml = hasSpace
             ? `${gbp(k.spacePence!)} <span class="jm-of">Saved</span>`
             : `${gbp(k.weekPence)} <span class="jm-of">/ ${gbp(pm.target)}</span>`;
-          const payHtml = hasSpace
-            ? `💰 ${gbp(k.weekPence)} Earned this week · ${paydayText}`
-            : `💰 ${paydayText}`;
+          // Earned line spells out the split: £X · £Y jobs + £Z behaviour · payday.
+          const breakdown = `<span class="jm-of">${gbp(k.jobsPence)} jobs + ${gbp(k.behaviourPence)} behaviour</span>`;
+          const payHtml = `💰 ${gbp(k.weekPence)} · ${breakdown} · ${paydayText}`;
           return `<div class="card kid-card" style="--kid:${kidColour(k.name)}">
             <div class="kid-head"><span class="kid-name">🌟 ${esc(k.name)}</span><span class="kid-total">${totalHtml}</span></div>
             <div class="kid-pay">${payHtml}</div>
@@ -801,7 +801,8 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .kid-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1vw; }
   .kid-name { font-family: inherit; font-size: 2.6vh; font-weight: 800; color: var(--kid, var(--accent)); }
   .kid-total { flex: 0 0 auto; font-size: 2.5vh; font-weight: 800; color: var(--kid, var(--accent2)); font-variant-numeric: tabular-nums; }
-  .kid-pay { font-size: 1.7vh; color: var(--muted); font-weight: 600; margin-top: .1vh; }
+  .kid-pay { font-size: 1.45vh; color: var(--muted); font-weight: 600; margin-top: .1vh;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* Two columns so all of today's jobs are visible at once — no scrolling. */
   .kid-jobs { list-style: none; display: grid; grid-template-columns: 1fr 1fr; grid-auto-flow: column;
     grid-template-rows: repeat(4, auto); gap: .35vh .9vw; margin-top: .6vh; flex: 1 1 auto; min-height: 0;

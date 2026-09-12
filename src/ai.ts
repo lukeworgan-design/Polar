@@ -717,12 +717,42 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: 'set_weekly_pocket_money',
-    description: "Set the full weekly pocket money each child can earn by doing all their jobs (e.g. £5 → 500 pence). Doing all jobs earns the full amount; missing some earns proportionally less.",
+    description: "Set the weekly JOBS amount each child can earn by doing all their jobs (e.g. £4 → 400 pence). This is the jobs half only; good-behaviour money is separate (set_behaviour_amount). Doing all jobs earns the full jobs amount; missing some earns proportionally less.",
     input_schema: {
       type: 'object' as const,
       properties: {
-        pence: { type: 'number', description: 'The weekly amount in pence (e.g. 500 for £5)' },
+        pence: { type: 'number', description: 'The weekly JOBS amount in pence (e.g. 400 for £4)' },
       },
+      required: ['pence'],
+    },
+  },
+  {
+    name: 'dock_behaviour',
+    description: "Dock a child's weekly good-behaviour money for bad behaviour. Each child STARTS the week with the full behaviour amount (£1); use this to take some or all of it away. Pass 'all' to remove it entirely, or a pence amount to take off part (e.g. 50 for 50p). Use when a parent says a child misbehaved / lost their behaviour money.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        child: { type: 'string', description: 'Which child (Poppy or Billy)' },
+        amount: { type: 'string', description: "'all', or a pence amount to deduct (e.g. '50')" },
+      },
+      required: ['child', 'amount'],
+    },
+  },
+  {
+    name: 'restore_behaviour',
+    description: "Restore a child's good-behaviour money back to the full weekly amount (undo a docking / they made up for it). ",
+    input_schema: {
+      type: 'object' as const,
+      properties: { child: { type: 'string', description: 'Which child' } },
+      required: ['child'],
+    },
+  },
+  {
+    name: 'set_behaviour_amount',
+    description: "Set how much the weekly good-behaviour money is worth for every child (e.g. £1 → 100 pence). Only when asked to change the behaviour amount itself.",
+    input_schema: {
+      type: 'object' as const,
+      properties: { pence: { type: 'number', description: 'Weekly behaviour amount in pence (e.g. 100 for £1)' } },
       required: ['pence'],
     },
   },
@@ -1357,9 +1387,36 @@ async function executeTool(
       case 'set_weekly_pocket_money': {
         const pm = await import('./pocketmoney');
         const pence = Number(toolInput['pence']);
-        if (!Number.isFinite(pence) || pence < 0) return 'What weekly amount (in pence, e.g. 500 for £5)?';
+        if (!Number.isFinite(pence) || pence < 0) return 'What weekly jobs amount (in pence, e.g. 400 for £4)?';
         await pm.setWeeklyTarget(pence);
-        return `Set the weekly pocket money to ${pm.money(pence)} each (for doing all their jobs). Confirm briefly.`;
+        return `Set the weekly JOBS amount to ${pm.money(pence)} each. (Good-behaviour money is separate, currently ${pm.money(await pm.getBehaviourWeekly())}.) Confirm briefly.`;
+      }
+
+      case 'dock_behaviour': {
+        const pm = await import('./pocketmoney');
+        const child = pm.resolveChild(toolInput['child'] as string || '');
+        if (!child) return `Which child? I track ${pm.childNames().join(' and ')}.`;
+        const raw = (toolInput['amount'] as string || '').trim().toLowerCase();
+        const amount: 'all' | number = /^all|everything|the lot$/.test(raw) ? 'all' : Math.round(Number(raw.replace(/[^0-9.]/g, '')));
+        if (amount !== 'all' && (!Number.isFinite(amount) || amount <= 0)) return "How much behaviour money to dock — 'all', or an amount in pence (e.g. 50 for 50p)?";
+        const r = await pm.dockBehaviour(child, amount);
+        return `Docked ${child}'s good-behaviour money — they now have ${pm.money(r.nowPence)} of ${pm.money(r.fullPence)} for this week. Confirm gently and kindly (this is for the kids).`;
+      }
+
+      case 'restore_behaviour': {
+        const pm = await import('./pocketmoney');
+        const child = pm.resolveChild(toolInput['child'] as string || '');
+        if (!child) return 'Which child?';
+        const full = await pm.restoreBehaviour(child);
+        return `Restored ${child}'s good-behaviour money to the full ${pm.money(full)} for this week. Confirm warmly.`;
+      }
+
+      case 'set_behaviour_amount': {
+        const pm = await import('./pocketmoney');
+        const pence = Number(toolInput['pence']);
+        if (!Number.isFinite(pence) || pence < 0) return 'What weekly behaviour amount (in pence, e.g. 100 for £1)?';
+        await pm.setBehaviourWeekly(pence);
+        return `Set the weekly good-behaviour money to ${pm.money(pence)} each. Confirm briefly.`;
       }
 
       default:
@@ -1609,7 +1666,8 @@ CALENDAR:
 - TRAVEL AWARENESS: Luke works from home by default. If you detect a travel event being added (a day trip, overnight stay, work trip, conference, site visit, etc.), always ask whether a dog walker has been arranged. If they confirm the dog walker is sorted, immediately create a calendar event titled "Dog walker ✓" (or "Dog walker ✓ - [trip name]" if helpful) as an all-day event on the travel date(s) — this is how the dog walker confirmation is tracked so you can look it up later. If they share a list of dog walker dates (e.g. "dog walker booked: 22 April, 5 May, 12 May"), create one separate "Dog walker ✓" all-day event per date — do not combine them into one event. If a travel event already exists on the calendar, look for a "Dog walker ✓" event on the same date(s) before asking: if one exists, the dog walker is sorted — don't ask again. If no such event exists, a gentle "Have you sorted the dog walker for that one?" is fine.
 
 POCKET MONEY & JOBS (Poppy and Billy):
-- Each child can earn a fixed weekly total (default £5) by doing their daily jobs. Every job is an equal share of that £5 — do them all and they get the full £5, miss some and they earn proportionally less. Parents tell you when a job's done and you tick it off. To change the £5, use set_weekly_pocket_money.
+- Each child can earn up to £5 a week, split TWO ways: (1) £4 from JOBS — an equal share of £4 across their jobs, so doing them all earns the full £4 and missing some earns proportionally less; and (2) £1 for GOOD BEHAVIOUR — which they START each week already having, and only LOSE for bad behaviour. Parents tell you when a job's done (tick it off) and when behaviour money should be docked.
+- BEHAVIOUR: when a parent says a child misbehaved / should lose their behaviour money ("dock Billy's behaviour", "Poppy's lost her pound this week"), call dock_behaviour (amount 'all', or pence like 50 for 50p). If they made up for it, call restore_behaviour. Keep it kind — this is for the kids. Do NOT dock behaviour unless a parent clearly asks. To change the £1 itself use set_behaviour_amount; to change the £4 jobs amount use set_weekly_pocket_money.
 - WORKFLOW: when someone says a child did a job ("Poppy made her bed", "Billy did all his jobs", "Poppy tidied up and fed Charlie"), FIRST call get_jobs_status to see that child's exact job names for today, THEN call mark_job_done with the EXACT name(s) (comma-separated) or "all". Never guess the names — use the ones the tool returns.
 - A statement like "Both kids made beds today" or "Billy did his homework" is a CONFIRMATION that it happened — always just tick it off (or acknowledge it's already ticked). It is NEVER a question. Do not ask "are you asking me to tick it off again, or just confirming?" — that's confusing; act on it and give a short, warm reply.
 - If get_jobs_status shows a job is already ticked for today, don't treat that as a problem or ask what to do — a simple "already got that one ✓" is perfect. Ticking the same job twice never double-pays; each job counts once.
@@ -1654,6 +1712,7 @@ const WRITE_TOOLS = new Set<string>([
   'add_baby_checklist_item', 'complete_baby_checklist_item',
   'set_school_run', 'reset_school_run', 'set_kit', 'remove_kit', 'reset_kit',
   'mark_job_done', 'undo_job', 'add_pocket_money_job', 'remove_pocket_money_job', 'set_weekly_pocket_money',
+  'dock_behaviour', 'restore_behaviour', 'set_behaviour_amount',
 ]);
 
 // Phrases where Rose claims a change was completed. If she says one of these but
