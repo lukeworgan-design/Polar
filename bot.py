@@ -135,6 +135,87 @@ def _baby_age_weeks() -> int:
     dob = datetime.strptime(ATHLETE["newborn_dob"], "%Y-%m-%d").date()
     return (datetime.now(timezone.utc).date() - dob).days // 7
 
+# ── WEEK PLAN HELPERS ─────────────────────────────────────────────────────────
+
+def _week_monday(ref=None) -> str:
+    d = ref or datetime.now(timezone.utc).date()
+    return (d - timedelta(days=d.weekday())).strftime("%Y-%m-%d")
+
+def _get_week_plan(week_start: str) -> list:
+    try:
+        rows = supabase.table("weekly_plans").select("*").eq("week_start", week_start).order("day_date").execute()
+        return rows.data or []
+    except Exception:
+        return []
+
+def _get_today_plan_entry(today_str: str) -> dict | None:
+    try:
+        ws  = _week_monday(datetime.strptime(today_str, "%Y-%m-%d").date())
+        row = supabase.table("weekly_plans").select("*").eq("week_start", ws).eq("day_date", today_str).limit(1).execute()
+        return row.data[0] if row.data else None
+    except Exception:
+        return None
+
+def _mark_plan_complete(today_str: str, exercise_id: str = ""):
+    try:
+        ws = _week_monday(datetime.strptime(today_str, "%Y-%m-%d").date())
+        supabase.table("weekly_plans").update({
+            "completed": True, "completed_exercise_id": exercise_id,
+        }).eq("week_start", ws).eq("day_date", today_str).execute()
+    except Exception as e:
+        log.error(f"Plan mark complete: {e}")
+
+def _save_week_plan(entries: list):
+    """entries: [{day_date: str, session_label: str}]"""
+    try:
+        for e in entries:
+            ws = _week_monday(datetime.strptime(e["day_date"], "%Y-%m-%d").date())
+            supabase.table("weekly_plans").upsert({
+                "week_start":    ws,
+                "day_date":      e["day_date"],
+                "session_label": e["session_label"],
+                "completed":     False,
+            }, on_conflict="week_start,day_date").execute()
+    except Exception as e:
+        log.error(f"Save week plan: {e}")
+
+def _format_week_plan_block(plan_rows: list, today_str: str) -> str:
+    if not plan_rows:
+        return ""
+    lines = []
+    for row in plan_rows:
+        d     = row["day_date"]
+        label = row.get("session_label", "?")
+        dow   = datetime.strptime(d, "%Y-%m-%d").strftime("%a")
+        if row.get("completed"):
+            lines.append(f"✅ {dow}: {label}")
+        elif d == today_str:
+            lines.append(f"▶️ {dow}: {label}  ← today")
+        elif d > today_str:
+            lines.append(f"⬜ {dow}: {label}")
+        else:
+            lines.append(f"⬛ {dow}: {label}")  # past, not completed
+    return "\n".join(lines)
+
+def _parse_plan_text(text: str, week_start: str) -> list:
+    """Parse free-text day plan into [{day_date, session_label}]."""
+    day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4}
+    entries = []
+    base    = datetime.strptime(week_start, "%Y-%m-%d").date()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = re.split(r"[:–-]", line, maxsplit=1)
+        if len(parts) < 2:
+            continue
+        key   = parts[0].strip().lower()[:3]
+        label = parts[1].strip()
+        if key in day_map:
+            day_date = (base + timedelta(days=day_map[key])).strftime("%Y-%m-%d")
+            entries.append({"day_date": day_date, "session_label": label})
+    return entries
+
 # Derived helpers — read from ATHLETE, never hardcode elsewhere
 def athlete_age() -> int:
     dob = datetime.strptime(ATHLETE["dob"], "%Y-%m-%d").date()
@@ -882,8 +963,11 @@ def sync_new_polar_exercises() -> list:
             if not detail_r.ok: continue
             ex_data    = detail_r.json()
             dist_m     = sf(ex_data.get("distance"))
-            split_rows = fetch_fit_and_parse(ex_id, ex_data.get("start_time", "")[:10], dist_m)
-            splits     = save_exercise_from_api(ex_data, ex_id, split_rows)
+            split_rows  = fetch_fit_and_parse(ex_id, ex_data.get("start_time", "")[:10], dist_m)
+            splits      = save_exercise_from_api(ex_data, ex_id, split_rows)
+            session_date = ex_data.get("start_time", "")[:10]
+            if session_date:
+                _mark_plan_complete(session_date, ex_id)
             new_exercises.append({"id": ex_id, "data": ex_data, "splits": splits})
         return new_exercises
     except Exception as e:
@@ -1463,6 +1547,14 @@ def send_morning_briefing():
         readiness   = compute_readiness_score()
         session     = recommend_session(readiness)
 
+        # Week plan — use committed plan if one exists for today
+        week_start  = _week_monday(now_dt.date())
+        plan_rows   = _get_week_plan(week_start)
+        today_plan  = next((r for r in plan_rows if r["day_date"] == today_str), None)
+        if today_plan and not today_plan.get("completed"):
+            session = today_plan["session_label"]  # plan overrides readiness recommendation
+        plan_block  = _format_week_plan_block(plan_rows, today_str)
+
         # Sleep — note data currency so Luke knows if last night hasn't synced yet
         sleep_rows  = supabase.table("polar_sleep").select(
             "date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds"
@@ -1519,6 +1611,9 @@ def send_morning_briefing():
 ⚑ WATCH — one signal worth keeping an eye on"""
         )
 
+        plan_context = (f"\nWEEK PLAN:\n{plan_block}" if plan_block else
+                        "\nNo week plan set — recommend based on readiness.")
+
         prompt = f"""Morning brief for Luke's 5am slot.
 
 SLEEP: {sleep_context}
@@ -1526,14 +1621,16 @@ HRV / RECHARGE: {hrv_context}
 {sw_context}
 LOAD: {cl_context}
 READINESS: {readiness['score']}/10 ({readiness['label']})
-SUGGESTED SESSION: {session}
+SESSION CALL: {session}{"  ← from committed week plan" if today_plan and not today_plan.get("completed") else "  ← readiness-led (no plan set)"}
+{plan_context}
 {monday_recap}
 
-Join the dots — interpret signals, don't list them. Land ONE clear call for the slot.
+Join the dots — interpret signals, don't list them. Land ONE clear call for today's slot.
 Emoji-led sections only (no markdown headers like ##). Scannable on a phone at 5am.
 {sections}
+{"Include the week plan in the 📍 THIS WEEK section, using the WEEK PLAN data above — show ✅ completed, ▶️ today, ⬜ upcoming. Reproduce exactly as given." if plan_block else ""}
 
-Brief was already correct not to expect a run — it fires BEFORE the session, never after.
+Brief fires BEFORE the session, never after — don't reference a run as already done.
 Newborn context: broken sleep is normal, missed sessions are fine."""
 
         response = claude.messages.create(
@@ -1571,24 +1668,30 @@ def send_post_run_debrief(exercise_id: str):
         week_runs   = supabase.table("polar_exercises").select("date,distance_meters,training_load,duration_seconds").gte("date", week_start).order("date").execute().data or []
         goals_resp  = supabase.table("goals").select("race_name,race_date,distance_km,target_time").eq("active", True).execute()
         goals_text  = "\n".join([f"- {g['race_name']} on {g['race_date']}: {g['distance_km']}km target {g['target_time']}" for g in (goals_resp.data or [])]) or "No active goals."
+        sport       = run.get("sport", "")
+        is_run      = sport in RUNNING_SPORTS
         dist_km     = round((run.get("distance_meters") or 0) / 1000, 2)
         dur_s       = run.get("duration_seconds") or 0
         dur_str     = f"{dur_s // 3600}h {(dur_s % 3600) // 60}m" if dur_s >= 3600 else f"{dur_s // 60}m {dur_s % 60}s"
         pace_s      = (dur_s / dist_km) if dist_km > 0 else 0
-        splits_text = ("KM SPLITS:\n" + "\n".join([f"  km {s['km_number']}: {s.get('pace_display','?')} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cad {s.get('cadence_avg','?')}spm" for s in splits[:20]])) if splits else ""
         weekly_km   = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
         weekly_load = sum((r.get("training_load") or 0) for r in week_runs)
-        sleep_text  = "\n".join([f"  - {s['date']}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h, score {s.get('sleep_score','?')}, deep {(s.get('deep_sleep_seconds') or 0)//60}min" for s in sleep_rows]) or "No recent sleep data."
-        hrv_text    = f"Recharge: {hrv.get('recharge_status','?')}, ANS {hrv.get('ans_charge','?')}, HRV {hrv.get('hrv_avg','?')}" if hrv else "No HRV data."
-        cl_text     = f"Cardio load: {cl.get('cardio_load_status','?')} | Strain {cl.get('strain','?')} / Tolerance {cl.get('tolerance','?')} | Ratio {cl.get('cardio_load_ratio','?')}" if cl else "No cardio load data."
-        prompt = f"""Luke just finished a run. Give him the debrief.
+        sleep_text  = "\n".join([f"  - {s['date']}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h score {s.get('sleep_score','?')}" for s in sleep_rows]) or "No recent sleep data."
+        hrv_text    = f"Recharge: {hrv.get('recharge_status','?')}, HRV {hrv.get('hrv_avg','?')}" if hrv else "No HRV data."
+        cl_text     = f"Load ratio {cl.get('cardio_load_ratio','?')} ({cl.get('cardio_load_status','?')})" if cl else "No cardio load data."
 
-RUN: {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)} avg | HR {run.get('avg_heart_rate','?')}/{run.get('max_heart_rate','?')}bpm | Power {run.get('avg_power','?')}W | Cadence {run.get('avg_cadence','?')}spm | Load {run.get('training_load','?')} | Ascent {run.get('ascent','?')}m
+        if is_run:
+            splits_text = ("KM SPLITS:\n" + "\n".join([
+                f"  km {s['km_number']}: {s.get('pace_display','?')} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cad {s.get('cadence_avg','?')}spm"
+                for s in splits[:20]
+            ])) if splits else ""
+            prompt = f"""Luke just finished a run. Give him the debrief.
+
+RUN: {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)} avg | HR {run.get('avg_heart_rate','?')}/{run.get('max_heart_rate','?')}bpm | Load {run.get('training_load','?')} | Ascent {run.get('ascent','?')}m
 {splits_text}
 
 RECOVERY: {sleep_text} | {hrv_text} | {cl_text}
 WEEK SO FAR: {round(weekly_km,1)}km | load {round(weekly_load,0)} | {len(week_runs)} sessions
-GOALS: {goals_text}
 
 3 short paragraphs — join the dots, don't dump numbers:
 1. What the run actually was (effort quality, HR vs zones, split story)
@@ -1596,14 +1699,31 @@ GOALS: {goals_text}
 3. One specific call for the rest of the day
 
 End with: NOTE: post-run debrief | <10-word summary>"""
+            header = f"🏃 *Post-run debrief* — {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)}"
+        else:
+            sport_label = sport.replace("_", " ").title() if sport else "session"
+            prompt = f"""Luke just completed a {sport_label} session. Give him the debrief. This is NOT a run — do not mention pace, distance, or km splits.
+
+SESSION: {sport_label} | {dur_str} | HR {run.get('avg_heart_rate','?')}/{run.get('max_heart_rate','?')}bpm | Load {run.get('training_load','?')}
+
+RECOVERY: {sleep_text} | {hrv_text} | {cl_text}
+WEEK SO FAR: {len(week_runs)} sessions | load {round(weekly_load,0)}
+
+2–3 short paragraphs — peer voice, no basics:
+1. Acknowledge the session and what completing it means in this life phase (newborn, early mornings, showing up anyway)
+2. What the recovery signals say in context — is the load landing well?
+3. One call for the rest of the day
+
+End with: NOTE: post-session debrief ({sport_label}) | <10-word summary>"""
+            header = f"💪 *Post-session debrief* — {sport_label} {dur_str}"
+
         response = claude.messages.create(
             model="claude-sonnet-4-6", max_tokens=450,
             system=build_system_prompt(),
             messages=[{"role": "user", "content": prompt}]
         )
-        reply    = extract_and_save_note(response.content[0].text, "post-run debrief")
-        msg      = f"🏃 *Post-run debrief* — {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)}\n\n{reply}"
-        bot.send_message(YOUR_TELEGRAM_ID, msg[:4000], parse_mode="Markdown")
+        reply = extract_and_save_note(response.content[0].text, "post-session debrief")
+        bot.send_message(YOUR_TELEGRAM_ID, f"{header}\n\n{reply}"[:4000], parse_mode="Markdown")
     except Exception as e:
         log.error(f"Post-run debrief error {exercise_id}: {e}")
 
@@ -1635,9 +1755,17 @@ def send_evening_debrief():
         last_checkin  = checkin_resp.data[0] if checkin_resp.data else None
         checkin_today = last_checkin and last_checkin.get("date") == today_str
 
-        # Compute tomorrow's readiness to drive the session call
+        # Compute tomorrow's readiness; override with committed plan if one exists
         readiness    = compute_readiness_score()
         session_call = recommend_session(readiness)
+        tomorrow_plan = _get_today_plan_entry(tomorrow_str)
+        if tomorrow_plan and not tomorrow_plan.get("completed"):
+            session_call = tomorrow_plan["session_label"]  # committed plan wins
+
+        # Show week plan progress block
+        week_start      = _week_monday(now.date())
+        plan_rows       = _get_week_plan(week_start)
+        plan_block_text = _format_week_plan_block(plan_rows, today_str)
 
         # ── Format data blocks ──
         today_block = ""
@@ -1705,7 +1833,8 @@ WEEK SO FAR: {round(weekly_km,1)}km | load {round(weekly_load,0)} | {len(week_ru
 
 READINESS: {readiness['score']}/10 — {readiness['label']}
 
-{"TOMORROW'S SESSION CALL: " + session_call if not is_weekend_tomorrow else "TOMORROW: weekend — no 5am session. Family time."}
+{"TOMORROW'S SESSION CALL: " + session_call + (" ← committed plan" if tomorrow_plan and not tomorrow_plan.get("completed") else " ← readiness-led") if not is_weekend_tomorrow else "TOMORROW: weekend — no 5am session. Family time."}
+{"WEEK PLAN PROGRESS:\n" + plan_block_text if plan_block_text else ""}
 
 SLEEP TONIGHT:
 {bedtime_block or "No SleepWise data."}
@@ -1782,17 +1911,38 @@ GOALS: {goals_text}
 📅 WEEK IN ONE LINE — what kind of week was this (load, consistency, quality)?
 🔬 BODY READ — what are sleep trend + HRV direction + load ratio actually saying together?
 🏆 WIN — one specific thing worth reinforcing (adherence, a session, a metric moving right)
-📍 NEXT WEEK — one concrete adjustment or focus based on this week's picture
+📍 NEXT WEEK — one concrete adjustment or focus, then the week plan in this exact block:
+
+PLAN:
+Mon: <session, ~5 words>
+Tue: <session>
+Wed: <session>
+Thu: <session>
+Fri: <session>
+END_PLAN
 
 Non-preachy. Newborn context = missed sessions are fine. Value showing up.
 End with: NOTE: weekly review | <10-word summary>"""
 
         response = claude.messages.create(
-            model="claude-sonnet-4-6", max_tokens=500,
+            model="claude-sonnet-4-6", max_tokens=600,
             system=build_system_prompt(),
             messages=[{"role": "user", "content": prompt}]
         )
-        reply = extract_and_save_note(response.content[0].text, "weekly review")
+        full_reply = response.content[0].text
+
+        # Extract and save the plan block
+        plan_match = re.search(r"PLAN:\s*\n(.*?)\nEND_PLAN", full_reply, re.DOTALL)
+        if plan_match:
+            next_monday = (now + timedelta(days=7 - now.weekday())).strftime("%Y-%m-%d")
+            plan_entries = _parse_plan_text(plan_match.group(1), next_monday)
+            if plan_entries:
+                _save_week_plan(plan_entries)
+                log.info(f"Weekly review: saved {len(plan_entries)}-day plan starting {next_monday}")
+
+        # Strip the PLAN block from the message sent to Telegram
+        display_reply = re.sub(r"\nPLAN:\s*\n.*?\nEND_PLAN", "", full_reply, flags=re.DOTALL).strip()
+        reply = extract_and_save_note(display_reply, "weekly review")
         bot.send_message(YOUR_TELEGRAM_ID, f"📆 *Weekly Review — w/e {now.strftime('%-d %b')}*\n\n{reply}", parse_mode="Markdown")
     except Exception as e:
         log.error(f"Weekly review error: {e}")
@@ -1881,9 +2031,10 @@ def handle_message(message):
             "🎯 /goals — target races\n"
             "🔔 /push — check alerts\n"
             "📆 /weekly — weekly review\n"
+            "📅 /plan — show this week's plan\n"
             "🗑 /clear — clear conversation\n\n"
             "✏️ *Log data*\n"
-            "`save run: <Polar stats>`\n"
+            "`/setplan Mon: KB Session A\\nTue: Z2 run 40min\\n...`\n"
             "`goal: Cheltenham Half, 21 Sep 2026, 21.1km, sub 2:00`\n"
             "`checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10`\n\n"
             "💬 _Or just ask me anything_"
@@ -1950,6 +2101,46 @@ def handle_message(message):
         bot.reply_to(message, "⏳ Generating weekly review...")
         threading.Thread(target=send_weekly_review, daemon=True).start()
         return
+
+    if lower == "/plan":
+        try:
+            ws        = _week_monday()
+            plan_rows = _get_week_plan(ws)
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if not plan_rows:
+                bot.reply_to(message,
+                    "📅 No plan set for this week.\n\n"
+                    "Set one with `/setplan` followed by your week:\n"
+                    "```\n/setplan\nMon: KB Session A\nTue: Z2 run 40min\nWed: KB Session B\nThu: Z2 run 45min\nFri: GOWOD or rest\n```",
+                    parse_mode="Markdown")
+            else:
+                block = _format_week_plan_block(plan_rows, today_str)
+                done  = sum(1 for r in plan_rows if r.get("completed"))
+                bot.reply_to(message, f"📅 *Week plan — w/c {ws}*\n\n{block}\n\n{done}/{len(plan_rows)} done", parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+        return
+
+    if lower.startswith("/setplan"):
+        try:
+            plan_text = user_text[len("/setplan"):].strip()
+            if not plan_text:
+                bot.reply_to(message,
+                    "Send your plan after /setplan, e.g.:\n```\n/setplan\nMon: KB Session A\nTue: Z2 run 40min\nWed: KB Session B\nThu: Z2 run 45min\nFri: GOWOD or rest\n```",
+                    parse_mode="Markdown")
+                return
+            ws      = _week_monday()
+            entries = _parse_plan_text(plan_text, ws)
+            if not entries:
+                bot.reply_to(message, "⚠️ Couldn't parse any days. Format: `Mon: session`, `Tue: session` etc.")
+                return
+            _save_week_plan(entries)
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            plan_rows = _get_week_plan(ws)
+            block     = _format_week_plan_block(plan_rows, today_str)
+            bot.reply_to(message, f"✅ *Week plan saved*\n\n{block}", parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
         return
 
     if lower == "/splits":
