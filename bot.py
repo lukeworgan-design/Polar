@@ -1372,6 +1372,10 @@ WRITE TRIGGERS:
 - "goal: ..." → saves race goal
 - "checkin: weight Xkg, fatigue Y/10, sleep Z/10, mood N/10" → logs wellness
 
+PLAN_UPDATE — whenever you and Luke agree on a session for a specific day (confirming today's session, swapping a day, setting a new one), append one line per changed day at the very end of your response, after the NOTE. It will be stripped before sending — Luke never sees it.
+Format: PLAN_UPDATE: YYYY-MM-DD | session in ~5 words
+Example: PLAN_UPDATE: 2026-09-16 | KB Session B — strength circuit
+
 End every substantive response with:
 NOTE: <topic> | <one sentence summary>"""
 
@@ -2264,7 +2268,20 @@ def handle_message(message):
             system=build_system_prompt(run_limit=run_limit, sleep_days=sleep_days),
             messages=get_history(chat_id)
         )
-        reply = extract_and_save_note(response.content[0].text, user_text[:100])
+        raw_reply = response.content[0].text
+
+        # Persist any plan updates Claude agreed on in this exchange
+        plan_updates = re.findall(r"PLAN_UPDATE:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.+?)(?:\n|$)", raw_reply)
+        for date_str, label in plan_updates:
+            try:
+                _save_week_plan([{"day_date": date_str.strip(), "session_label": label.strip()}])
+                log.info(f"Plan updated via chat: {date_str} → {label.strip()}")
+            except Exception as pe:
+                log.error(f"Plan update save error: {pe}")
+
+        # Strip PLAN_UPDATE lines before sending/storing
+        clean_reply = re.sub(r"\nPLAN_UPDATE:.*", "", raw_reply).strip()
+        reply = extract_and_save_note(clean_reply, user_text[:100])
         add_to_history(chat_id, "assistant", reply)
         if len(reply) > 4000:
             for i in range(0, len(reply), 4000):
