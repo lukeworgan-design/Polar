@@ -575,12 +575,12 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
           const totalHtml = hasSpace
             ? `${gbp(k.spacePence!)} <span class="jm-of">Saved</span>`
             : `${gbp(k.weekPence)} <span class="jm-of">/ ${gbp(pm.target)}</span>`;
-          // Earned line spells out the split: £X · £Y jobs + £Z behaviour · payday.
-          const breakdown = `<span class="jm-of">${gbp(k.jobsPence)} jobs + ${gbp(k.behaviourPence)} behaviour</span>`;
-          const payHtml = `💰 ${gbp(k.weekPence)} · ${breakdown} · ${paydayText}`;
+          // Big "this week" total so it stands out as much as the Saved balance,
+          // with a small breakdown (jobs + behaviour) + payday underneath.
           return `<div class="card kid-card" style="--kid:${kidColour(k.name)}">
             <div class="kid-head"><span class="kid-name">🌟 ${esc(k.name)}</span><span class="kid-total">${totalHtml}</span></div>
-            <div class="kid-pay">${payHtml}</div>
+            <div class="kid-week">💰 ${gbp(k.weekPence)} <span class="kid-week-lbl">this week</span></div>
+            <div class="kid-sub">${gbp(k.jobsPence)} jobs + ${gbp(k.behaviourPence)} behaviour · ${paydayText}</div>
             <ul class="kid-jobs">${rows}</ul>
           </div>`;
         };
@@ -791,7 +791,7 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .reminders-card { flex: 0 0 auto; }
   /* Per-kid pocket-money checklist cards (bottom-left, side by side). They share
      the left column's flexible space with Coming Up (each scrolls internally). */
-  .kid-pair { flex: 1 1 0; min-height: 21vh; align-items: stretch; }
+  .kid-pair { flex: 1 1 0; min-height: 23vh; align-items: stretch; }
   /* When Shopping is hidden, spread the right-hand cards evenly instead of
      letting one card balloon. */
   .col.side.spread { justify-content: space-between; }
@@ -801,13 +801,18 @@ export function renderDashboardPage(d: DashboardData, opts: DashboardOptions): s
   .kid-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1vw; }
   .kid-name { font-family: inherit; font-size: 2.6vh; font-weight: 800; color: var(--kid, var(--accent)); }
   .kid-total { flex: 0 0 auto; font-size: 2.5vh; font-weight: 800; color: var(--kid, var(--accent2)); font-variant-numeric: tabular-nums; }
-  .kid-pay { font-size: 1.45vh; color: var(--muted); font-weight: 600; margin-top: .1vh;
+  /* Big "this week" figure — as prominent as the Saved balance — plus a small
+     breakdown line under it. */
+  .kid-week { font-size: 2.3vh; font-weight: 800; color: var(--kid, var(--accent2));
+    font-variant-numeric: tabular-nums; margin-top: .2vh; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kid-week-lbl { font-size: .52em; font-weight: 600; color: var(--muted); }
+  .kid-sub { font-size: 1.35vh; color: var(--muted); font-weight: 600; margin-top: 0;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* Two columns so all of today's jobs are visible at once — no scrolling. */
   .kid-jobs { list-style: none; display: grid; grid-template-columns: 1fr 1fr; grid-auto-flow: column;
-    grid-template-rows: repeat(4, auto); gap: .35vh .9vw; margin-top: .6vh; flex: 1 1 auto; min-height: 0;
+    grid-template-rows: repeat(4, auto); gap: .2vh .9vw; margin-top: .4vh; flex: 1 1 auto; min-height: 0;
     align-content: start; overflow: hidden; }
-  .kid-jobs li { display: flex; align-items: baseline; gap: .4vw; font-size: 1.7vh; font-weight: 600; min-width: 0; }
+  .kid-jobs li { display: flex; align-items: baseline; gap: .4vw; font-size: 1.55vh; font-weight: 600; min-width: 0; }
   .kid-jobs .jc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kid-jobs .jc-tick { flex: 0 0 auto; width: 1.25em; text-align: center; color: var(--muted); font-weight: 800; }
   .jc-empty { grid-column: 1 / -1; }
