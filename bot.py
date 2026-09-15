@@ -1394,6 +1394,22 @@ def add_to_history(chat_id, role, content):
     conversation_history[chat_id].append({"role": role, "content": content})
     conversation_history[chat_id] = conversation_history[chat_id][-20:]
 
+def send_md(chat_id: int, text: str, reply_to=None):
+    """Send with Markdown; fall back to plain text if Telegram rejects the parse."""
+    text = text[:4000]
+    try:
+        if reply_to:
+            bot.reply_to(reply_to, text, parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, text, parse_mode="Markdown")
+    except Exception:
+        plain = re.sub(r"[*_`\[\]]", "", text)
+        if reply_to:
+            bot.reply_to(reply_to, plain)
+        else:
+            bot.send_message(chat_id, plain)
+
+
 def extract_and_save_note(reply: str, user_text: str):
     try:
         m = re.search(r"NOTE:\s*(.+?)\s*\|\s*(.+?)$", reply, re.MULTILINE)
@@ -1645,7 +1661,7 @@ Newborn context: broken sleep is normal, missed sessions are fine."""
         reply     = extract_and_save_note(response.content[0].text, "morning briefing")
         day_label = now_dt.strftime("%A %-d %b")
         header    = f"🌅 *{day_label}*\n\n{readiness_emoji(readiness['score'])} *Readiness {readiness['score']}/10* — _{readiness['label']}_\n\n"
-        bot.send_message(YOUR_TELEGRAM_ID, (header + reply)[:4000], parse_mode="Markdown")
+        send_md(YOUR_TELEGRAM_ID, header + reply)
         check_and_push_alerts()
     except Exception as e:
         log.error(f"Briefing error: {e}")
@@ -1727,7 +1743,7 @@ End with: NOTE: post-session debrief ({sport_label}) | <10-word summary>"""
             messages=[{"role": "user", "content": prompt}]
         )
         reply = extract_and_save_note(response.content[0].text, "post-session debrief")
-        bot.send_message(YOUR_TELEGRAM_ID, f"{header}\n\n{reply}"[:4000], parse_mode="Markdown")
+        send_md(YOUR_TELEGRAM_ID, f"{header}\n\n{reply}")
     except Exception as e:
         log.error(f"Post-run debrief error {exercise_id}: {e}")
 
@@ -1861,7 +1877,7 @@ End with: NOTE: evening set-up | <10-word summary>"""
         )
         reply = extract_and_save_note(response.content[0].text, "evening set-up")
         msg   = f"🌙 *Evening Set-Up — {now.strftime('%-d %b')}*\n\n{reply}"
-        bot.send_message(YOUR_TELEGRAM_ID, msg[:4000], parse_mode="Markdown")
+        send_md(YOUR_TELEGRAM_ID, msg)
     except Exception as e:
         log.error(f"Evening debrief error: {e}")
         bot.send_message(YOUR_TELEGRAM_ID, f"⚠️ Evening debrief error: {e}")
@@ -1947,7 +1963,7 @@ End with: NOTE: weekly review | <10-word summary>"""
         # Strip the PLAN block from the message sent to Telegram
         display_reply = re.sub(r"\nPLAN:\s*\n.*?\nEND_PLAN", "", full_reply, flags=re.DOTALL).strip()
         reply = extract_and_save_note(display_reply, "weekly review")
-        bot.send_message(YOUR_TELEGRAM_ID, f"📆 *Weekly Review — w/e {now.strftime('%-d %b')}*\n\n{reply}", parse_mode="Markdown")
+        send_md(YOUR_TELEGRAM_ID, f"📆 *Weekly Review — w/e {now.strftime('%-d %b')}*\n\n{reply}")
     except Exception as e:
         log.error(f"Weekly review error: {e}")
         bot.send_message(YOUR_TELEGRAM_ID, f"⚠️ Weekly review error: {e}")
@@ -2285,9 +2301,9 @@ def handle_message(message):
         add_to_history(chat_id, "assistant", reply)
         if len(reply) > 4000:
             for i in range(0, len(reply), 4000):
-                bot.send_message(chat_id, reply[i:i+4000], parse_mode="Markdown")
+                send_md(chat_id, reply[i:i+4000])
         else:
-            bot.reply_to(message, reply, parse_mode="Markdown")
+            send_md(chat_id, reply, reply_to=message)
     except Exception as e:
         log.error(f"Claude error: {e}")
         bot.reply_to(message, f"Error: {e}")
