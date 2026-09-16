@@ -767,26 +767,51 @@ def format_goals(goals: list) -> str:
 
 def format_new_run_notification(ex: dict, exercise_id: str, splits_count: int) -> str:
     try:
-        sport   = ex.get("sport", "RUN")
-        dist_km = (ex.get("distance") or ex.get("distance_meters") or 0) / 1000
-        dur_s   = parse_pt_seconds(ex.get("duration", "")) or (ex.get("duration_seconds") or 0)
-        hr      = ex.get("heart_rate", {}) or {}
-        avg_hr  = hr.get("average") or hr.get("avg") or ex.get("avg_heart_rate", "?")
-        max_hr  = hr.get("maximum") or hr.get("max") or ex.get("max_heart_rate", "?")
-        load    = ex.get("training_load") or ex.get("training_load_pro", {}).get("cardio-load", "?")
-        pace_s  = dur_s / dist_km if dist_km else 0
-        lines   = [f"{sport_emoji(sport)} *New {sport.replace('_',' ').title()} Synced!*\n", f"📅 {fmt_date(ex.get('start_time') or ex.get('date',''))}  •  {dist_km:.2f}km  •  {int(dur_s//60)}min", f"💨 {seconds_to_pace(pace_s)}  ❤️ {avg_hr}/{max_hr}bpm", f"🔥 Load {load}", f"📊 {splits_count} km splits saved"]
-        if splits_count > 0:
-            split_data = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,power_avg,cadence_avg").eq("exercise_id", exercise_id).order("lap_number").limit(5).execute()
-            if split_data.data:
-                lines.append("\n*First splits:*")
-                lines.append("`KM  │ Pace     │  HR │ Power │ Cad`")
-                for s in split_data.data:
-                    lines.append(f"`{str(s['km_number']).rjust(2)}  │ {(s.get('pace_display') or 'N/A').ljust(8)} │ {str(s.get('hr_avg') or '?').rjust(3)} │ {str(s.get('power_avg') or '?').rjust(4)}W │ {str(s.get('cadence_avg') or '?').rjust(3)}`")
+        sport    = ex.get("sport", "RUN")
+        is_run   = sport in RUNNING_SPORTS
+        dur_s    = parse_pt_seconds(ex.get("duration", "")) or (ex.get("duration_seconds") or 0)
+        hr       = ex.get("heart_rate", {}) or {}
+        avg_hr   = hr.get("average") or hr.get("avg") or ex.get("avg_heart_rate", "?")
+        max_hr   = hr.get("maximum") or hr.get("max") or ex.get("max_heart_rate", "?")
+        load     = ex.get("training_load") or ex.get("training_load_pro", {}).get("cardio-load", "?")
+
+        # Check if today's plan names this session
+        today_str  = (ex.get("start_time") or ex.get("date") or "")[:10]
+        plan_entry = _get_today_plan_entry(today_str) if today_str else None
+        plan_label = plan_entry["session_label"] if plan_entry else None
+
+        if is_run:
+            dist_km = (ex.get("distance") or ex.get("distance_meters") or 0) / 1000
+            pace_s  = dur_s / dist_km if dist_km else 0
+            title   = plan_label or f"New {sport.replace('_',' ').title()}"
+            lines   = [
+                f"{sport_emoji(sport)} *{title} Synced!*\n",
+                f"📅 {fmt_date(today_str)}  •  {dist_km:.2f}km  •  {int(dur_s//60)}min",
+                f"💨 {seconds_to_pace(pace_s)}  ❤️ {avg_hr}/{max_hr}bpm",
+                f"🔥 Load {load}",
+                f"📊 {splits_count} km splits saved",
+            ]
+            if splits_count > 0:
+                split_data = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,power_avg,cadence_avg").eq("exercise_id", exercise_id).order("lap_number").limit(5).execute()
+                if split_data.data:
+                    lines.append("\n*First splits:*")
+                    lines.append("`KM  │ Pace     │  HR │ Power │ Cad`")
+                    for s in split_data.data:
+                        lines.append(f"`{str(s['km_number']).rjust(2)}  │ {(s.get('pace_display') or 'N/A').ljust(8)} │ {str(s.get('hr_avg') or '?').rjust(3)} │ {str(s.get('power_avg') or '?').rjust(4)}W │ {str(s.get('cadence_avg') or '?').rjust(3)}`")
+        else:
+            sport_label = plan_label or sport.replace("_", " ").title()
+            lines = [
+                f"💪 *{sport_label} Synced!*\n",
+                f"📅 {fmt_date(today_str)}  •  {int(dur_s//60)}min",
+                f"❤️ {avg_hr}/{max_hr}bpm  •  🔥 Load {load}",
+            ]
+            if plan_label:
+                lines.append(f"📅 Plan: ✅ {plan_label}")
+
         return "\n".join(lines)
     except Exception as e:
         log.error(f"Format notification error: {e}")
-        return "✅ New run synced"
+        return "✅ New session synced"
 
 # ── WRITE TO SUPABASE ──────────────────────────────────────────────────────
 
@@ -1721,21 +1746,28 @@ WEEK SO FAR: {round(weekly_km,1)}km | load {round(weekly_load,0)} | {len(week_ru
 End with: NOTE: post-run debrief | <10-word summary>"""
             header = f"🏃 *Post-run debrief* — {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)}"
         else:
-            sport_label = sport.replace("_", " ").title() if sport else "session"
-            prompt = f"""Luke just completed a {sport_label} session. Give him the debrief. This is NOT a run — do not mention pace, distance, or km splits.
+            # Look up plan to name the session properly
+            session_date = (run.get("date") or "")[:10]
+            plan_entry   = _get_today_plan_entry(session_date) if session_date else None
+            plan_label   = plan_entry["session_label"] if plan_entry else None
+            sport_label  = plan_label or sport.replace("_", " ").title() if sport else "session"
+
+            plan_note = f"\nPLAN: This was '{plan_label}' — ✅ tick it off the week plan." if plan_label else ""
+
+            prompt = f"""Luke just completed a strength/conditioning session. Give him the debrief. This is NOT a run — do not mention pace, distance, or km splits.
 
 SESSION: {sport_label} | {dur_str} | HR {run.get('avg_heart_rate','?')}/{run.get('max_heart_rate','?')}bpm | Load {run.get('training_load','?')}
-
+{plan_note}
 RECOVERY: {sleep_text} | {hrv_text} | {cl_text}
 WEEK SO FAR: {len(week_runs)} sessions | load {round(weekly_load,0)}
 
 2–3 short paragraphs — peer voice, no basics:
-1. Acknowledge the session and what completing it means in this life phase (newborn, early mornings, showing up anyway)
-2. What the recovery signals say in context — is the load landing well?
-3. One call for the rest of the day
+1. Name the session and acknowledge completing it — showing up at 5am with a 5-week-old is the win
+2. What the load and recovery signals say together — is the body handling the week?
+3. One concrete call for the rest of the day
 
 End with: NOTE: post-session debrief ({sport_label}) | <10-word summary>"""
-            header = f"💪 *Post-session debrief* — {sport_label} {dur_str}"
+            header = f"💪 *{sport_label}* — {dur_str}"
 
         response = claude.messages.create(
             model="claude-sonnet-4-6", max_tokens=450,
