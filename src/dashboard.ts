@@ -465,9 +465,15 @@ export async function getDashboardData(): Promise<DashboardData> {
   const dayIndex = Math.floor(Date.now() / 86400000);
   const dailyFun = DAILY_FUN[dayIndex % DAILY_FUN.length]!;
 
-  // Pocket-money jobs (kids), if set up.
+  // TEMPORARY: the pocket-money cards can be hidden from the dashboard without
+  // touching the rest of the feature (Telegram, Alexa and all tracking keep
+  // running). Currently OFF. To show them again: set DASHBOARD_POCKET_MONEY=on
+  // in Railway, or flip the fallback below back to 'on'.
+  const showPocketMoney = (process.env['DASHBOARD_POCKET_MONEY'] || 'off').toLowerCase() === 'on';
+
+  // Pocket-money jobs (kids), if enabled and set up.
   let pocketMoney: DashboardData['pocketMoney'] = null;
-  try {
+  if (showPocketMoney) try {
     const pm = await import('./pocketmoney');
     if (await pm.isConfigured()) {
       // Live Starling Space balances (their actual money), matched by name.
