@@ -799,9 +799,9 @@ def format_new_run_notification(ex: dict, exercise_id: str, splits_count: int) -
                     for s in split_data.data:
                         lines.append(f"`{str(s['km_number']).rjust(2)}  │ {(s.get('pace_display') or 'N/A').ljust(8)} │ {str(s.get('hr_avg') or '?').rjust(3)} │ {str(s.get('power_avg') or '?').rjust(4)}W │ {str(s.get('cadence_avg') or '?').rjust(3)}`")
         else:
-            sport_label = plan_label or sport.replace("_", " ").title()
+            sport_title = sport.replace("_", " ").title() or "Session"
             lines = [
-                f"💪 *{sport_label} Synced!*\n",
+                f"💪 *{sport_title} Synced!*\n",
                 f"📅 {fmt_date(today_str)}  •  {int(dur_s//60)}min",
                 f"❤️ {avg_hr}/{max_hr}bpm  •  🔥 Load {load}",
             ]
