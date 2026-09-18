@@ -1385,10 +1385,12 @@ Always land the chain: what the data says → why it matters for Luke today → 
 Concise — this arrives on a phone at 5am. No bullet walls. Short paragraphs.
 
 SIGNALS:
-- Cardio load ratio: 0.8–1.1 = MAINTAINING | 1.1–1.3 = PRODUCTIVE | >1.3 = OVERREACHING | <0.8 = DETRAINING
-- SleepWise grade: 8+ strong | 5–8 moderate | <5 weak — downgrade or skip
-- Resting HR elevated >5bpm for 3 days = accumulated fatigue signal
-- HRV declining week-on-week = recovery debt building
+- Cardio load ratio: <0.8 = DETRAINING | 0.8–1.1 = MAINTAINING | 1.1–1.3 = PRODUCTIVE | >1.3 = OVERREACHING
+- Sleep score (0–100): 80+ = good recovery | 60–79 = adequate, functional but not restoring | <60 = poor, treat as fatigue day
+- Nightly recharge: EXCELLENT/GOOD = green light | MODERATE = caution | LOW = back off load | 3+ LOW nights in a row = mandatory easy
+- HRV: higher = better recovery | week-on-week decline = recovery debt building
+- Resting HR elevated >5bpm above baseline for 3 days = accumulated fatigue signal
+- SleepWise grade: 8–10 = strong alertness | 5–7 = moderate | <5 = impaired — treat as low recharge day
 
 DATA: 7 live streams — polar_exercises, polar_sleep, polar_hrv, polar_continuous_hr, polar_cardio_load, polar_sleepwise, polar_daily_activity
 
