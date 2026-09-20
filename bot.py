@@ -7,6 +7,7 @@ import os
 import re
 import io
 import json
+import base64
 import logging
 import threading
 import time
@@ -2056,6 +2057,71 @@ def scheduler_loop():
             log.info("Cleared daily state")
 
 # ── TELEGRAM HANDLERS ──────────────────────────────────────────────────────
+
+def _process_image_message(message, file_id: str, mime_type: str = "image/jpeg"):
+    """Shared logic for photo and image-document messages."""
+    chat_id = message.chat.id
+    try:
+        bot.send_chat_action(chat_id, "typing")
+        file_info = bot.get_file(file_id)
+        file_data = bot.download_file(file_info.file_path)
+        b64       = base64.b64encode(file_data).decode("utf-8")
+        caption   = (message.caption or "").strip()
+        prompt    = caption if caption else "Analyse this image as my running coach. What's relevant here?"
+
+        history = get_history(chat_id)
+        vision_msg = {
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": b64}},
+                {"type": "text",  "text": prompt},
+            ],
+        }
+        response = claude.messages.create(
+            model="claude-sonnet-4-6", max_tokens=1000,
+            system=build_system_prompt(),
+            messages=history + [vision_msg],
+        )
+        raw_reply = response.content[0].text
+
+        # Handle any plan updates embedded in the reply
+        for date_str, label in re.findall(r"PLAN_UPDATE:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.+?)(?:\n|$)", raw_reply):
+            try:
+                _save_week_plan([{"day_date": date_str.strip(), "session_label": label.strip()}])
+            except Exception as pe:
+                log.error(f"Plan update (photo) error: {pe}")
+        clean_reply = re.sub(r"\nPLAN_UPDATE:.*", "", raw_reply).strip()
+
+        reply = extract_and_save_note(clean_reply, f"photo: {prompt[:80]}")
+        # Store a text-only placeholder in history so subsequent turns stay coherent
+        add_to_history(chat_id, "user", f"[Photo{': ' + caption if caption else ''}]")
+        add_to_history(chat_id, "assistant", reply)
+        send_md(chat_id, reply, reply_to=message)
+    except Exception as e:
+        log.error(f"Image handler error: {e}")
+        bot.reply_to(message, f"⚠️ Couldn't process image: {e}")
+
+
+@bot.message_handler(content_types=["photo"])
+def handle_photo(message):
+    if message.chat.id not in (YOUR_TELEGRAM_ID, GROUP_CHAT_ID):
+        return
+    # Telegram compresses photos — take largest available resolution
+    photo = message.photo[-1]
+    _process_image_message(message, photo.file_id, mime_type="image/jpeg")
+
+
+@bot.message_handler(content_types=["document"])
+def handle_document(message):
+    """Handles image files sent as documents (uncompressed, e.g. screenshots/PNGs)."""
+    if message.chat.id not in (YOUR_TELEGRAM_ID, GROUP_CHAT_ID):
+        return
+    doc = message.document
+    mime = (doc.mime_type or "").lower()
+    if mime.startswith("image/"):
+        _process_image_message(message, doc.file_id, mime_type=mime)
+    # Non-image documents: ignore silently
+
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
