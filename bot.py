@@ -107,6 +107,15 @@ ATHLETE = {
 
     # Session menu (weekday 5am, ~1hr)
     "session_menu": "Run (easy Z2 / tempo / intervals) | Kettlebell | GOWOD mobility | Ice bath recovery | Rest",
+
+    # Nutrition — weight management with training load
+    "nutrition": (
+        "Goal: body composition maintenance — lean but properly fuelled. "
+        "Rest day targets: ~2200 kcal / 140g protein. "
+        "Training day targets: ~2600 kcal / 160g protein. "
+        "Fasted 5am sessions are normal — prioritise refuel within 60min post-session. "
+        "Note any under-fuelling patterns relative to load."
+    ),
 }
 
 def _live_resting_hr() -> int:
@@ -216,6 +225,79 @@ def _parse_plan_text(text: str, week_start: str) -> list:
             day_date = (base + timedelta(days=day_map[key])).strftime("%Y-%m-%d")
             entries.append({"day_date": day_date, "session_label": label})
     return entries
+
+
+# ── NUTRITION HELPERS ─────────────────────────────────────────────────────────
+
+def save_food_log(description: str, image_b64: str = None, mime_type: str = "image/jpeg"):
+    """Send meal to Claude for macro estimation, save to nutrition_logs table."""
+    try:
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        nutriton_context = ATHLETE["nutrition"]
+
+        if image_b64:
+            user_content = [
+                {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": image_b64}},
+                {"type": "text", "text": (
+                    f"Estimate macros for this meal/food. Context: {nutriton_context}\n"
+                    f"Additional info: {description}\n\n"
+                    "Respond ONLY with JSON in this exact format (no markdown, no commentary):\n"
+                    '{"calories_kcal": <int>, "protein_g": <float>, "carbs_g": <float>, "fat_g": <float>, "description": "<short label>"}'
+                )},
+            ]
+        else:
+            user_content = (
+                f"Estimate macros for this meal/food. Context: {nutriton_context}\n"
+                f"Food: {description}\n\n"
+                "Respond ONLY with JSON in this exact format (no markdown, no commentary):\n"
+                '{"calories_kcal": <int>, "protein_g": <float>, "carbs_g": <float>, "fat_g": <float>, "description": "<short label>"}'
+            )
+
+        resp = claude.messages.create(
+            model="claude-sonnet-4-6", max_tokens=300,
+            system=f"You are a sports nutritionist. {nutriton_context}",
+            messages=[{"role": "user", "content": user_content}],
+        )
+        raw = resp.content[0].text.strip()
+        # Strip markdown code fences if present
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+        data = json.loads(raw)
+        supabase.table("nutrition_logs").insert({
+            "date":          today_str,
+            "description":   data.get("description", description[:200]),
+            "calories_kcal": int(data.get("calories_kcal") or 0),
+            "protein_g":     float(data.get("protein_g") or 0),
+            "carbs_g":       float(data.get("carbs_g") or 0),
+            "fat_g":         float(data.get("fat_g") or 0),
+        }).execute()
+        return data
+    except Exception as e:
+        log.error(f"save_food_log error: {e}")
+        return None
+
+
+def _get_yesterday_nutrition() -> dict | None:
+    """Return totals for yesterday from nutrition_logs, or None if no data."""
+    try:
+        yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).strftime("%Y-%m-%d")
+        rows = supabase.table("nutrition_logs").select(
+            "calories_kcal,protein_g,carbs_g,fat_g,description"
+        ).eq("date", yesterday).execute().data or []
+        if not rows:
+            return None
+        return {
+            "date":          yesterday,
+            "calories_kcal": sum(r.get("calories_kcal") or 0 for r in rows),
+            "protein_g":     sum(r.get("protein_g") or 0 for r in rows),
+            "carbs_g":       sum(r.get("carbs_g") or 0 for r in rows),
+            "fat_g":         sum(r.get("fat_g") or 0 for r in rows),
+            "meals":         len(rows),
+            "labels":        [r.get("description", "") for r in rows],
+        }
+    except Exception as e:
+        log.error(f"_get_yesterday_nutrition error: {e}")
+        return None
+
 
 # Derived helpers — read from ATHLETE, never hardcode elsewhere
 def athlete_age() -> int:
@@ -1372,6 +1454,8 @@ KNOWN PATTERNS (never misread these):
 
 SESSION MENU (weekday 5am, ~1hr): {ATHLETE['session_menu']}
 
+NUTRITION: {ATHLETE['nutrition']}
+
 KETTLEBELL SESSIONS (1×20kg only — reference these when KB is the call):
 - A: Power base — 5×10 swings, 5×5 goblet squat, 3×3 Turkish get-up, 2×10 dead bug
 - B: Strength circuit — 4×8 single-leg deadlift, 4×6 clean+press, 3×12 renegade row, 3×15 hollow hold
@@ -1399,6 +1483,7 @@ WRITE TRIGGERS:
 - "save run: ..." → saves to database
 - "goal: ..." → saves race goal
 - "checkin: weight Xkg, fatigue Y/10, sleep Z/10, mood N/10" → logs wellness
+- "food: <description>" or photo with food: caption → logs nutrition estimate
 
 PLAN_UPDATE — whenever you and Luke agree on a session for a specific day (confirming today's session, swapping a day, setting a new one), append one line per changed day at the very end of your response, after the NOTE. It will be stripped before sending — Luke never sees it.
 Format: PLAN_UPDATE: YYYY-MM-DD | session in ~5 words
@@ -1662,6 +1747,18 @@ def send_morning_briefing():
         plan_context = (f"\nWEEK PLAN:\n{plan_block}" if plan_block else
                         "\nNo week plan set — recommend based on readiness.")
 
+        yest_nutr = _get_yesterday_nutrition()
+        if yest_nutr:
+            nutr_context = (
+                f"NUTRITION YESTERDAY: {yest_nutr['calories_kcal']} kcal · "
+                f"{yest_nutr['protein_g']:.0f}g protein · "
+                f"{yest_nutr['carbs_g']:.0f}g carbs · "
+                f"{yest_nutr['fat_g']:.0f}g fat "
+                f"({yest_nutr['meals']} meal(s) logged)"
+            )
+        else:
+            nutr_context = ""
+
         prompt = f"""Morning brief for Luke's 5am slot.
 
 SLEEP: {sleep_context}
@@ -1672,6 +1769,7 @@ READINESS: {readiness['score']}/10 ({readiness['label']})
 SESSION CALL: {session}{"  ← from committed week plan" if today_plan and not today_plan.get("completed") else "  ← readiness-led (no plan set)"}
 {plan_context}
 {monday_recap}
+{nutr_context}
 
 Join the dots — interpret signals, don't list them. Land ONE clear call for today's slot.
 Emoji-led sections only (no markdown headers like ##). Scannable on a phone at 5am.
@@ -2067,6 +2165,23 @@ def _process_image_message(message, file_id: str, mime_type: str = "image/jpeg")
         file_data = bot.download_file(file_info.file_path)
         b64       = base64.b64encode(file_data).decode("utf-8")
         caption   = (message.caption or "").strip()
+
+        # Route food/meal photos to nutrition logger
+        if re.match(r"^(food|meal|eat|ate|lunch|dinner|breakfast|snack)\s*[:：]?", caption, re.IGNORECASE):
+            data = save_food_log(caption, image_b64=b64, mime_type=mime_type)
+            if data:
+                reply = (
+                    f"🍽 *Logged*: {data.get('description','meal')}\n"
+                    f"~{data.get('calories_kcal',0)} kcal · "
+                    f"{data.get('protein_g',0):.0f}g protein · "
+                    f"{data.get('carbs_g',0):.0f}g carbs · "
+                    f"{data.get('fat_g',0):.0f}g fat"
+                )
+                send_md(chat_id, reply, reply_to=message)
+            else:
+                bot.reply_to(message, "⚠️ Couldn't log meal — try again.")
+            return
+
         prompt    = caption if caption else "Analyse this image as my running coach. What's relevant here?"
 
         history = get_history(chat_id)
@@ -2152,11 +2267,13 @@ def handle_message(message):
             "🔔 /push — check alerts\n"
             "📆 /weekly — weekly review\n"
             "📅 /plan — show this week's plan\n"
+            "🍽 /nutrition — today's food log\n"
             "🗑 /clear — clear conversation\n\n"
             "✏️ *Log data*\n"
             "`/setplan Mon: KB Session A\\nTue: Z2 run 40min\\n...`\n"
             "`goal: Cheltenham Half, 21 Sep 2026, 21.1km, sub 2:00`\n"
-            "`checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10`\n\n"
+            "`checkin: weight 77.5kg, fatigue 6/10, sleep 7/10, mood 8/10`\n"
+            "`food: grilled chicken and rice` — or send photo with `food:` caption\n\n"
             "💬 _Or just ask me anything_"
         ), parse_mode="Markdown")
         return
@@ -2337,9 +2454,61 @@ def handle_message(message):
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
+    if lower == "/nutrition":
+        try:
+            today_str  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            rows_today = supabase.table("nutrition_logs").select(
+                "calories_kcal,protein_g,carbs_g,fat_g,description,created_at"
+            ).eq("date", today_str).order("created_at").execute().data or []
+            yesterday  = (datetime.now(timezone.utc).date() - timedelta(days=1)).strftime("%Y-%m-%d")
+            rows_yest  = supabase.table("nutrition_logs").select(
+                "calories_kcal,protein_g,carbs_g,fat_g,description"
+            ).eq("date", yesterday).execute().data or []
+
+            lines = [f"🍽 *Nutrition Log*\n"]
+            if rows_today:
+                cal = sum(r.get("calories_kcal") or 0 for r in rows_today)
+                pro = sum(r.get("protein_g") or 0 for r in rows_today)
+                crb = sum(r.get("carbs_g") or 0 for r in rows_today)
+                fat = sum(r.get("fat_g") or 0 for r in rows_today)
+                lines.append(f"*Today ({today_str})* — {cal} kcal · {pro:.0f}g protein · {crb:.0f}g carbs · {fat:.0f}g fat")
+                for r in rows_today:
+                    lines.append(f"  · {r.get('description','?')} — {r.get('calories_kcal',0)} kcal")
+            else:
+                lines.append(f"*Today* — nothing logged yet")
+
+            if rows_yest:
+                cal = sum(r.get("calories_kcal") or 0 for r in rows_yest)
+                pro = sum(r.get("protein_g") or 0 for r in rows_yest)
+                lines.append(f"\n*Yesterday* — {cal} kcal · {pro:.0f}g protein")
+                for r in rows_yest:
+                    lines.append(f"  · {r.get('description','?')} — {r.get('calories_kcal',0)} kcal")
+
+            lines.append(f"\n_Log a meal: `food: grilled chicken and rice` or send a photo with caption `food:`_")
+            bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+        return
+
     if lower == "/clear":
         conversation_history[chat_id] = []
         bot.reply_to(message, "Conversation cleared.")
+        return
+
+    if re.match(r"^(food|meal|eat|ate|lunch|dinner|breakfast|snack)\s*[:：]", lower):
+        bot.send_chat_action(chat_id, "typing")
+        data = save_food_log(user_text)
+        if data:
+            reply = (
+                f"🍽 *Logged*: {data.get('description','meal')}\n"
+                f"~{data.get('calories_kcal',0)} kcal · "
+                f"{data.get('protein_g',0):.0f}g protein · "
+                f"{data.get('carbs_g',0):.0f}g carbs · "
+                f"{data.get('fat_g',0):.0f}g fat"
+            )
+            send_md(chat_id, reply, reply_to=message)
+        else:
+            bot.reply_to(message, "⚠️ Couldn't estimate macros — try again.")
         return
 
     if re.match(r"^(goal|race|target)\s*[:：]", lower):
