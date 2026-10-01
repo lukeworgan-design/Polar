@@ -1695,7 +1695,7 @@ def send_morning_briefing():
         latest_sleep_date = sleep_rows[0]["date"][:10] if sleep_rows else "?"
         sleep_age   = (now_dt.date() - datetime.strptime(latest_sleep_date, "%Y-%m-%d").date()).days if latest_sleep_date != "?" else 99
         sleep_note  = (
-            f"Last night's sleep ({latest_sleep_date})"  if sleep_age == 0 else
+            f"Last night's sleep ({latest_sleep_date})"  if sleep_age <= 1 else
             f"Sleep data from {sleep_age} day(s) ago ({latest_sleep_date}) — watch may not have synced yet"
         )
         sleep_lines = []
@@ -1706,7 +1706,7 @@ def send_morning_briefing():
 
         hrv_resp    = supabase.table("polar_hrv").select("date,recharge_status,hrv_avg,ans_charge").order("date", desc=True).limit(1).execute()
         hrv         = hrv_resp.data[0] if hrv_resp.data else {}
-        hrv_context = (f"Recharge: {hrv.get('recharge_status','?')} | HRV {hrv.get('hrv_avg','?')} | ANS {hrv.get('ans_charge','?')}"
+        hrv_context = (f"Recharge: {hrv.get('recharge_status','?')} | HRV {hrv.get('hrv_avg','?')} | ANS {hrv.get('ans_charge','?')} (data date: {hrv.get('date','?')})"
                        if hrv else "No HRV data.")
 
         sw_resp     = supabase.table("polar_sleepwise").select("date,grade,grade_classification,sleep_inertia").order("date", desc=True).limit(1).execute()
@@ -1823,7 +1823,7 @@ def send_post_run_debrief(exercise_id: str):
         weekly_km   = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
         weekly_load = sum((r.get("training_load") or 0) for r in week_runs)
         sleep_text  = "\n".join([f"  - {s['date']}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h score {s.get('sleep_score','?')}" for s in sleep_rows]) or "No recent sleep data."
-        hrv_text    = f"Recharge: {hrv.get('recharge_status','?')}, HRV {hrv.get('hrv_avg','?')}" if hrv else "No HRV data."
+        hrv_text    = f"Recharge: {hrv.get('recharge_status','?')}, HRV {hrv.get('hrv_avg','?')} (data date: {hrv.get('date','?')})" if hrv else "No HRV data."
         cl_text     = f"Load ratio {cl.get('cardio_load_ratio','?')} ({cl.get('cardio_load_status','?')})" if cl else "No cardio load data."
 
         if is_run:
