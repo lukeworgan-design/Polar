@@ -1435,6 +1435,7 @@ DATA INTEGRITY — non-negotiable:
 - NEVER say "this morning / today / yesterday" for a session unless the training context labels it TODAY or YESTERDAY.
 - NEVER invent details not in the data (wake times, routes, feelings). If it's not in the numbers, say so.
 - Every session in context is labelled with exact recency. Use those labels.
+- NEVER tell Luke a session didn't sync or ask him to log it manually unless you have checked the training context and confirmed it is absent. If he says a session is there, look again before responding — it may be in the context and you missed it.
 
 ATHLETE:
 - {ATHLETE['name']}, {age}yo | {ATHLETE['height_cm']}cm | ~{weight}kg (latest logged)
