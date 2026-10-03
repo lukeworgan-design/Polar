@@ -130,9 +130,89 @@ def _live_resting_hr() -> int:
         pass
     return ATHLETE["resting_hr_fallback"]
 
+POLAR_V4_BASE = "https://www.polaraccesslink.com/v4"
+
+def sync_weight_from_polar(days_back: int = 30) -> int:
+    """Pull dated weight entries from Polar AccessLink v4 calendar endpoint.
+    Saves to polar_weight table. Returns number of new rows upserted."""
+    try:
+        date_from = (datetime.now(timezone.utc).date() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        date_to   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        h = {**polar_headers(), "Accept": "application/json"}
+
+        # Try the most likely v4 calendar endpoint patterns
+        candidates = [
+            f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT&from={date_from}&to={date_to}",
+            f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=weight&from={date_from}&to={date_to}",
+            f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT,PHYSICAL_INFORMATION&from={date_from}&to={date_to}",
+        ]
+
+        resp = None
+        for url in candidates:
+            r = requests.get(url, headers=h, timeout=15)
+            log.info(f"Weight v4 probe {url} → {r.status_code}")
+            if r.status_code == 200:
+                resp = r
+                break
+
+        if not resp or resp.status_code != 200:
+            log.warning(f"Weight v4: no 200 from any candidate. Last status: {resp.status_code if resp else 'none'}")
+            return 0
+
+        data = resp.json()
+        log.info(f"Weight v4 raw response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+
+        # Parse entries — Polar may use various key names; handle the common shapes
+        entries = (
+            data.get("calendar-entries") or
+            data.get("calendarEntries") or
+            data.get("entries") or
+            (data if isinstance(data, list) else [])
+        )
+
+        count = 0
+        for entry in entries:
+            date_str = (entry.get("date") or entry.get("day") or "")[:10]
+            if not date_str:
+                continue
+            # Weight may be at top level or nested under features / weight
+            weight_val = (
+                entry.get("weight") or
+                entry.get("weight_kg") or
+                (entry.get("features") or {}).get("weight") or
+                (entry.get("WEIGHT") or {}).get("weight") or
+                None
+            )
+            if weight_val is None:
+                continue
+            if isinstance(weight_val, dict):
+                weight_val = weight_val.get("value") or weight_val.get("weight_kg")
+            if weight_val is None:
+                continue
+            try:
+                kg = float(weight_val)
+            except (TypeError, ValueError):
+                continue
+            supabase.table("polar_weight").upsert({
+                "date": date_str, "weight_kg": kg, "source": "polar_v4",
+            }, on_conflict="date").execute()
+            count += 1
+
+        log.info(f"Weight v4: upserted {count} entries")
+        return count
+    except Exception as e:
+        log.error(f"sync_weight_from_polar error: {e}")
+        return 0
+
+
 def _live_weight_kg() -> float:
-    """Latest weight from manual check-in, or fallback.
-    Note: Polar Balance weight is not exposed by Polar AccessLink v3."""
+    """Latest weight: Polar v4 first, then manual check-in, then fallback."""
+    try:
+        row = supabase.table("polar_weight").select("weight_kg").order("date", desc=True).limit(1).execute()
+        if row.data and row.data[0].get("weight_kg"):
+            return float(row.data[0]["weight_kg"])
+    except Exception:
+        pass
     try:
         row = supabase.table("wellness_checkins").select("weight_kg").order("date", desc=True).limit(1).execute()
         if row.data and row.data[0].get("weight_kg"):
@@ -2118,8 +2198,9 @@ def polar_sync_loop():
             hr_n        = sync_continuous_hr()
             load_n      = sync_cardio_load()
             sleepwise_n = sync_sleepwise()
-            if any([sleep_n, recharge_n, activity_n, hr_n, load_n, sleepwise_n]):
-                log.info(f"Sync: sleep={sleep_n} recharge={recharge_n} activity={activity_n} hr={hr_n} load={load_n} sw={sleepwise_n}")
+            weight_n    = sync_weight_from_polar(days_back=7)
+            if any([sleep_n, recharge_n, activity_n, hr_n, load_n, sleepwise_n, weight_n]):
+                log.info(f"Sync: sleep={sleep_n} recharge={recharge_n} activity={activity_n} hr={hr_n} load={load_n} sw={sleepwise_n} weight={weight_n}")
         except Exception as e:
             log.error(f"Sync loop error: {e}")
         time.sleep(300)
@@ -2310,6 +2391,7 @@ def handle_message(message):
         hr_n        = sync_continuous_hr()
         load_n      = sync_cardio_load()
         sleepwise_n = sync_sleepwise()
+        weight_n    = sync_weight_from_polar(days_back=7)
         if new:
             for ex in new:
                 bot.send_message(chat_id, format_new_run_notification(ex["data"], ex["id"], ex["splits"]), parse_mode="Markdown")
@@ -2323,6 +2405,7 @@ def handle_message(message):
         if hr_n:        parts.append(f"❤️ {hr_n} HR days")
         if load_n:      parts.append(f"🔥 {load_n} load days")
         if sleepwise_n: parts.append(f"🧠 {sleepwise_n} SleepWise days")
+        if weight_n:  parts.append(f"⚖️ {weight_n} weight entries")
         if parts: bot.send_message(chat_id, "✅ Synced: " + "  •  ".join(parts))
         return
 
@@ -2453,6 +2536,26 @@ def handle_message(message):
             goals = supabase.table("goals").select("race_name,race_date,distance_km,target_time,priority,notes").eq("active", True).order("race_date").execute()
             bot.reply_to(message, format_goals(goals.data), parse_mode="Markdown")
         except Exception as e: bot.reply_to(message, f"Error: {e}")
+        return
+
+    if lower == "/weighttest":
+        bot.reply_to(message, "🔍 Probing Polar v4 weight endpoint...")
+        try:
+            date_from = (datetime.now(timezone.utc).date() - timedelta(days=7)).strftime("%Y-%m-%d")
+            date_to   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            h = {**polar_headers(), "Accept": "application/json"}
+            results = []
+            for url in [
+                f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT&from={date_from}&to={date_to}",
+                f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=weight&from={date_from}&to={date_to}",
+                f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT,PHYSICAL_INFORMATION&from={date_from}&to={date_to}",
+            ]:
+                r = requests.get(url, headers=h, timeout=15)
+                snippet = r.text[:400] if r.text else "(empty)"
+                results.append(f"`{r.status_code}` — {url.split('?')[1]}\n{snippet}")
+            bot.send_message(chat_id, "\n\n".join(results))
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
         return
 
     if lower == "/nutrition":
