@@ -2539,21 +2539,38 @@ def handle_message(message):
         return
 
     if lower == "/weighttest":
-        bot.reply_to(message, "🔍 Probing Polar v4 weight endpoint...")
+        bot.reply_to(message, "🔍 Probing Polar weight endpoints...")
         try:
-            date_from = (datetime.now(timezone.utc).date() - timedelta(days=7)).strftime("%Y-%m-%d")
-            date_to   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             h = {**polar_headers(), "Accept": "application/json"}
             results = []
-            for url in [
-                f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT&from={date_from}&to={date_to}",
-                f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=weight&from={date_from}&to={date_to}",
-                f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT,PHYSICAL_INFORMATION&from={date_from}&to={date_to}",
-            ]:
+
+            # v3 endpoints
+            v3_urls = [
+                f"{POLAR_BASE}/users/{POLAR_USER_ID}/physical-information",
+                f"{POLAR_BASE}/users/physical-information",
+                f"{POLAR_BASE}/users/{POLAR_USER_ID}",
+            ]
+            for url in v3_urls:
                 r = requests.get(url, headers=h, timeout=15)
-                snippet = r.text[:400] if r.text else "(empty)"
-                results.append(f"`{r.status_code}` — {url.split('?')[1]}\n{snippet}")
-            bot.send_message(chat_id, "\n\n".join(results))
+                snippet = r.text[:500] if r.text else "(empty)"
+                label = url.replace(POLAR_BASE, "v3")
+                results.append(f"`{r.status_code}` {label}\n{snippet}")
+
+            # v4 calendar endpoints
+            date_from = (datetime.now(timezone.utc).date() - timedelta(days=7)).strftime("%Y-%m-%d")
+            date_to   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            v4_urls = [
+                f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT&from={date_from}&to={date_to}",
+                f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT,PHYSICAL_INFORMATION&from={date_from}&to={date_to}",
+            ]
+            for url in v4_urls:
+                r = requests.get(url, headers=h, timeout=15)
+                snippet = r.text[:500] if r.text else "(empty)"
+                label = url.split("?")[1]
+                results.append(f"`{r.status_code}` v4 {label}\n{snippet}")
+
+            for chunk in results:
+                send_md(chat_id, chunk)
         except Exception as e:
             bot.reply_to(message, f"Error: {e}")
         return
