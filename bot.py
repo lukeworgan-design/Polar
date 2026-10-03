@@ -215,6 +215,53 @@ def _live_weight_kg() -> float:
         pass
     return ATHLETE["weight_kg_fallback"]
 
+def _weight_trend() -> dict:
+    """Return weight trend over 7 and 28 days from polar_weight + wellness_checkins.
+    Returns: {current, avg_7d, avg_28d, trend_7d, n_readings, entries}"""
+    try:
+        cutoff_28 = (datetime.now(timezone.utc).date() - timedelta(days=28)).strftime("%Y-%m-%d")
+        rows_p = supabase.table("polar_weight").select("date,weight_kg").gte("date", cutoff_28).order("date", desc=True).execute().data or []
+        rows_w = supabase.table("wellness_checkins").select("date,weight_kg").gte("date", cutoff_28).order("date", desc=True).execute().data or []
+        # Merge, prefer polar_weight on same date
+        by_date = {}
+        for r in rows_w:
+            if r.get("weight_kg"):
+                by_date[r["date"]] = float(r["weight_kg"])
+        for r in rows_p:
+            if r.get("weight_kg"):
+                by_date[r["date"]] = float(r["weight_kg"])  # polar wins
+        if not by_date:
+            return {}
+        entries  = sorted(by_date.items())  # [(date, kg), ...]
+        current  = entries[-1][1]
+        cutoff_7 = (datetime.now(timezone.utc).date() - timedelta(days=7)).strftime("%Y-%m-%d")
+        vals_7   = [v for d, v in entries if d >= cutoff_7]
+        vals_28  = [v for _, v in entries]
+        avg_7d   = round(sum(vals_7)  / len(vals_7),  1) if vals_7  else None
+        avg_28d  = round(sum(vals_28) / len(vals_28), 1) if vals_28 else None
+        # Simple linear trend over 7d: positive = gaining, negative = losing
+        trend_7d = None
+        if len(vals_7) >= 3:
+            n    = len(vals_7)
+            xs   = list(range(n))
+            x_m  = sum(xs) / n
+            y_m  = sum(vals_7) / n
+            num  = sum((x - x_m) * (y - y_m) for x, y in zip(xs, vals_7))
+            den  = sum((x - x_m) ** 2 for x in xs)
+            trend_7d = round(num / den * 7, 2) if den else 0  # kg per week
+        return {
+            "current":  current,
+            "avg_7d":   avg_7d,
+            "avg_28d":  avg_28d,
+            "trend_7d": trend_7d,   # kg/week; + = gaining, - = losing
+            "n_readings": len(entries),
+            "entries":  entries,
+        }
+    except Exception as e:
+        log.error(f"_weight_trend error: {e}")
+        return {}
+
+
 def _baby_age_weeks() -> int:
     dob = datetime.strptime(ATHLETE["newborn_dob"], "%Y-%m-%d").date()
     return (datetime.now(timezone.utc).date() - dob).days // 7
@@ -1499,10 +1546,22 @@ def _base_system() -> str:
     rhr         = _live_resting_hr()
     weight      = _live_weight_kg()
     baby_weeks  = _baby_age_weeks()
+    wt          = _weight_trend()
     constraints = (
         f"Father of three, youngest {baby_weeks} weeks old. Broken sleep is the norm right now. "
         + ATHLETE["constraints_static"]
     )
+    if wt and wt.get("n_readings", 0) >= 3:
+        trend_str = ""
+        if wt.get("trend_7d") is not None:
+            direction = "▲" if wt["trend_7d"] > 0.1 else ("▼" if wt["trend_7d"] < -0.1 else "→")
+            trend_str = f" | 7d trend {direction} {abs(wt['trend_7d']):.1f}kg/wk"
+        weight_line = (
+            f"~{weight}kg now | 7d avg {wt.get('avg_7d','?')}kg | "
+            f"28d avg {wt.get('avg_28d','?')}kg{trend_str} ({wt['n_readings']} readings)"
+        )
+    else:
+        weight_line = f"~{weight}kg (building history — {wt.get('n_readings', 0)} readings so far)"
     return f"""You are {ATHLETE['name']}'s running coach. Treat him as a peer — experienced trail ultrarunner, not a beginner.
 
 DATA INTEGRITY — non-negotiable:
@@ -1512,7 +1571,7 @@ DATA INTEGRITY — non-negotiable:
 - NEVER tell Luke a session didn't sync or ask him to log it manually unless you have checked the training context and confirmed it is absent. If he says a session is there, look again before responding — it may be in the context and you missed it.
 
 ATHLETE:
-- {ATHLETE['name']}, {age}yo | {ATHLETE['height_cm']}cm | ~{weight}kg (latest logged)
+- {ATHLETE['name']}, {age}yo | {ATHLETE['height_cm']}cm | {weight_line}
 - VO2max {ATHLETE['vo2max']} | Max HR {ATHLETE['max_hr']}bpm | Resting HR {rhr}bpm (28-day avg)
 - Aerobic threshold {ATHLETE['aerobic_thr']}bpm | Anaerobic threshold {ATHLETE['anaerobic_thr']}bpm
 - Watch: {ATHLETE['watch']} | Kit: {ATHLETE['kit']}
@@ -2343,6 +2402,7 @@ def handle_message(message):
             "🔔 /push — check alerts\n"
             "📆 /weekly — weekly review\n"
             "📅 /plan — show this week's plan\n"
+            "⚖️ /weight — weight trend (7d / 28d)\n"
             "🍽 /nutrition — today's food log\n"
             "🗑 /clear — clear conversation\n\n"
             "✏️ *Log data*\n"
@@ -2569,6 +2629,30 @@ def handle_message(message):
             bot.reply_to(message, f"Error: {e}")
         return
 
+    if lower == "/weight":
+        try:
+            wt = _weight_trend()
+            if not wt:
+                bot.reply_to(message, "⚖️ No weight data yet — syncing from Polar each cycle. Check back after the next /sync.")
+                return
+            lines = [f"⚖️ *Weight trend*\n"]
+            lines.append(f"Now: *{wt['current']}kg*")
+            if wt.get("avg_7d"):   lines.append(f"7d avg: {wt['avg_7d']}kg")
+            if wt.get("avg_28d"):  lines.append(f"28d avg: {wt['avg_28d']}kg")
+            if wt.get("trend_7d") is not None:
+                d = wt["trend_7d"]
+                arrow = "▲" if d > 0.1 else ("▼" if d < -0.1 else "→")
+                lines.append(f"7d trend: {arrow} {abs(d):.2f}kg/wk")
+            lines.append(f"\n_{wt['n_readings']} readings in last 28 days_")
+            if len(wt.get("entries", [])) >= 2:
+                lines.append("\n*Recent:*")
+                for date_str, kg in wt["entries"][-7:]:
+                    lines.append(f"  {date_str}: {kg}kg")
+            bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+        return
+
     if lower == "/nutrition":
         try:
             today_str  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -2598,6 +2682,17 @@ def handle_message(message):
                 lines.append(f"\n*Yesterday* — {cal} kcal · {pro:.0f}g protein")
                 for r in rows_yest:
                     lines.append(f"  · {r.get('description','?')} — {r.get('calories_kcal',0)} kcal")
+
+            # Weight trend alongside nutrition
+            wt = _weight_trend()
+            if wt:
+                w_line = f"⚖️ *Weight*: {wt['current']}kg"
+                if wt.get("avg_7d"):  w_line += f" | 7d avg {wt['avg_7d']}kg"
+                if wt.get("trend_7d") is not None:
+                    d = wt["trend_7d"]
+                    arrow = "▲" if d > 0.1 else ("▼" if d < -0.1 else "→")
+                    w_line += f" | {arrow} {abs(d):.2f}kg/wk"
+                lines.append(f"\n{w_line}")
 
             lines.append(f"\n_Log a meal: `food: grilled chicken and rice` or send a photo with caption `food:`_")
             bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
