@@ -133,76 +133,70 @@ def _live_resting_hr() -> int:
 POLAR_V4_BASE = "https://www.polaraccesslink.com/v4"
 
 def sync_weight_from_polar(days_back: int = 30) -> int:
-    """Pull dated weight entries from Polar AccessLink v4 calendar endpoint.
-    Saves to polar_weight table. Returns number of new rows upserted."""
+    """Sync weight from Polar. Sources in priority order:
+    1. AccessLink v4 calendar (requires v4 re-auth — 401 until then)
+    2. AccessLink v3 user profile weight (live, updates when Balance syncs)
+    Returns number of new rows upserted."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    h     = {**polar_headers(), "Accept": "application/json"}
+    count = 0
+
+    # ── Source 1: v4 calendar (daily time-series) ────────────────────────────
     try:
         date_from = (datetime.now(timezone.utc).date() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-        date_to   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        h = {**polar_headers(), "Accept": "application/json"}
-
-        # Try the most likely v4 calendar endpoint patterns
-        candidates = [
-            f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT&from={date_from}&to={date_to}",
-            f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=weight&from={date_from}&to={date_to}",
-            f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT,PHYSICAL_INFORMATION&from={date_from}&to={date_to}",
-        ]
-
-        resp = None
-        for url in candidates:
+        for url in [
+            f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT&from={date_from}&to={today}",
+            f"{POLAR_V4_BASE}/users/{POLAR_USER_ID}/calendar?features=WEIGHT,PHYSICAL_INFORMATION&from={date_from}&to={today}",
+        ]:
             r = requests.get(url, headers=h, timeout=15)
-            log.info(f"Weight v4 probe {url} → {r.status_code}")
-            if r.status_code == 200:
-                resp = r
-                break
-
-        if not resp or resp.status_code != 200:
-            log.warning(f"Weight v4: no 200 from any candidate. Last status: {resp.status_code if resp else 'none'}")
-            return 0
-
-        data = resp.json()
-        log.info(f"Weight v4 raw response keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
-
-        # Parse entries — Polar may use various key names; handle the common shapes
-        entries = (
-            data.get("calendar-entries") or
-            data.get("calendarEntries") or
-            data.get("entries") or
-            (data if isinstance(data, list) else [])
-        )
-
-        count = 0
-        for entry in entries:
-            date_str = (entry.get("date") or entry.get("day") or "")[:10]
-            if not date_str:
+            if r.status_code != 200:
                 continue
-            # Weight may be at top level or nested under features / weight
-            weight_val = (
-                entry.get("weight") or
-                entry.get("weight_kg") or
-                (entry.get("features") or {}).get("weight") or
-                (entry.get("WEIGHT") or {}).get("weight") or
-                None
-            )
-            if weight_val is None:
-                continue
-            if isinstance(weight_val, dict):
-                weight_val = weight_val.get("value") or weight_val.get("weight_kg")
-            if weight_val is None:
-                continue
-            try:
-                kg = float(weight_val)
-            except (TypeError, ValueError):
-                continue
-            supabase.table("polar_weight").upsert({
-                "date": date_str, "weight_kg": kg, "source": "polar_v4",
-            }, on_conflict="date").execute()
-            count += 1
-
-        log.info(f"Weight v4: upserted {count} entries")
-        return count
+            data    = r.json()
+            entries = (data.get("calendar-entries") or data.get("calendarEntries") or
+                       data.get("entries") or (data if isinstance(data, list) else []))
+            for entry in entries:
+                date_str = (entry.get("date") or entry.get("day") or "")[:10]
+                if not date_str:
+                    continue
+                wv = (entry.get("weight") or entry.get("weight_kg") or
+                      (entry.get("features") or {}).get("weight") or None)
+                if isinstance(wv, dict):
+                    wv = wv.get("value") or wv.get("weight_kg")
+                if wv is None:
+                    continue
+                try:
+                    kg = float(wv)
+                except (TypeError, ValueError):
+                    continue
+                supabase.table("polar_weight").upsert(
+                    {"date": date_str, "weight_kg": kg, "source": "polar_v4"},
+                    on_conflict="date"
+                ).execute()
+                count += 1
+            if count:
+                log.info(f"Weight v4: {count} entries")
+                return count
     except Exception as e:
-        log.error(f"sync_weight_from_polar error: {e}")
-        return 0
+        log.error(f"Weight v4 error: {e}")
+
+    # ── Source 2: v3 user profile (single current value) ────────────────────
+    try:
+        r = requests.get(f"{POLAR_BASE}/users/{POLAR_USER_ID}", headers=h, timeout=10)
+        if r.status_code == 200:
+            profile = r.json()
+            kg = profile.get("weight")
+            if kg:
+                kg = float(kg)
+                supabase.table("polar_weight").upsert(
+                    {"date": today, "weight_kg": kg, "source": "polar_v3_profile"},
+                    on_conflict="date"
+                ).execute()
+                log.info(f"Weight v3 profile: {kg}kg → {today}")
+                return 1
+    except Exception as e:
+        log.error(f"Weight v3 profile error: {e}")
+
+    return count
 
 
 def _live_weight_kg() -> float:
