@@ -1643,7 +1643,7 @@ Format: PLAN_UPDATE: YYYY-MM-DD | session in ~5 words
 Example: PLAN_UPDATE: 2026-09-16 | KB Session B — strength circuit
 
 FOOD_LOG — whenever Luke describes or mentions eating a specific meal or food (even in passing — "had eggs this morning", "just had a protein shake"), append at the very end:
-FOOD_LOG: {"kcal": <int>, "protein_g": <float>, "carbs_g": <float>, "fat_g": <float>, "description": "<meal label with time, e.g. breakfast: scrambled eggs on toast>"}
+FOOD_LOG: {{"kcal": <int>, "protein_g": <float>, "carbs_g": <float>, "fat_g": <float>, "description": "<meal label with time, e.g. breakfast: scrambled eggs on toast>"}}
 Only append when a specific food is described — not for general nutrition discussion.
 
 End every substantive response with:
