@@ -350,37 +350,56 @@ def _parse_plan_text(text: str, week_start: str) -> list:
 
 # ── NUTRITION HELPERS ─────────────────────────────────────────────────────────
 
+def _meal_label_from_time() -> str:
+    """Return a meal label based on current BST time (UTC+1)."""
+    hour = (datetime.now(timezone.utc).hour + 1) % 24  # approximate BST
+    if 5  <= hour < 10: return "breakfast"
+    if 10 <= hour < 12: return "mid-morning snack"
+    if 12 <= hour < 15: return "lunch"
+    if 15 <= hour < 18: return "afternoon snack"
+    if 18 <= hour < 22: return "dinner"
+    return "late snack"
+
+
 def save_food_log(description: str, image_b64: str = None, mime_type: str = "image/jpeg"):
     """Send meal to Claude for macro estimation, save to nutrition_logs table."""
     try:
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        nutriton_context = ATHLETE["nutrition"]
+        today_str    = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        meal_label   = _meal_label_from_time()
+        nutr_context = ATHLETE["nutrition"]
+        meal_hint    = f"This is likely {meal_label} based on time of day. Use that to inform portion and context."
 
         if image_b64:
             user_content = [
                 {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": image_b64}},
                 {"type": "text", "text": (
-                    f"Estimate macros for this meal/food. Context: {nutriton_context}\n"
+                    f"Estimate macros for this meal/food photo.\n"
+                    f"Athlete context: {nutr_context}\n"
+                    f"{meal_hint}\n"
                     f"Additional info: {description}\n\n"
-                    "Respond ONLY with JSON in this exact format (no markdown, no commentary):\n"
-                    '{"calories_kcal": <int>, "protein_g": <float>, "carbs_g": <float>, "fat_g": <float>, "description": "<short label>"}'
+                    "If this is NOT food, respond with exactly: NOT_FOOD\n"
+                    "Otherwise respond ONLY with JSON:\n"
+                    '{"calories_kcal": <int>, "protein_g": <float>, "carbs_g": <float>, "fat_g": <float>, "description": "<meal label, e.g. breakfast: porridge and banana>"}'
                 )},
             ]
         else:
             user_content = (
-                f"Estimate macros for this meal/food. Context: {nutriton_context}\n"
+                f"Estimate macros for this meal/food.\n"
+                f"Athlete context: {nutr_context}\n"
+                f"{meal_hint}\n"
                 f"Food: {description}\n\n"
-                "Respond ONLY with JSON in this exact format (no markdown, no commentary):\n"
-                '{"calories_kcal": <int>, "protein_g": <float>, "carbs_g": <float>, "fat_g": <float>, "description": "<short label>"}'
+                "Respond ONLY with JSON:\n"
+                '{"calories_kcal": <int>, "protein_g": <float>, "carbs_g": <float>, "fat_g": <float>, "description": "<meal label>"}'
             )
 
         resp = claude.messages.create(
             model="claude-sonnet-4-6", max_tokens=300,
-            system=f"You are a sports nutritionist. {nutriton_context}",
+            system=f"You are a sports nutritionist. {nutr_context}",
             messages=[{"role": "user", "content": user_content}],
         )
         raw = resp.content[0].text.strip()
-        # Strip markdown code fences if present
+        if raw.strip() == "NOT_FOOD":
+            return None
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
         data = json.loads(raw)
         supabase.table("nutrition_logs").insert({
@@ -1623,6 +1642,10 @@ PLAN_UPDATE — whenever you and Luke agree on a session for a specific day (con
 Format: PLAN_UPDATE: YYYY-MM-DD | session in ~5 words
 Example: PLAN_UPDATE: 2026-09-16 | KB Session B — strength circuit
 
+FOOD_LOG — whenever Luke describes or mentions eating a specific meal or food (even in passing — "had eggs this morning", "just had a protein shake"), append at the very end:
+FOOD_LOG: {"kcal": <int>, "protein_g": <float>, "carbs_g": <float>, "fat_g": <float>, "description": "<meal label with time, e.g. breakfast: scrambled eggs on toast>"}
+Only append when a specific food is described — not for general nutrition discussion.
+
 End every substantive response with:
 NOTE: <topic> | <one sentence summary>"""
 
@@ -2301,12 +2324,14 @@ def _process_image_message(message, file_id: str, mime_type: str = "image/jpeg")
         b64       = base64.b64encode(file_data).decode("utf-8")
         caption   = (message.caption or "").strip()
 
-        # Route food/meal photos to nutrition logger
+        meal_label = _meal_label_from_time()
+
+        # Explicit food caption → direct to save_food_log
         if re.match(r"^(food|meal|eat|ate|lunch|dinner|breakfast|snack)\s*[:：]?", caption, re.IGNORECASE):
             data = save_food_log(caption, image_b64=b64, mime_type=mime_type)
             if data:
                 reply = (
-                    f"🍽 *Logged*: {data.get('description','meal')}\n"
+                    f"🍽 *Logged ({data.get('description','meal')})*\n"
                     f"~{data.get('calories_kcal',0)} kcal · "
                     f"{data.get('protein_g',0):.0f}g protein · "
                     f"{data.get('carbs_g',0):.0f}g carbs · "
@@ -2317,7 +2342,15 @@ def _process_image_message(message, file_id: str, mime_type: str = "image/jpeg")
                 bot.reply_to(message, "⚠️ Couldn't log meal — try again.")
             return
 
-        prompt    = caption if caption else "Analyse this image as my running coach. What's relevant here?"
+        # No food keyword — use general vision but instruct Claude to detect food
+        # and append a FOOD_LOG block if it is food
+        food_instruction = (
+            f"\n\nNUTRITION DETECTION: It is currently {meal_label} time. "
+            "If this image contains food or drink, append at the very end of your response:\n"
+            'FOOD_LOG: {"kcal": <int>, "protein_g": <float>, "carbs_g": <float>, "fat_g": <float>, "description": "<meal label>"}\n'
+            "If it is not food, do not append anything."
+        )
+        prompt = (caption if caption else "What is this? Analyse it as my running coach.") + food_instruction
 
         history = get_history(chat_id)
         vision_msg = {
@@ -2334,19 +2367,45 @@ def _process_image_message(message, file_id: str, mime_type: str = "image/jpeg")
         )
         raw_reply = response.content[0].text
 
-        # Handle any plan updates embedded in the reply
+        # Handle plan updates
         for date_str, label in re.findall(r"PLAN_UPDATE:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.+?)(?:\n|$)", raw_reply):
             try:
                 _save_week_plan([{"day_date": date_str.strip(), "session_label": label.strip()}])
             except Exception as pe:
                 log.error(f"Plan update (photo) error: {pe}")
-        clean_reply = re.sub(r"\nPLAN_UPDATE:.*", "", raw_reply).strip()
 
-        reply = extract_and_save_note(clean_reply, f"photo: {prompt[:80]}")
-        # Store a text-only placeholder in history so subsequent turns stay coherent
+        # Auto-save food if Claude detected food and appended FOOD_LOG block
+        food_match = re.search(r"FOOD_LOG:\s*(\{.+?\})", raw_reply)
+        food_logged_msg = ""
+        if food_match:
+            try:
+                fd = json.loads(food_match.group(1))
+                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                supabase.table("nutrition_logs").insert({
+                    "date":          today_str,
+                    "description":   fd.get("description", "meal from photo"),
+                    "calories_kcal": int(fd.get("kcal") or fd.get("calories_kcal") or 0),
+                    "protein_g":     float(fd.get("protein_g") or 0),
+                    "carbs_g":       float(fd.get("carbs_g") or 0),
+                    "fat_g":         float(fd.get("fat_g") or 0),
+                }).execute()
+                food_logged_msg = (
+                    f"\n\n🍽 *Auto-logged*: {fd.get('description','meal')} — "
+                    f"~{fd.get('kcal') or fd.get('calories_kcal',0)} kcal · "
+                    f"{fd.get('protein_g',0):.0f}g protein"
+                )
+                log.info(f"Auto food log from photo: {fd.get('description')}")
+            except Exception as fe:
+                log.error(f"FOOD_LOG parse error: {fe}")
+
+        # Strip structured blocks before sending
+        clean_reply = re.sub(r"\nPLAN_UPDATE:.*", "", raw_reply)
+        clean_reply = re.sub(r"\nFOOD_LOG:.*", "", clean_reply).strip()
+
+        reply = extract_and_save_note(clean_reply, f"photo: {caption[:80] if caption else 'no caption'}")
         add_to_history(chat_id, "user", f"[Photo{': ' + caption if caption else ''}]")
         add_to_history(chat_id, "assistant", reply)
-        send_md(chat_id, reply, reply_to=message)
+        send_md(chat_id, reply + food_logged_msg, reply_to=message)
     except Exception as e:
         log.error(f"Image handler error: {e}")
         bot.reply_to(message, f"⚠️ Couldn't process image: {e}")
@@ -2774,8 +2833,27 @@ def handle_message(message):
             except Exception as pe:
                 log.error(f"Plan update save error: {pe}")
 
-        # Strip PLAN_UPDATE lines before sending/storing
-        clean_reply = re.sub(r"\nPLAN_UPDATE:.*", "", raw_reply).strip()
+        # Persist any food logs Claude detected in this exchange
+        food_match = re.search(r"FOOD_LOG:\s*(\{.+?\})", raw_reply)
+        if food_match:
+            try:
+                fd = json.loads(food_match.group(1))
+                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                supabase.table("nutrition_logs").insert({
+                    "date":          today_str,
+                    "description":   fd.get("description", user_text[:100]),
+                    "calories_kcal": int(fd.get("kcal") or fd.get("calories_kcal") or 0),
+                    "protein_g":     float(fd.get("protein_g") or 0),
+                    "carbs_g":       float(fd.get("carbs_g") or 0),
+                    "fat_g":         float(fd.get("fat_g") or 0),
+                }).execute()
+                log.info(f"Food auto-logged via chat: {fd.get('description')}")
+            except Exception as fe:
+                log.error(f"FOOD_LOG (chat) parse error: {fe}")
+
+        # Strip structured blocks before sending/storing
+        clean_reply = re.sub(r"\nPLAN_UPDATE:.*", "", raw_reply)
+        clean_reply = re.sub(r"\nFOOD_LOG:.*", "", clean_reply).strip()
         reply = extract_and_save_note(clean_reply, user_text[:100])
         add_to_history(chat_id, "assistant", reply)
         if len(reply) > 4000:
