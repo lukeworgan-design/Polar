@@ -1588,6 +1588,7 @@ DATA INTEGRITY — non-negotiable:
 - NEVER invent details not in the data (wake times, routes, feelings). If it's not in the numbers, say so.
 - Every session in context is labelled with exact recency. Use those labels.
 - NEVER tell Luke a session didn't sync or ask him to log it manually unless you have checked the training context and confirmed it is absent. If he says a session is there, look again before responding — it may be in the context and you missed it.
+- NEVER claim you don't have training data or can't see a session when the training context is present. If you gave a debrief moments ago, that session IS in your context — refer back to it directly. Saying "I don't have data available" when you do is a hard error.
 
 ATHLETE:
 - {ATHLETE['name']}, {age}yo | {ATHLETE['height_cm']}cm | {weight_line}
@@ -1944,7 +1945,9 @@ Newborn context: broken sleep is normal, missed sessions are fine."""
         reply     = extract_and_save_note(response.content[0].text, "morning briefing")
         day_label = now_dt.strftime("%A %-d %b")
         header    = f"🌅 *{day_label}*\n\n{readiness_emoji(readiness['score'])} *Readiness {readiness['score']}/10* — _{readiness['label']}_\n\n"
-        send_md(YOUR_TELEGRAM_ID, header + reply)
+        full_msg  = header + reply
+        send_md(YOUR_TELEGRAM_ID, full_msg)
+        add_to_history(YOUR_TELEGRAM_ID, "assistant", full_msg)
         check_and_push_alerts()
     except Exception as e:
         log.error(f"Briefing error: {e}")
@@ -2033,7 +2036,10 @@ End with: NOTE: post-session debrief ({sport_label}) | <10-word summary>"""
             messages=[{"role": "user", "content": prompt}]
         )
         reply = extract_and_save_note(response.content[0].text, "post-session debrief")
-        send_md(YOUR_TELEGRAM_ID, f"{header}\n\n{reply}")
+        full_msg = f"{header}\n\n{reply}"
+        send_md(YOUR_TELEGRAM_ID, full_msg)
+        # Store in history so follow-up replies know the debrief was already given
+        add_to_history(YOUR_TELEGRAM_ID, "assistant", full_msg)
     except Exception as e:
         log.error(f"Post-run debrief error {exercise_id}: {e}")
 
@@ -2168,6 +2174,7 @@ End with: NOTE: evening set-up | <10-word summary>"""
         reply = extract_and_save_note(response.content[0].text, "evening set-up")
         msg   = f"🌙 *Evening Set-Up — {now.strftime('%-d %b')}*\n\n{reply}"
         send_md(YOUR_TELEGRAM_ID, msg)
+        add_to_history(YOUR_TELEGRAM_ID, "assistant", msg)
     except Exception as e:
         log.error(f"Evening debrief error: {e}")
         bot.send_message(YOUR_TELEGRAM_ID, f"⚠️ Evening debrief error: {e}")
