@@ -145,6 +145,7 @@ export function initScheduler(sendFn: SendMessageFn): void {
   // Pocket-money payout — every Friday at 4pm (payday). Telegram message + an
   // Echo shout-out of what each kid earned.
   cron.schedule('0 16 * * 5', async () => {
+    if (!pocketMoneyAnnouncementsOn()) return;
     try {
       const { payoutMessage, paydaySpeech } = await import('./pocketmoney');
       const msg = await payoutMessage();
@@ -158,6 +159,7 @@ export function initScheduler(sendFn: SendMessageFn): void {
   // Weekly "jobs missed this week" review — Friday 8am, before the 4pm payout,
   // so there's time to backfill anything the kids actually did.
   cron.schedule('0 8 * * 5', async () => {
+    if (!pocketMoneyAnnouncementsOn()) return;
     try {
       const { weekMissedMessage } = await import('./pocketmoney');
       const msg = await weekMissedMessage();
@@ -169,6 +171,7 @@ export function initScheduler(sendFn: SendMessageFn): void {
 
   // Morning "jobs of the day" on the Echos — 7:30am daily.
   cron.schedule('30 7 * * *', async () => {
+    if (!pocketMoneyAnnouncementsOn()) return;
     try {
       const { morningJobsSpeech } = await import('./pocketmoney');
       await announceJobsVoice(await morningJobsSpeech());
@@ -179,6 +182,7 @@ export function initScheduler(sendFn: SendMessageFn): void {
 
   // Teatime "what's left" nudge on the Echos — 5:00pm daily.
   cron.schedule('0 17 * * *', async () => {
+    if (!pocketMoneyAnnouncementsOn()) return;
     try {
       const { teatimeNudgeSpeech } = await import('./pocketmoney');
       await announceJobsVoice(await teatimeNudgeSpeech());
@@ -227,6 +231,14 @@ export function initScheduler(sendFn: SendMessageFn): void {
   refreshLocalEventsTicker().catch((err) => console.error('Initial ticker refresh error:', err));
 
   console.log('Scheduler initialised ✓');
+}
+
+/** TEMPORARY: the automatic pocket-money announcements — Friday payout + weekly
+ *  review (Telegram) and the morning/teatime/payday shout-outs (Alexa) — are
+ *  off for now. Re-enable by setting POCKET_MONEY_ANNOUNCEMENTS=on in Railway.
+ *  The on-demand /jobs, /jobsannounce and /jobsweek commands are unaffected. */
+function pocketMoneyAnnouncementsOn(): boolean {
+  return (process.env['POCKET_MONEY_ANNOUNCEMENTS'] || 'off').toLowerCase() === 'on';
 }
 
 /** Speak a jobs announcement on all Echos, honouring quiet hours. No-ops when
