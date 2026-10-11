@@ -2730,9 +2730,10 @@ export async function refreshLocalEventsTicker(): Promise<void> {
     const now = getLocalNow(config.timezone);
     const monthStr = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: config.timezone });
     const todayLabel = now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: config.timezone });
-    // 22-day date reference so weekday↔date pairings are always correct.
+    // 42-day date reference so weekday↔date pairings are always correct. Longer
+    // than the general window because families book fun runs weeks ahead.
     const refBase = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0);
-    const dateReference = Array.from({ length: 22 }, (_, i) => {
+    const dateReference = Array.from({ length: 42 }, (_, i) => {
       const d = new Date(refBase);
       d.setDate(refBase.getDate() + i);
       return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: config.timezone });
@@ -2740,12 +2741,17 @@ export async function refreshLocalEventsTicker(): Promise<void> {
 
     // Queries aimed at dated, one-off happenings (fetes, fun days, festivals,
     // markets, workshops) — not permanent attractions. Nearby towns included.
+    // Plus kid-friendly running events (fun runs, obstacle/mud runs, charity
+    // runs) across a WIDER area — the family will travel for a good one.
     const queries = [
       `family fun day OR fete OR festival OR fair ${config.location} OR Winchcombe OR Tewkesbury OR Gloucester ${monthStr}`,
       `things to do this weekend ${config.location} with kids`,
       `Gloucestershire family events ${monthStr} what's on this week`,
       `children's events workshops ${config.location} ${monthStr} tickets`,
       `eventbrite family kids ${config.location} Gloucestershire`,
+      `kids fun run OR family obstacle race OR mud run Gloucestershire OR Cotswolds OR Worcestershire OR Bristol ${monthStr}`,
+      `family charity fun run OR Santa run OR Reindeer run OR colour run near ${config.location} ${monthStr} tickets entry`,
+      `junior OR kids OR family 2k OR 5k fun run South West England ${monthStr} sign up`,
     ];
     const searches = await Promise.all(queries.map((q) => braveSearch(q, 6, { freshness: 'pm' }).catch(() => [])));
     const seen = new Set<string>();
@@ -2754,32 +2760,45 @@ export async function refreshLocalEventsTicker(): Promise<void> {
       seen.add(r.url);
       return true;
     });
-    if (results.length === 0) return;
+
+    // Known kid-friendly fun-run organisers worth checking every refresh (they
+    // run dated, bookable events). Fetched directly even if search misses them.
+    const seedRunUrls = [
+      'https://www.mojoactive.co.uk/muddy-madness',
+      'https://www.cobalthealth.co.uk/events',
+    ];
+    if (results.length === 0 && seedRunUrls.length === 0) return;
 
     // Read a few promising event-listing pages so we get REAL dates, not just snippets.
-    const listingHints = ['event', 'whats-on', 'what-s-on', 'ticket', 'festival', 'funday', 'fun-day', 'fete', 'dayoutwiththekids', 'eventbrite', 'visit'];
-    const toFetch = results
+    const listingHints = ['event', 'whats-on', 'what-s-on', 'ticket', 'festival', 'funday', 'fun-day', 'fete', 'dayoutwiththekids', 'eventbrite', 'visit', 'run', 'race', 'muddy', 'reindeer', 'santa', 'obstacle'];
+    const searchFetch = results
       .filter((r) => listingHints.some((h) => r.url.toLowerCase().includes(h)))
-      .slice(0, 4);
+      .slice(0, 4)
+      .map((r) => r.url);
+    // Always also check the known fun-run organisers.
+    const toFetch = [...new Set([...seedRunUrls, ...searchFetch])].slice(0, 6);
     const pages = await Promise.all(
-      toFetch.map(async (r) => {
-        const text = await fetchPageText(r.url, 3500);
-        return text ? `PAGE: ${r.url}\n${text}` : '';
+      toFetch.map(async (url) => {
+        const text = await fetchPageText(url, 3500);
+        return text ? `PAGE: ${url}\n${text}` : '';
       }),
     );
     const pageContext = pages.filter(Boolean).join('\n\n');
 
     const prompt = `Today is ${todayLabel}. You're compiling a "What's on for families" ticker for a family with young kids (7, 5 and a newborn) in and around ${config.location}, Gloucestershire.
 
-Produce a list of SPECIFIC, DATED, one-off events happening in the NEXT 3 WEEKS — things like family fun days, fetes, festivals, fairs, markets, seasonal trails, children's workshops, shows, and community events. The whole point is timeliness: "Sun 24 Aug — Family Fun Day, Winchcombe", not permanent attractions.
+Produce a list of SPECIFIC, DATED, one-off events — things like family fun days, fetes, festivals, fairs, markets, seasonal trails, children's workshops, shows, and community events. The whole point is timeliness: "Sun 24 Aug — Family Fun Day, Winchcombe", not permanent attractions.
+
+ALSO INCLUDE kid-friendly RUNNING events: family fun runs, obstacle/mud runs, and charity runs (e.g. a mud run like "Muddy Madness", a "Reindeer Run", "Santa Run", or "Colour Run"), and junior/family 2k–5k races where children can take part. For these running events the family is happy to TRAVEL further (a wider area than usual — Gloucestershire, the Cotswolds and nearby counties), and they're worth listing a bit further ahead so there's time to book. Only recurring weekly things (like weekly parkrun) should be left out.
 
 STRICT RULES:
 - ONLY include an event if a specific date (or clear "this weekend"/named day) appears in the sources below. If there's no date, LEAVE IT OUT.
-- Do NOT list permanent attractions, venues, museums, farm parks, soft play, lidos or "places to visit" — those are not events.
+- Do NOT list permanent attractions, venues, museums, farm parks, soft play, lidos, "places to visit", or weekly-recurring activities — those are not events.
 - NEVER invent an event, date, or venue. Better to return few items than to make things up.
-- Prefer events within the next 3 weeks; ignore past dates (today is ${todayLabel}).
+- Prefer events within the next 6 weeks; ignore past dates (today is ${todayLabel}).
+- For a running event, add a tiny tag so it reads as a run, e.g. "Sat 6 Dec — Reindeer Run (family fun run), Cheltenham".
 
-Format each on its own line as: "Day D Mon — Event name, Town/Venue" (e.g. "Sun 24 Aug — Teddy Bears' Picnic, Pittville Park"). Up to 12 items. Output ONLY the lines — no intro, no numbering, no commentary.
+Format each on its own line as: "Day D Mon — Event name, Town/Venue" (e.g. "Sun 24 Aug — Teddy Bears' Picnic, Pittville Park"). Up to 14 items. Output ONLY the lines — no intro, no numbering, no commentary.
 
 DATE REFERENCE — these are the only valid dates (correct weekday↔date pairings). Use the weekday exactly as shown here for each date, and ignore any event whose date is NOT in this list (it's either past or too far off):
 ${dateReference}
@@ -2800,7 +2819,7 @@ ${pageContext ? `EVENT PAGE CONTENT:\n${pageContext}` : ''}`;
       .split('\n')
       .map((l) => l.replace(/^[-•*\d.\s]+/, '').trim())
       .filter((l) => l.length > 4 && l.includes('—'))
-      .slice(0, 12);
+      .slice(0, 14);
 
     // Merge with what we already have so a thin search doesn't empty the ticker.
     // Dedupe by normalised text; drop past-dated items; keep the soonest ~20.
@@ -2815,7 +2834,7 @@ ${pageContext ? `EVENT PAGE CONTENT:\n${pageContext}` : ''}`;
     tickerItems = [...merged.values()]
       .filter((i) => i.date >= todayStr)
       .sort((a, b) => a.date.localeCompare(b.date))
-      .slice(0, 20);
+      .slice(0, 24);
     console.log(`Local events ticker: +${freshLines.length} found, ${tickerItems.length} upcoming after merge.`);
   } catch (err) {
     console.error('refreshLocalEventsTicker failed:', err);
