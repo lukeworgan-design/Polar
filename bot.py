@@ -1982,7 +1982,15 @@ def send_post_run_debrief(exercise_id: str):
         pace_s      = (dur_s / dist_km) if dist_km > 0 else 0
         weekly_km   = sum((r.get("distance_meters") or 0) for r in week_runs) / 1000
         weekly_load = sum((r.get("training_load") or 0) for r in week_runs)
-        sleep_text  = "\n".join([f"  - {s['date']}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h score {s.get('sleep_score','?')}" for s in sleep_rows]) or "No recent sleep data."
+        today_date  = datetime.now(timezone.utc).date()
+        def _sleep_recency(s):
+            try:
+                age = (today_date - datetime.strptime(s["date"][:10], "%Y-%m-%d").date()).days
+                label = "last night" if age <= 1 else f"{age} nights ago"
+                return f"  - {s['date']} ({label}): {round((s.get('total_sleep_seconds') or 0)/3600,1)}h score {s.get('sleep_score','?')}"
+            except Exception:
+                return f"  - {s['date']}: {round((s.get('total_sleep_seconds') or 0)/3600,1)}h score {s.get('sleep_score','?')}"
+        sleep_text  = "\n".join([_sleep_recency(s) for s in sleep_rows]) or "No recent sleep data."
         hrv_text    = f"Recharge: {hrv.get('recharge_status','?')}, HRV {hrv.get('hrv_avg','?')} (data date: {hrv.get('date','?')})" if hrv else "No HRV data."
         cl_text     = f"Load ratio {cl.get('cardio_load_ratio','?')} ({cl.get('cardio_load_status','?')})" if cl else "No cardio load data."
 
