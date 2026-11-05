@@ -2105,6 +2105,14 @@ def send_evening_debrief():
                 run_lines.append(f"{sport_emoji(r.get('sport',''))} {d}km in {dur//60}min | HR {r.get('avg_heart_rate','?')} | load {r.get('training_load','?')}")
             today_block += ("\n" if today_block else "") + "Sessions: " + " / ".join(run_lines)
 
+        no_sessions_warning = (
+            "\n⚠️ SESSIONS TODAY: None recorded in the database. "
+            "Do NOT infer, reference, or describe any training session as having occurred today — "
+            "even if coaching notes or conversation history mention a planned session. "
+            "If a session was planned but no data exists, treat today as a rest/non-training day."
+            if not runs_today else ""
+        )
+
         load_block = ""
         if cl:
             load_block = (
@@ -2148,7 +2156,7 @@ def send_evening_debrief():
 Purpose: quick read of today, then commit to tomorrow's plan so the 5am decision is already made.
 
 TODAY ({now.strftime('%A')}):
-{today_block or "No activity data yet — may not have synced."}
+{today_block or "No activity data yet — may not have synced."}{no_sessions_warning}
 
 LOAD:
 {load_block or "No cardio load data."}
@@ -2179,7 +2187,9 @@ End with: NOTE: evening set-up | <10-word summary>"""
             system=build_system_prompt(),
             messages=[{"role": "user", "content": prompt}]
         )
-        reply = extract_and_save_note(response.content[0].text, "evening set-up")
+        raw   = response.content[0].text
+        raw   = re.sub(r"\nPLAN_?UPDATE:.*", "", raw)
+        reply = extract_and_save_note(raw, "evening set-up")
         msg   = f"🌙 *Evening Set-Up — {now.strftime('%-d %b')}*\n\n{reply}"
         send_md(YOUR_TELEGRAM_ID, msg)
         add_to_history(YOUR_TELEGRAM_ID, "assistant", msg)
@@ -2382,8 +2392,8 @@ def _process_image_message(message, file_id: str, mime_type: str = "image/jpeg")
         )
         raw_reply = response.content[0].text
 
-        # Handle plan updates
-        for date_str, label in re.findall(r"PLAN_UPDATE:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.+?)(?:\n|$)", raw_reply):
+        # Handle plan updates (match PLAN_UPDATE: or PLANUPDATE: without underscore)
+        for date_str, label in re.findall(r"PLAN_?UPDATE:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.+?)(?:\n|$)", raw_reply):
             try:
                 _save_week_plan([{"day_date": date_str.strip(), "session_label": label.strip()}])
             except Exception as pe:
@@ -2413,8 +2423,8 @@ def _process_image_message(message, file_id: str, mime_type: str = "image/jpeg")
             except Exception as fe:
                 log.error(f"FOOD_LOG parse error: {fe}")
 
-        # Strip structured blocks before sending
-        clean_reply = re.sub(r"\nPLAN_UPDATE:.*", "", raw_reply)
+        # Strip structured blocks before sending (catch PLANUPDATE: and PLAN_UPDATE:)
+        clean_reply = re.sub(r"\nPLAN_?UPDATE:.*", "", raw_reply)
         clean_reply = re.sub(r"\nFOOD_LOG:.*", "", clean_reply).strip()
 
         reply = extract_and_save_note(clean_reply, f"photo: {caption[:80] if caption else 'no caption'}")
@@ -2839,8 +2849,8 @@ def handle_message(message):
         )
         raw_reply = response.content[0].text
 
-        # Persist any plan updates Claude agreed on in this exchange
-        plan_updates = re.findall(r"PLAN_UPDATE:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.+?)(?:\n|$)", raw_reply)
+        # Persist any plan updates Claude agreed on in this exchange (match PLAN_UPDATE: or PLANUPDATE:)
+        plan_updates = re.findall(r"PLAN_?UPDATE:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.+?)(?:\n|$)", raw_reply)
         for date_str, label in plan_updates:
             try:
                 _save_week_plan([{"day_date": date_str.strip(), "session_label": label.strip()}])
@@ -2866,8 +2876,8 @@ def handle_message(message):
             except Exception as fe:
                 log.error(f"FOOD_LOG (chat) parse error: {fe}")
 
-        # Strip structured blocks before sending/storing
-        clean_reply = re.sub(r"\nPLAN_UPDATE:.*", "", raw_reply)
+        # Strip structured blocks before sending/storing (catch PLANUPDATE: and PLAN_UPDATE:)
+        clean_reply = re.sub(r"\nPLAN_?UPDATE:.*", "", raw_reply)
         clean_reply = re.sub(r"\nFOOD_LOG:.*", "", clean_reply).strip()
         reply = extract_and_save_note(clean_reply, user_text[:100])
         add_to_history(chat_id, "assistant", reply)
