@@ -2761,37 +2761,44 @@ def handle_message(message):
         return
 
     if lower == "/debugfit":
-        bot.reply_to(message, "🔍 Fetching FIT lap fields from most recent exercise...")
+        bot.reply_to(message, "🔍 Scanning recent exercises for phase data...")
         try:
-            exs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters").order("date", desc=True).limit(5).execute().data or []
+            exs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,raw_json").order("date", desc=True).limit(5).execute().data or []
             if not exs:
                 bot.reply_to(message, "No exercises found.")
                 return
             for ex_row in exs:
                 ex_id = ex_row["polar_exercise_id"]
+                # Check exercise JSON for name/title/phase hints
+                raw = json.loads(ex_row.get("raw_json") or "{}")
+                api_name = raw.get("name") or raw.get("title") or raw.get("sport_title") or ""
+                has_laps_api = "laps" in raw or "phases" in raw
                 r = requests.get(f"{POLAR_BASE}/exercises/{ex_id}/fit", headers={"Authorization": f"Bearer {POLAR_ACCESS_TOKEN}", "Accept": "application/octet-stream"})
                 if not r.ok:
+                    bot.reply_to(message, f"{ex_id} ({ex_row['date'][:10]}): FIT {r.status_code}")
                     continue
                 if not fitparse:
                     bot.reply_to(message, "fitparse not available.")
                     return
                 fitfile = fitparse.FitFile(io.BytesIO(r.content))
-                lap_lines = [f"Exercise: {ex_id} ({ex_row['date']})"]
+                lap_lines = [f"Ex {ex_id} {ex_row['date'][:10]} | name={api_name!r} | api_laps={has_laps_api}"]
                 lap_num = 0
                 for record in fitfile.get_messages("lap"):
-                    data = {d.name: d.value for d in record}
-                    intensity = data.get("intensity")
-                    sport_event = data.get("sport_event")
-                    event = data.get("event")
-                    trigger = data.get("lap_trigger")
-                    dur = data.get("total_elapsed_time") or data.get("total_timer_time")
-                    dist = data.get("total_distance")
-                    lap_lines.append(f"  Lap {lap_num+1}: intensity={intensity!r} sport_event={sport_event!r} event={event!r} trigger={trigger!r} dur={dur}s dist={dist}m")
+                    # Include all non-None fields + all developer fields
+                    std_data  = {d.name: d.value for d in record if not d.is_developer_field}
+                    dev_data  = {f"dev:{d.name}": d.value for d in record if d.is_developer_field}
+                    data = {**std_data, **dev_data}
+                    keep = {k: v for k, v in data.items() if v is not None and k not in ("timestamp","start_time","message_index")}
+                    intensity = keep.pop("intensity", None)
+                    trigger   = keep.pop("lap_trigger", None)
+                    dur       = keep.pop("total_elapsed_time", None) or keep.pop("total_timer_time", None)
+                    dist      = keep.pop("total_distance", None)
+                    extras    = {k: v for k, v in keep.items() if "sport" in k or "event" in k or "dev:" in k or "phase" in k or "type" in k}
+                    lap_lines.append(f"  L{lap_num+1}: int={intensity!r} trig={trigger!r} {dur}s/{dist}m | {extras}")
                     lap_num += 1
                     if lap_num >= 12: break
-                bot.reply_to(message, "\n".join(lap_lines))
-                return
-            bot.reply_to(message, "No FIT files returned.")
+                send_md(chat_id, "\n".join(lap_lines))
+            bot.reply_to(message, "Done.")
         except Exception as e:
             bot.reply_to(message, f"Error: {e}")
         return
