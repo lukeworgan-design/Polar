@@ -2760,6 +2760,42 @@ def handle_message(message):
         except Exception as e: bot.reply_to(message, f"Error: {e}")
         return
 
+    if lower == "/debugfit":
+        bot.reply_to(message, "🔍 Fetching FIT lap fields from most recent exercise...")
+        try:
+            exs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters").order("date", desc=True).limit(5).execute().data or []
+            if not exs:
+                bot.reply_to(message, "No exercises found.")
+                return
+            for ex_row in exs:
+                ex_id = ex_row["polar_exercise_id"]
+                r = requests.get(f"{POLAR_BASE}/exercises/{ex_id}/fit", headers={"Authorization": f"Bearer {POLAR_ACCESS_TOKEN}", "Accept": "application/octet-stream"})
+                if not r.ok:
+                    continue
+                if not fitparse:
+                    bot.reply_to(message, "fitparse not available.")
+                    return
+                fitfile = fitparse.FitFile(io.BytesIO(r.content))
+                lap_lines = [f"Exercise: {ex_id} ({ex_row['date']})"]
+                lap_num = 0
+                for record in fitfile.get_messages("lap"):
+                    data = {d.name: d.value for d in record}
+                    intensity = data.get("intensity")
+                    sport_event = data.get("sport_event")
+                    event = data.get("event")
+                    trigger = data.get("lap_trigger")
+                    dur = data.get("total_elapsed_time") or data.get("total_timer_time")
+                    dist = data.get("total_distance")
+                    lap_lines.append(f"  Lap {lap_num+1}: intensity={intensity!r} sport_event={sport_event!r} event={event!r} trigger={trigger!r} dur={dur}s dist={dist}m")
+                    lap_num += 1
+                    if lap_num >= 12: break
+                bot.reply_to(message, "\n".join(lap_lines))
+                return
+            bot.reply_to(message, "No FIT files returned.")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+        return
+
     if lower == "/weighttest":
         bot.reply_to(message, "🔍 Probing Polar weight endpoints...")
         try:
