@@ -846,33 +846,60 @@ _FIT_INTENSITY = {
 }
 _STRUCTURED_INTENSITIES = {2, 3, 4, 5, 28, "rest", "warmup", "cool_down", "interval", "recovery"}
 
+def _lap_to_phase(data: dict, i: int, n: int) -> dict:
+    dur_s     = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
+    dist_m    = sf(data.get("total_distance"))
+    avg_speed = sf(data.get("avg_speed") or data.get("enhanced_avg_speed"))
+    max_speed = sf(data.get("max_speed") or data.get("enhanced_max_speed"))
+    pace_s    = (1000 / avg_speed) if avg_speed and avg_speed > 0 else ((dur_s / (dist_m / 1000)) if dur_s and dist_m and dist_m > 0 else None)
+    max_pace_s = (1000 / max_speed) if max_speed and max_speed > 0 else None
+    # Classify by intensity field if present, else by position + duration heuristic
+    intensity = data.get("intensity")
+    if intensity in _FIT_INTENSITY:
+        phase_type = _FIT_INTENSITY[intensity]
+    elif i == 0 and (dur_s or 0) > 400:
+        phase_type = "Warmup"
+    elif i == n - 1:
+        phase_type = "Cooldown"
+    elif (dur_s or 0) <= 220 or (dist_m or 0) <= 450:
+        phase_type = "Rest"
+    else:
+        phase_type = "Work"
+    return {
+        "phase_num": i + 1, "phase_type": phase_type,
+        "duration_s": si(dur_s), "distance_m": sf(dist_m),
+        "avg_hr": si(data.get("avg_heart_rate")), "max_hr": si(data.get("max_heart_rate")),
+        "avg_power": si(data.get("avg_power")), "max_power": si(data.get("max_power")),
+        "avg_pace_s": sf(pace_s), "max_pace_s": sf(max_pace_s),
+    }
+
 def parse_fit_phases(fit_bytes: bytes, exercise_id: str, session_date: str) -> list:
-    """Return structured phase list if FIT contains non-active laps (Polar Favourites), else []."""
+    """Return structured phase list for Polar Favourites sessions, else [].
+    Polar never encodes intensity in FIT laps, so we detect by distance variance:
+    auto-km-laps are all ~1000m; structured sessions have wildly mixed distances."""
     if not fitparse: return []
     try:
         fitfile  = fitparse.FitFile(io.BytesIO(fit_bytes))
         raw_laps = [{d.name: d.value for d in r} for r in fitfile.get_messages("lap")]
-        if not any(l.get("intensity") in _STRUCTURED_INTENSITIES for l in raw_laps): return []
-        phases = []
-        cumulative = 0.0
-        for i, data in enumerate(raw_laps):
-            dur_s     = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
-            dist_m    = sf(data.get("total_distance"))
-            avg_speed = sf(data.get("avg_speed") or data.get("enhanced_avg_speed"))
-            max_speed = sf(data.get("max_speed") or data.get("enhanced_max_speed"))
-            pace_s    = (1000 / avg_speed) if avg_speed and avg_speed > 0 else (dur_s / (dist_m / 1000) if dur_s and dist_m and dist_m > 0 else None)
-            max_pace_s = (1000 / max_speed) if max_speed and max_speed > 0 else None
-            cumulative += (dur_s or 0)
-            phases.append({
-                "phase_num": i + 1,
-                "phase_type": _FIT_INTENSITY.get(data.get("intensity"), "Active"),
-                "duration_s": si(dur_s), "cumulative_s": si(cumulative),
-                "distance_m": sf(dist_m),
-                "avg_hr": si(data.get("avg_heart_rate")), "max_hr": si(data.get("max_heart_rate")),
-                "avg_power": si(data.get("avg_power")), "max_power": si(data.get("max_power")),
-                "avg_pace_s": sf(pace_s), "max_pace_s": sf(max_pace_s),
-            })
-        return phases
+        if len(raw_laps) < 3: return []
+
+        # Try intensity field first (future-proof if Polar ever encodes it)
+        if any(l.get("intensity") in _STRUCTURED_INTENSITIES for l in raw_laps):
+            n = len(raw_laps)
+            return [_lap_to_phase(l, i, n) for i, l in enumerate(raw_laps)]
+
+        # Distance-variance detection: auto-laps are all ~1000m; phases are mixed
+        dists = [l.get("total_distance") or 0 for l in raw_laps[:-1]]  # ignore partial last lap
+        if not dists: return []
+        mean_d = sum(dists) / len(dists)
+        # All complete laps within 10% of 1000m → regular auto-lap run
+        if all(abs(d - 1000) < 100 for d in dists): return []
+        # Coefficient of variation < 25% → too uniform to be structured
+        cv = (sum((d - mean_d)**2 for d in dists) / len(dists))**0.5 / (mean_d or 1)
+        if cv < 0.25: return []
+
+        n = len(raw_laps)
+        return [_lap_to_phase(l, i, n) for i, l in enumerate(raw_laps)]
     except Exception as e:
         log.error(f"FIT phases parse {exercise_id}: {e}")
         return []
@@ -2867,7 +2894,7 @@ def handle_message(message):
     if lower == "/resyncphases":
         bot.reply_to(message, "🔄 Re-scanning recent exercises for structured phase data...")
         try:
-            exs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,phases_json").order("date", desc=True).limit(20).execute().data or []
+            exs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,phases_json").order("date", desc=True).limit(50).execute().data or []
             updated = 0
             for ex_row in exs:
                 ex_id = ex_row["polar_exercise_id"]
