@@ -839,6 +839,61 @@ def format_status_dashboard() -> str:
     return "\n".join(lines)
 # ── FIT FILE PARSING ───────────────────────────────────────────────────────
 
+_FIT_INTENSITY = {
+    0: "Active", 1: "Active", 2: "Rest", 3: "Warmup", 4: "Cooldown", 5: "Work", 28: "Rest",
+    "active": "Active", "rest": "Rest", "warmup": "Warmup",
+    "cool_down": "Cooldown", "interval": "Work", "recovery": "Rest",
+}
+_STRUCTURED_INTENSITIES = {2, 3, 4, 5, 28, "rest", "warmup", "cool_down", "interval", "recovery"}
+
+def parse_fit_phases(fit_bytes: bytes, exercise_id: str, session_date: str) -> list:
+    """Return structured phase list if FIT contains non-active laps (Polar Favourites), else []."""
+    if not fitparse: return []
+    try:
+        fitfile  = fitparse.FitFile(io.BytesIO(fit_bytes))
+        raw_laps = [{d.name: d.value for d in r} for r in fitfile.get_messages("lap")]
+        if not any(l.get("intensity") in _STRUCTURED_INTENSITIES for l in raw_laps): return []
+        phases = []
+        cumulative = 0.0
+        for i, data in enumerate(raw_laps):
+            dur_s     = sf(data.get("total_elapsed_time") or data.get("total_timer_time"))
+            dist_m    = sf(data.get("total_distance"))
+            avg_speed = sf(data.get("avg_speed") or data.get("enhanced_avg_speed"))
+            max_speed = sf(data.get("max_speed") or data.get("enhanced_max_speed"))
+            pace_s    = (1000 / avg_speed) if avg_speed and avg_speed > 0 else (dur_s / (dist_m / 1000) if dur_s and dist_m and dist_m > 0 else None)
+            max_pace_s = (1000 / max_speed) if max_speed and max_speed > 0 else None
+            cumulative += (dur_s or 0)
+            phases.append({
+                "phase_num": i + 1,
+                "phase_type": _FIT_INTENSITY.get(data.get("intensity"), "Active"),
+                "duration_s": si(dur_s), "cumulative_s": si(cumulative),
+                "distance_m": sf(dist_m),
+                "avg_hr": si(data.get("avg_heart_rate")), "max_hr": si(data.get("max_heart_rate")),
+                "avg_power": si(data.get("avg_power")), "max_power": si(data.get("max_power")),
+                "avg_pace_s": sf(pace_s), "max_pace_s": sf(max_pace_s),
+            })
+        return phases
+    except Exception as e:
+        log.error(f"FIT phases parse {exercise_id}: {e}")
+        return []
+
+def _format_phases_text(phases_json_str) -> str:
+    if not phases_json_str: return ""
+    try:
+        phases = json.loads(phases_json_str) if isinstance(phases_json_str, str) else phases_json_str
+        if not phases: return ""
+        lines = ["STRUCTURED PHASES:"]
+        for p in phases:
+            dur_s  = p.get("duration_s") or 0
+            dist_km = round((p.get("distance_m") or 0) / 1000, 2)
+            avg_pace = seconds_to_pace(p.get("avg_pace_s")) if p.get("avg_pace_s") else "N/A"
+            power_str = f" | {p.get('avg_power','?')}W" if p.get("avg_power") else ""
+            lines.append(f"  {p['phase_num']}. {p['phase_type']:9s} {dur_s//60}:{dur_s%60:02d} | {dist_km:.2f}km | HR {p.get('avg_hr','?')}/{p.get('max_hr','?')} | {avg_pace}/km{power_str}")
+        return "\n".join(lines)
+    except Exception as e:
+        log.error(f"Format phases: {e}")
+        return ""
+
 def parse_fit_laps(fit_bytes: bytes, exercise_id: str, session_date: str, total_distance_m: float = None) -> list:
     if not fitparse: return []
     try:
@@ -886,6 +941,20 @@ def fetch_fit_and_parse(exercise_id: str, session_date: str, total_distance_m: f
     except Exception as e:
         log.error(f"FIT fetch error {exercise_id}: {e}")
         return []
+
+def fetch_fit_all(exercise_id: str, session_date: str, total_distance_m: float = None) -> tuple:
+    """Returns (split_rows, phases). For structured sessions, split_rows is [] and phases is populated."""
+    try:
+        r = requests.get(f"{POLAR_BASE}/exercises/{exercise_id}/fit", headers={"Authorization": f"Bearer {POLAR_ACCESS_TOKEN}", "Accept": "application/octet-stream"})
+        if not r.ok: return [], []
+        fit_bytes = r.content
+        phases = parse_fit_phases(fit_bytes, exercise_id, session_date)
+        if phases:
+            return [], phases
+        return parse_fit_laps(fit_bytes, exercise_id, session_date, total_distance_m), []
+    except Exception as e:
+        log.error(f"FIT fetch all error {exercise_id}: {e}")
+        return [], []
 
 # ── FORMATTING ─────────────────────────────────────────────────────────────
 
@@ -1154,7 +1223,7 @@ def save_wellness_checkin(text: str) -> str:
 
 # ── POLAR SYNC ─────────────────────────────────────────────────────────────
 
-def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) -> int:
+def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list, phases: list = None) -> int:
     try:
         sport       = ex_data.get("sport", "")
         hr          = ex_data.get("heart_rate", {}) or {}
@@ -1187,6 +1256,7 @@ def save_exercise_from_api(ex_data: dict, exercise_id: str, split_rows: list) ->
             "training_load": cardio_load, "muscle_load": muscle_load,
             "ascent": sf(ex_data.get("ascent")), "descent": sf(ex_data.get("descent")),
             "hr_zones": json.dumps(hr_zones_parsed), "raw_json": json.dumps(ex_data), "source": "polar",
+            "phases_json": json.dumps(phases) if phases else None,
         }, on_conflict="polar_exercise_id").execute()
         if split_rows:
             supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
@@ -1211,8 +1281,8 @@ def sync_new_polar_exercises() -> list:
             if not detail_r.ok: continue
             ex_data    = detail_r.json()
             dist_m     = sf(ex_data.get("distance"))
-            split_rows  = fetch_fit_and_parse(ex_id, ex_data.get("start_time", "")[:10], dist_m)
-            splits      = save_exercise_from_api(ex_data, ex_id, split_rows)
+            split_rows, phases = fetch_fit_all(ex_id, ex_data.get("start_time", "")[:10], dist_m)
+            splits      = save_exercise_from_api(ex_data, ex_id, split_rows, phases)
             session_date = ex_data.get("start_time", "")[:10]
             if session_date:
                 _mark_plan_complete(session_date, ex_id)
@@ -1461,14 +1531,20 @@ def build_training_context(run_limit: int = 10, sleep_days: int = 7) -> str:
         else:
             parts.append("\n=== SESSIONS — LAST 21 DAYS === No sessions.")
 
-        # KM splits for most recent run
-        latest = get_latest_run_with_splits()
-        if latest:
-            splits = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", latest["polar_exercise_id"]).order("lap_number").execute()
-            if splits.data:
-                parts.append(f"\n=== KM SPLITS: {recency_label(latest['date'])} ({(latest.get('distance_meters') or 0)/1000:.1f}km) ===")
-                for s in splits.data:
+        # Phase/split detail for most recent run
+        latest_ex = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,phases_json").order("date", desc=True).limit(10).execute()
+        for ex_row in (latest_ex.data or []):
+            phases_text = _format_phases_text(ex_row.get("phases_json"))
+            if phases_text:
+                parts.append(f"\n=== STRUCTURED PHASES: {recency_label(ex_row['date'])} ({(ex_row.get('distance_meters') or 0)/1000:.1f}km) ===")
+                parts.append(phases_text)
+                break
+            check = supabase.table("polar_km_splits").select("km_number,pace_display,hr_avg,hr_max,power_avg,cadence_avg").eq("exercise_id", ex_row["polar_exercise_id"]).order("lap_number").execute()
+            if check.data:
+                parts.append(f"\n=== KM SPLITS: {recency_label(ex_row['date'])} ({(ex_row.get('distance_meters') or 0)/1000:.1f}km) ===")
+                for s in check.data:
                     parts.append(f"  KM {s['km_number']:2d} | {s.get('pace_display','?'):10s} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cadence {s.get('cadence_avg','?')}spm")
+                break
 
         # Layer 2: weekly summaries, 12 weeks prior to the detail window
         hist_runs = supabase.table("polar_exercises").select(
@@ -1995,11 +2071,18 @@ def send_post_run_debrief(exercise_id: str):
         cl_text     = f"Load ratio {cl.get('cardio_load_ratio','?')} ({cl.get('cardio_load_status','?')})" if cl else "No cardio load data."
 
         if is_run:
-            splits_text = ("KM SPLITS:\n" + "\n".join([
-                f"  km {s['km_number']}: {s.get('pace_display','?')} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cad {s.get('cadence_avg','?')}spm"
-                for s in splits[:20]
-            ])) if splits else ""
-            prompt = f"""Luke just finished a run. Give him the debrief.
+            phases_text = _format_phases_text(run.get("phases_json"))
+            if phases_text:
+                splits_text = phases_text
+            elif splits:
+                splits_text = "KM SPLITS:\n" + "\n".join([
+                    f"  km {s['km_number']}: {s.get('pace_display','?')} | HR {s.get('hr_avg','?')}/{s.get('hr_max','?')} | Power {s.get('power_avg','?')}W | Cad {s.get('cadence_avg','?')}spm"
+                    for s in splits[:20]
+                ])
+            else:
+                splits_text = ""
+            session_type_note = "structured interval session (Polar Favourites)" if phases_text else "run"
+            prompt = f"""Luke just finished a {session_type_note}. Give him the debrief.
 
 RUN: {dist_km}km in {dur_str} @ {seconds_to_pace(pace_s)} avg | HR {run.get('avg_heart_rate','?')}/{run.get('max_heart_rate','?')}bpm | Load {run.get('training_load','?')} | Ascent {run.get('ascent','?')}m
 {splits_text}
@@ -2488,6 +2571,7 @@ def handle_message(message):
             "📅 /plan — show this week's plan\n"
             "⚖️ /weight — weight trend (7d / 28d)\n"
             "🍽 /nutrition — today's food log\n"
+            "🔁 /resyncphases — backfill structured phase data for recent sessions\n"
             "🗑 /clear — clear conversation\n\n"
             "✏️ *Log data*\n"
             "`/setplan Mon: KB Session A\\nTue: Z2 run 40min\\n...`\n"
@@ -2733,6 +2817,24 @@ def handle_message(message):
                 for date_str, kg in wt["entries"][-7:]:
                     lines.append(f"  {date_str}: {kg}kg")
             bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"Error: {e}")
+        return
+
+    if lower == "/resyncphases":
+        bot.reply_to(message, "🔄 Re-scanning recent exercises for structured phase data...")
+        try:
+            exs = supabase.table("polar_exercises").select("polar_exercise_id,date,distance_meters,phases_json").order("date", desc=True).limit(20).execute().data or []
+            updated = 0
+            for ex_row in exs:
+                ex_id = ex_row["polar_exercise_id"]
+                dist_m = ex_row.get("distance_meters")
+                session_date = (ex_row.get("date") or "")[:10]
+                split_rows, phases = fetch_fit_all(ex_id, session_date, dist_m)
+                if phases:
+                    supabase.table("polar_exercises").update({"phases_json": json.dumps(phases)}).eq("polar_exercise_id", ex_id).execute()
+                    updated += 1
+            bot.reply_to(message, f"✅ Found structured phases in {updated}/{len(exs)} recent sessions.")
         except Exception as e:
             bot.reply_to(message, f"Error: {e}")
         return
