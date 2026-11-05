@@ -2784,10 +2784,10 @@ def handle_message(message):
                 lap_lines = [f"Ex {ex_id} {ex_row['date'][:10]} | name={api_name!r} | api_laps={has_laps_api}"]
                 lap_num = 0
                 for record in fitfile.get_messages("lap"):
-                    # Include all non-None fields + all developer fields
-                    std_data  = {d.name: d.value for d in record if not d.is_developer_field}
-                    dev_data  = {f"dev:{d.name}": d.value for d in record if d.is_developer_field}
-                    data = {**std_data, **dev_data}
+                    data = {}
+                    for d in record:
+                        prefix = "dev:" if getattr(d, "is_developer_field", False) else ""
+                        data[prefix + d.name] = d.value
                     keep = {k: v for k, v in data.items() if v is not None and k not in ("timestamp","start_time","message_index")}
                     intensity = keep.pop("intensity", None)
                     trigger   = keep.pop("lap_trigger", None)
