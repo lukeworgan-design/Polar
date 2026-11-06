@@ -556,11 +556,35 @@ def readiness_emoji(score: float) -> str:
     if score >= 4: return "🟠"
     return "🔴"
 
+_SPORT_EMOJI = {
+    "RUNNING": "🏃", "TRAIL_RUNNING": "🏔️", "TREADMILL_RUNNING": "⚙️",
+    "STRENGTH_TRAINING": "💪", "FUNCTIONAL_TRAINING": "💪", "KETTLEBELL_TRAINING": "💪",
+    "CORE": "💪", "BOOTCAMP": "💪", "CROSS_TRAINING": "🏋️",
+    "YOGA": "🧘", "FLEXIBILITY_TRAINING": "🧘", "STRETCHING": "🧘",
+    "CYCLING": "🚴", "SWIMMING": "🏊", "ROWING": "🚣",
+    "OTHER": "💪", "OTHER_INDOOR": "💪",
+}
+_SPORT_DISPLAY = {
+    "RUNNING": "Run", "TRAIL_RUNNING": "Trail Run", "TREADMILL_RUNNING": "Treadmill Run",
+    "STRENGTH_TRAINING": "Strength Training", "FUNCTIONAL_TRAINING": "Functional Training",
+    "KETTLEBELL_TRAINING": "Kettlebell", "CORE": "Core", "BOOTCAMP": "Bootcamp",
+    "CROSS_TRAINING": "Cross Training", "YOGA": "Yoga",
+    "FLEXIBILITY_TRAINING": "Flexibility", "STRETCHING": "Stretching",
+    "CYCLING": "Cycling", "SWIMMING": "Swimming", "ROWING": "Rowing",
+}
+
 def sport_emoji(sport: str) -> str:
     if not sport: return "🏃"
-    if "TRAIL" in sport:     return "🏔️"
-    if "TREADMILL" in sport: return "⚙️"
-    return "🏃"
+    return _SPORT_EMOJI.get(sport.upper(), "🏃" if "RUN" in sport.upper() else "💪")
+
+def sport_display(sport: str, plan_label: str = None) -> str:
+    """Human-readable sport name; falls back to plan label for OTHER/unknown."""
+    if not sport: return plan_label or "Session"
+    name = _SPORT_DISPLAY.get(sport.upper())
+    if name: return name
+    if sport.upper() in ("OTHER", "OTHER_INDOOR", "OTHER_OUTDOOR"):
+        return plan_label or "Gym Session"
+    return sport.replace("_", " ").title()
 
 def fmt_date(date_str: str) -> str:
     try: return datetime.fromisoformat(date_str[:10]).strftime("%-d %b")
@@ -1102,7 +1126,7 @@ def format_new_run_notification(ex: dict, exercise_id: str, splits_count: int) -
         if is_run:
             dist_km = (ex.get("distance") or ex.get("distance_meters") or 0) / 1000
             pace_s  = dur_s / dist_km if dist_km else 0
-            title   = plan_label or f"New {sport.replace('_',' ').title()}"
+            title   = plan_label or f"New {sport_display(sport)}"
             lines   = [
                 f"{sport_emoji(sport)} *{title} Synced!*\n",
                 f"📅 {fmt_date(today_str)}  •  {dist_km:.2f}km  •  {int(dur_s//60)}min",
@@ -1118,9 +1142,9 @@ def format_new_run_notification(ex: dict, exercise_id: str, splits_count: int) -
                     for s in split_data.data:
                         lines.append(f"`{str(s['km_number']).rjust(2)}  │ {(s.get('pace_display') or 'N/A').ljust(8)} │ {str(s.get('hr_avg') or '?').rjust(3)} │ {str(s.get('power_avg') or '?').rjust(4)}W │ {str(s.get('cadence_avg') or '?').rjust(3)}`")
         else:
-            sport_title = sport.replace("_", " ").title() or "Session"
+            sport_title = sport_display(sport, plan_label)
             lines = [
-                f"💪 *{sport_title} Synced!*\n",
+                f"{sport_emoji(sport)} *{sport_title} Synced!*\n",
                 f"📅 {fmt_date(today_str)}  •  {int(dur_s//60)}min",
                 f"❤️ {avg_hr}/{max_hr}bpm  •  🔥 Load {load}",
             ]
@@ -1211,7 +1235,7 @@ def save_manual_run(text: str) -> str:
         if split_rows:
             supabase.table("polar_km_splits").upsert(split_rows, on_conflict="exercise_id,lap_number").execute()
         dist_km = dist_m / 1000 if dist_m else 0
-        lines   = [f"✏️ *Run saved!*\n", f"{sport_emoji(sport)} {sport.replace('_',' ').title()}  •  {run_date}", f"📏 {dist_km:.2f}km  •  ⏱ {int(dur_s//60)}:{int(dur_s%60):02d}", f"💨 {seconds_to_pace(pace_s)}  ❤️ {fields.get('avg_heart_rate','?')}/{fields.get('max_heart_rate','?')}bpm", f"⚡ {fields.get('avg_power','?')}W  •  👟 {fields.get('avg_cadence','?')}spm", f"⬆️ {fields.get('ascent') or 0:.0f}m  •  🔥 Load {fields.get('training_load','?')}"]
+        lines   = [f"✏️ *Run saved!*\n", f"{sport_emoji(sport)} {sport_display(sport)}  •  {run_date}", f"📏 {dist_km:.2f}km  •  ⏱ {int(dur_s//60)}:{int(dur_s%60):02d}", f"💨 {seconds_to_pace(pace_s)}  ❤️ {fields.get('avg_heart_rate','?')}/{fields.get('max_heart_rate','?')}bpm", f"⚡ {fields.get('avg_power','?')}W  •  👟 {fields.get('avg_cadence','?')}spm", f"⬆️ {fields.get('ascent') or 0:.0f}m  •  🔥 Load {fields.get('training_load','?')}"]
         if split_rows:
             lines.append(f"\n📊 {len(split_rows)} km splits saved")
             lines.append("`KM  │ Pace     │ HR      │ Power │ Cad`")
@@ -2129,7 +2153,7 @@ End with: NOTE: post-run debrief | <10-word summary>"""
             session_date = (run.get("date") or "")[:10]
             plan_entry   = _get_today_plan_entry(session_date) if session_date else None
             plan_label   = plan_entry["session_label"] if plan_entry else None
-            sport_label  = plan_label or sport.replace("_", " ").title() if sport else "session"
+            sport_label  = sport_display(sport, plan_label) if sport else "session"
 
             plan_note = f"\nPLAN: This was '{plan_label}' — ✅ tick it off the week plan." if plan_label else ""
 
