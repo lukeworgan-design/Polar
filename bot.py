@@ -1711,6 +1711,7 @@ def _base_system() -> str:
     return f"""You are {ATHLETE['name']}'s running coach. Treat him as a peer — experienced trail ultrarunner, not a beginner.
 
 DATA INTEGRITY — non-negotiable:
+- TODAY and RACE HORIZON are injected at the top of this prompt. ALWAYS use those values. NEVER derive the current date or months-to-race from your training data or your own estimates — the prompt values are authoritative.
 - NEVER say "this morning / today / yesterday" for a session unless the training context labels it TODAY or YESTERDAY.
 - NEVER invent details not in the data (wake times, routes, feelings). If it's not in the numbers, say so.
 - Every session in context is labelled with exact recency. Use those labels.
@@ -1777,11 +1778,37 @@ Only append when a specific food is described — not for general nutrition disc
 End every substantive response with:
 NOTE: <topic> | <one sentence summary>"""
 
+def _horizon_note() -> str:
+    """Compute explicit months-to-horizon from today so Claude never guesses the year."""
+    today = datetime.now(timezone.utc).date()
+    # Check DB for a future active race first
+    try:
+        rows = supabase.table("goals").select("race_name,race_date").eq("active", True).gte("race_date", str(today)).order("race_date").limit(1).execute().data or []
+        if rows:
+            d = datetime.strptime(rows[0]["race_date"], "%Y-%m-%d").date()
+            months = round((d - today).days / 30.4, 1)
+            return f"{rows[0]['race_name']} on {rows[0]['race_date']} — {months} months from today"
+    except Exception:
+        pass
+    # No specific race — compute months to target year from ATHLETE horizon
+    try:
+        import re as _re
+        m = _re.search(r"(\d{4})", ATHLETE.get("horizon", ""))
+        if m:
+            target_year = int(m.group(1))
+            target_date = datetime(target_year, 6, 1).date()  # assume mid-year
+            months = round((target_date - today).days / 30.4, 1)
+            direction = "away" if months > 0 else "past target"
+            return f"{ATHLETE['horizon']} — that is {abs(months)} months {direction} from today ({today})"
+    except Exception:
+        pass
+    return f"No specific race set — today is {today}"
+
 def build_system_prompt(run_limit: int = 10, sleep_days: int = 7) -> str:
     today_date = datetime.now(timezone.utc)
     datestr    = today_date.strftime("%A %-d %B %Y")
-    race_info  = days_to_next_race()
-    return f"TODAY: {datestr} | RACE HORIZON: {race_info}\n\n{_base_system()}\n\n{build_training_context(run_limit, sleep_days)}"
+    horizon    = _horizon_note()
+    return f"TODAY: {datestr}\nRACE HORIZON: {horizon}\n\n{_base_system()}\n\n{build_training_context(run_limit, sleep_days)}"
 
 conversation_history = {}
 
