@@ -2000,16 +2000,26 @@ def send_morning_briefing():
             session = today_plan["session_label"]  # plan overrides readiness recommendation
         plan_block  = _format_week_plan_block(plan_rows, today_str)
 
-        # Sleep — note data currency so Luke knows if last night hasn't synced yet
+        # Sleep — note data currency so Luke knows if last night hasn't synced yet.
+        # Polar dates sleep to the morning you wake up, so at 5am:
+        #   age=0 → sleep ended this morning (unusual) = last night ✓
+        #   age=1 → sleep ended yesterday morning = NIGHT BEFORE LAST (previous night hasn't synced)
+        #   age=2+ → old data
         sleep_rows  = supabase.table("polar_sleep").select(
             "date,total_sleep_seconds,sleep_score,rem_seconds,deep_sleep_seconds"
         ).order("date", desc=True).limit(3).execute().data or []
         latest_sleep_date = sleep_rows[0]["date"][:10] if sleep_rows else "?"
         sleep_age   = (now_dt.date() - datetime.strptime(latest_sleep_date, "%Y-%m-%d").date()).days if latest_sleep_date != "?" else 99
-        sleep_note  = (
-            f"Last night's sleep ({latest_sleep_date})"  if sleep_age <= 1 else
-            f"Sleep data from {sleep_age} day(s) ago ({latest_sleep_date}) — watch may not have synced yet"
-        )
+        if sleep_age == 0:
+            sleep_note = f"Last night's sleep — synced ({latest_sleep_date})"
+        elif sleep_age == 1:
+            sleep_note = (
+                f"⚠️ SLEEP DATA CURRENCY: Most recent sleep is dated {latest_sleep_date} "
+                f"(the night before last — Polar has NOT yet synced last night's sleep at 5am). "
+                f"Do NOT describe this as 'last night'. Say 'the night before last' or 'two nights ago'."
+            )
+        else:
+            sleep_note = f"Sleep data {sleep_age} nights old ({latest_sleep_date}) — watch may not have synced recently"
         sleep_lines = []
         for s in sleep_rows:
             h, m = divmod((s.get("total_sleep_seconds") or 0) // 60, 60)
